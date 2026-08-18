@@ -1,12 +1,6 @@
 <div align="center">
 
-<pre>
-    _     _              ____             _
-   / \   | |__    __ _  / ___|  ___    __| |  ___
-  / _ \  | '_ \  / _` || |     / _ \  / _` | / _ \
- / ___ \ | | | || (_| || |___ | (_) || (_| ||  __/
-/_/   \_\|_| |_| \__,_| \____| \___/  \__,_| \___|
-</pre>
+<img src="assets/logo.svg" alt="AhaCode" width="440" />
 
 **A terminal-native chat client for local LLMs, built with [Textual](https://github.com/Textualize/textual).**
 

@@ -1,0 +1,14 @@
+<svg width="440" height="140" viewBox="0 0 440 140" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AhaCode">
+  <!-- terminal window card -->
+  <rect x="1" y="1" width="438" height="138" rx="14" fill="#181825" stroke="#313244" stroke-width="2"/>
+  <!-- title-bar dots -->
+  <circle cx="26" cy="26" r="7" fill="#f38ba8"/>
+  <circle cx="50" cy="26" r="7" fill="#f9e2af"/>
+  <circle cx="74" cy="26" r="7" fill="#a6e3a1"/>
+  <!-- prompt line -->
+  <text x="220" y="98" text-anchor="middle"
+        font-family="ui-monospace, 'Cascadia Code', Menlo, Consolas, 'Liberation Mono', monospace"
+        font-size="44" font-weight="700" letter-spacing="1">
+    <tspan fill="#a6e3a1">&#10095; </tspan><tspan fill="#fab387">Aha</tspan><tspan fill="#89b4fa">Code</tspan><tspan fill="#6c7086">&#9612;</tspan>
+  </text>
+</svg>
