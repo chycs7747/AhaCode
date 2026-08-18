@@ -1,0 +1,28 @@
+#chat-container {
+    height: 1fr;      /* take all remaining vertical space */
+    padding: 1 2;
+}
+
+#prompt {
+    dock: bottom;
+}
+
+Chatbox {
+    height: auto;     /* only as tall as its content */
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
+.chatbox--user {
+    border-left: thick $accent;
+}
+
+.chatbox--thinking {
+    color: $text-muted;   /* visually subordinate to the answer text */
+    border-left: thick $secondary;
+    text-style: italic;
+}
+
+.chatbox--assistant {
+    border-left: thick $success;
+}

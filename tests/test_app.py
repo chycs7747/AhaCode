@@ -1,0 +1,120 @@
+import pytest
+
+from ahacode import client, storage
+from ahacode.app import AhaCodeApp
+from ahacode.widgets.chatbox import Chatbox
+
+
+@pytest.fixture(autouse=True)
+def isolated_storage(monkeypatch, tmp_path):
+    """Isolate the real ~/.ahacode from every test.
+
+    The resume feature (latest_session in __init__) reads global state, so
+    every app test must run against a private temporary directory.
+    """
+    monkeypatch.setattr(storage, "SESSIONS_DIR", tmp_path)
+
+
+@pytest.fixture
+def fake_llm(monkeypatch):
+    """Swap the real stream_chat for the offline fake for the duration of a test."""
+    monkeypatch.setattr(client, "stream_chat", client.stream_chat_fake)
+
+
+@pytest.mark.asyncio
+async def test_enter_creates_three_bubbles(fake_llm):
+    """One Enter → user bubble + pre-mounted thinking and assistant bubbles."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.press("h", "i")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(app.query(Chatbox)) == 3
+
+
+@pytest.mark.asyncio
+async def test_deltas_routed_to_right_boxes(fake_llm):
+    """Thinking deltas land in the thinking box, text deltas in the answer box."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.press("h", "i")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        user, thinking, response = list(app.query(Chatbox))
+        assert thinking.display is True
+        assert thinking._content.strip() == client.FAKE_THINKING
+        assert response._content.strip() == client.FAKE_RESPONSE
+
+
+@pytest.mark.asyncio
+async def test_thinking_box_stays_hidden_without_thinking(monkeypatch):
+    """A model that never thinks must leave the thinking box hidden forever."""
+    def text_only(messages):
+        yield ("text", "Hi!")
+    monkeypatch.setattr(client, "stream_chat", text_only)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.press("h", "i")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        _, thinking, response = list(app.query(Chatbox))
+        assert thinking.display is False  # present in the tree, never shown
+        assert response._content == "Hi!"
+
+
+@pytest.mark.asyncio
+async def test_second_turn_carries_history(monkeypatch):
+    """The second request must carry the [user, assistant, user] history."""
+    captured = []
+
+    def recording_fake(messages):
+        captured.append(list(messages))  # spy: record what the client received
+        yield ("text", "answer")
+
+    monkeypatch.setattr(client, "stream_chat", recording_fake)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.press("a")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()  # let ResponseComplete be processed
+        await pilot.press("b")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    assert [m["role"] for m in captured[1]] == ["user", "assistant", "user"]
+    assert captured[1][1]["content"] == "answer"  # turn 1's reply rides in turn 2
+    assert len(app.session.messages) == 4
+
+
+@pytest.mark.asyncio
+async def test_messages_persisted_to_file(fake_llm, tmp_path):
+    """One full turn must be written to the JSONL session file."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.press("h", "i")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    files = list(tmp_path.glob("*.jsonl"))
+    assert len(files) == 1
+    assert [m["role"] for m in storage.load_messages(files[0])] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_restore_on_startup(tmp_path):
+    """An existing session file must be restored as bubbles on startup."""
+    p = storage.new_session_path(base_dir=tmp_path)
+    storage.append_message(p, {"role": "user", "content": "earlier message"})
+    storage.append_message(p, {"role": "assistant", "content": "earlier reply"})
+
+    app = AhaCodeApp()  # __init__ should discover the file above
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert len(app.query(Chatbox)) == 2
+        assert app.session.messages[0]["content"] == "earlier message"
