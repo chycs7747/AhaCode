@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -7,7 +7,7 @@ from textual.message import Message
 from textual.widgets import Input
 from textual.worker import get_current_worker
 
-from ahacode import client, storage
+from ahacode import client, config, storage
 from ahacode.session import ChatSession
 from ahacode.widgets.chatbox import Chatbox
 
@@ -59,6 +59,16 @@ class AhaCodeApp(App):
         if not text:
             return
         event.input.clear()
+
+        if text.startswith("/"):
+            # Slash commands configure the app; they never reach the LLM
+            # and are not recorded in the session.
+            reply = self._handle_command(text)
+            container = self.query_one("#chat-container", VerticalScroll)
+            await container.mount(Chatbox(reply, role="system"))
+            container.scroll_end(animate=False)
+            return
+
         self.session.add_user(text)
         storage.append_message(self.session_path, {"role": "user", "content": text})
 
@@ -78,6 +88,34 @@ class AhaCodeApp(App):
         # A snapshot copy is passed so the worker never shares a mutable list
         # with the main thread.
         self.stream_response(list(self.session.messages), thinking_box, response_box)
+
+    def _handle_command(self, text: str) -> str:
+        """Handle a /command typed into the chat input; returns the reply text."""
+        parts = text.split()
+        cmd, args = parts[0].lower(), parts[1:]
+        if cmd == "/help":
+            return (
+                "Commands:\n"
+                "  /model           show the current model and endpoint\n"
+                "  /model <name>    switch to a different model\n"
+                "  /url <base_url>  switch to a different endpoint\n"
+                "  /help            this message"
+            )
+        if cmd == "/model":
+            cfg = config.load()
+            if not args:
+                return f"model: {cfg.name}\nendpoint: {cfg.base_url}"
+            config.save(replace(cfg, name=args[0]))
+            client.reset()  # next request picks up the new config
+            return f"model switched to: {args[0]}"
+        if cmd == "/url":
+            cfg = config.load()
+            if not args:
+                return f"endpoint: {cfg.base_url}"
+            config.save(replace(cfg, base_url=args[0]))
+            client.reset()
+            return f"endpoint switched to: {args[0]}"
+        return f"unknown command: {cmd} — try /help"
 
     @on(ResponseComplete)
     def response_complete(self, event: ResponseComplete) -> None:

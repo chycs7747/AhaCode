@@ -17,7 +17,7 @@ streaming chat · visible thinking · multi-turn memory · persistent sessions
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Status: Alpha](https://img.shields.io/badge/status-alpha-orange.svg)]()
 
-[Features](#features) · [Getting started](#getting-started) · [Sessions](#sessions-on-disk) · [Architecture](#architecture) · [Development](#development)
+[Features](#features) · [Getting started](#getting-started) · [Commands](#commands) · [Sessions](#sessions-on-disk) · [Architecture](#architecture) · [Development](#development)
 
 </div>
 
@@ -41,6 +41,8 @@ live into a separate, dimmed bubble as it thinks.
 - **Persistent sessions** — every message is appended to a plain-text JSONL
   file under `~/.ahacode/sessions/`; the latest session is restored on startup.
   Your history is always `cat`-able.
+- **In-chat commands** — switch model or endpoint with `/model` and `/url`
+  without leaving the conversation; changes persist to the config file.
 - **Smart auto-scroll** — follows the stream only while you are at the bottom;
   scrolling up to read is never interrupted.
 
@@ -69,6 +71,20 @@ name = "qwen38-nvfp4"
 api_key = "EMPTY"   # many local servers ignore this, but the SDK requires one
 timeout = 60.0
 ```
+
+…or configure it without leaving the chat — see [Commands](#commands).
+
+## Commands
+
+Messages starting with `/` are handled locally — they never reach the model
+and are not recorded in your session.
+
+| Command | Effect |
+|---|---|
+| `/model` | Show the current model and endpoint |
+| `/model <name>` | Switch model (persisted to `config.toml`) |
+| `/url <base_url>` | Switch endpoint (persisted to `config.toml`) |
+| `/help` | List available commands |
 
 ## Sessions on disk
 

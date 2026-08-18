@@ -11,17 +11,6 @@ DEFAULT_MODEL = "qwen38-nvfp4"
 DEFAULT_API_KEY = "EMPTY"
 DEFAULT_TIMEOUT = 60.0
 
-DEFAULT_CONFIG = f"""\
-# AhaCode configuration
-# Any OpenAI-compatible endpoint works (vLLM, Ollama, gateways, ...).
-
-[model]
-base_url = "{DEFAULT_BASE_URL}"
-name = "{DEFAULT_MODEL}"
-api_key = "{DEFAULT_API_KEY}"  # many local servers ignore this, but the SDK requires one
-timeout = {DEFAULT_TIMEOUT}    # seconds; caps how long a read may block between chunks
-"""
-
 
 @dataclass(frozen=True)
 class ModelConfig:
@@ -31,12 +20,40 @@ class ModelConfig:
     timeout: float
 
 
+DEFAULTS = ModelConfig(
+    base_url=DEFAULT_BASE_URL,
+    name=DEFAULT_MODEL,
+    api_key=DEFAULT_API_KEY,
+    timeout=DEFAULT_TIMEOUT,
+)
+
+
+def _render(cfg: ModelConfig) -> str:
+    return f"""\
+# AhaCode configuration
+# Any OpenAI-compatible endpoint works (vLLM, Ollama, gateways, ...).
+# Editable here, or from inside the chat with /model and /url.
+
+[model]
+base_url = "{cfg.base_url}"
+name = "{cfg.name}"
+api_key = "{cfg.api_key}"  # many local servers ignore this, but the SDK requires one
+timeout = {cfg.timeout}    # seconds; caps how long a read may block between chunks
+"""
+
+
+def save(cfg: ModelConfig, path: Path | None = None) -> None:
+    """Write the config file (used by first-run defaults and /commands)."""
+    path = path or CONFIG_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_render(cfg), encoding="utf-8")
+
+
 def load(path: Path | None = None) -> ModelConfig:
     """Load the model config, writing a commented default file on first run."""
     path = path or CONFIG_PATH
     if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(DEFAULT_CONFIG, encoding="utf-8")
+        save(DEFAULTS, path)
     with path.open("rb") as f:  # tomllib requires binary mode
         data = tomllib.load(f)
     model = data.get("model", {})

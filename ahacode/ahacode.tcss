@@ -26,3 +26,8 @@ Chatbox {
 .chatbox--assistant {
     border-left: thick $success;
 }
+
+.chatbox--system {
+    color: $text-muted;   /* command replies — informational, not conversation */
+    border-left: thick $warning;
+}

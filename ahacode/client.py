@@ -16,6 +16,16 @@ _client: OpenAI | None = None
 _cfg: config.ModelConfig | None = None
 
 
+def reset() -> None:
+    """Forget the cached client and config; the next request reloads from disk.
+
+    Called after /commands change the config file.
+    """
+    global _client, _cfg
+    _client = None
+    _cfg = None
+
+
 def _ensure_client() -> tuple[OpenAI, config.ModelConfig]:
     global _client, _cfg
     if _client is None:

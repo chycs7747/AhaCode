@@ -1,18 +1,24 @@
 import pytest
+from textual.widgets import Input
 
-from ahacode import client, storage
+from ahacode import client, config, storage
 from ahacode.app import AhaCodeApp
 from ahacode.widgets.chatbox import Chatbox
 
 
 @pytest.fixture(autouse=True)
-def isolated_storage(monkeypatch, tmp_path):
-    """Isolate the real ~/.ahacode from every test.
+def isolated_environment(monkeypatch, tmp_path):
+    """Isolate all global state (~/.ahacode) from every test.
 
-    The resume feature (latest_session in __init__) reads global state, so
-    every app test must run against a private temporary directory.
+    Sessions and config both live under the home directory, and the client
+    caches its config — every app test must run against private temporaries
+    with a fresh client cache.
     """
     monkeypatch.setattr(storage, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.toml")
+    client.reset()
+    yield
+    client.reset()
 
 
 @pytest.fixture
@@ -104,6 +110,42 @@ async def test_messages_persisted_to_file(fake_llm, tmp_path):
     files = list(tmp_path.glob("*.jsonl"))
     assert len(files) == 1
     assert [m["role"] for m in storage.load_messages(files[0])] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_slash_command_is_not_a_chat_message():
+    """/commands answer locally: no LLM call, nothing recorded in the session."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", Input).value = "/help"
+        await pilot.press("enter")
+        await pilot.pause()
+        boxes = list(app.query(Chatbox))
+        assert len(boxes) == 1  # a single system bubble — no user/thinking/answer
+        assert "Commands:" in boxes[0]._content
+    assert app.session.messages == []
+
+
+@pytest.mark.asyncio
+async def test_model_command_switches_and_persists():
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", Input).value = "/model my-new-model"
+        await pilot.press("enter")
+        await pilot.pause()
+        boxes = list(app.query(Chatbox))
+        assert "my-new-model" in boxes[0]._content
+    assert config.load().name == "my-new-model"  # persisted to config.toml
+
+
+@pytest.mark.asyncio
+async def test_unknown_command_suggests_help():
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", Input).value = "/nonsense"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "/help" in list(app.query(Chatbox))[0]._content
 
 
 @pytest.mark.asyncio
