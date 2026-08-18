@@ -1,10 +1,12 @@
-"""User configuration — ~/.ahacode/config.toml, created with defaults on first load."""
+"""User configuration — config.toml in the project root, created on first load."""
 
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-CONFIG_PATH = Path.home() / ".ahacode" / "config.toml"
+# <project root>/config.toml — next to pyproject.toml, kept out of git.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CONFIG_PATH = PROJECT_ROOT / "config.toml"
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8078/v1"
 DEFAULT_MODEL = "qwen38-nvfp4"

@@ -5,3 +5,8 @@ __pycache__/
 .pytest_cache/
 dist/
 *.egg-info/
+
+# User data in the project root — never commit
+# (config.toml may hold an API key; sessions/ holds private conversations)
+config.toml
+sessions/

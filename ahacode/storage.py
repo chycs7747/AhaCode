@@ -1,14 +1,14 @@
 """JSONL session storage — one file per session, one message per line, append-only.
 
-Sessions live under the same dot-folder on every OS (~/.ahacode/), following the
-same convention as Claude Code's ~/.claude.
+Sessions live under the project root (./sessions/), kept out of git.
 """
 
 import datetime
 import json
 from pathlib import Path
 
-SESSIONS_DIR = Path.home() / ".ahacode" / "sessions"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SESSIONS_DIR = PROJECT_ROOT / "sessions"
 
 
 def new_session_path(base_dir: Path | None = None) -> Path:

@@ -39,8 +39,8 @@ live into a separate, dimmed bubble as it thinks.
 - **Multi-turn memory** — the full conversation history rides along with every
   request.
 - **Persistent sessions** — every message is appended to a plain-text JSONL
-  file under `~/.ahacode/sessions/`; the latest session is restored on startup.
-  Your history is always `cat`-able.
+  file under `sessions/` in the project root; the latest session is restored
+  on startup. Your history is always `cat`-able.
 - **In-chat commands** — switch model or endpoint with `/model` and `/url`
   without leaving the conversation; changes persist to the config file.
 - **Smart auto-scroll** — follows the stream only while you are at the bottom;
@@ -62,7 +62,8 @@ uv run textual run ahacode.app
 
 Type a message and press <kbd>Enter</kbd>. Quit with <kbd>Ctrl+Q</kbd>.
 
-The first run creates `~/.ahacode/config.toml` — edit it to point at your server:
+The first run creates `config.toml` in the project root — edit it to point at
+your server:
 
 ```toml
 [model]
@@ -91,10 +92,13 @@ and are not recorded in your session.
 One session per file, one message per line, append-only:
 
 ```bash
-ls ~/.ahacode/sessions/
-cat ~/.ahacode/sessions/2026-08-18_212512.jsonl
-tail -f ~/.ahacode/sessions/*.jsonl   # watch messages land in real time
+ls sessions/
+cat sessions/2026-08-18_212512.jsonl
+tail -f sessions/*.jsonl   # watch messages land in real time
 ```
+
+Both `config.toml` and `sessions/` are git-ignored — your key and your
+conversations never end up in a commit.
 
 ## Architecture
 
@@ -103,9 +107,9 @@ ahacode/
 ├── app.py            # Textual App: layout, event wiring, streaming worker
 ├── client.py         # LLM I/O — the only module that talks to a provider;
 │                     # emits unified ("thinking" | "text", fragment) deltas
-├── config.py         # ~/.ahacode/config.toml (endpoint, model, key)
+├── config.py         # config.toml in the project root (endpoint, model, key)
 ├── session.py        # conversation state (plain Python, widget-free)
-├── storage.py        # JSONL persistence (~/.ahacode/sessions/)
+├── storage.py        # JSONL persistence (./sessions/)
 ├── ahacode.tcss      # styles (no inline CSS)
 └── widgets/
     └── chatbox.py    # a single chat bubble
