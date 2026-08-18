@@ -10,7 +10,7 @@
 
 **A terminal-native chat client for local LLMs, built with [Textual](https://github.com/Textualize/textual).**
 
-streaming chat · visible thinking · multi-turn memory · persistent sessions
+streaming chat · visible thinking · multi-turn memory · persistent sessions · in-chat commands
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
 [![Built with Textual](https://img.shields.io/badge/built%20with-Textual-5967ff.svg)](https://github.com/Textualize/textual)
@@ -130,7 +130,7 @@ Design rules the codebase sticks to:
 ## Development
 
 ```bash
-uv run pytest -v            # 12 tests: unit + headless TUI (Textual Pilot)
+uv run pytest -v            # unit + headless TUI tests (Textual Pilot)
 uv run textual console      # live logs in a second terminal (run app with --dev)
 ```
 
