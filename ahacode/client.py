@@ -41,14 +41,18 @@ def _ensure_client() -> tuple[OpenAI, config.ModelConfig]:
 def stream_chat(messages: list[dict]) -> Iterator[Delta]:
     """Send the full conversation history and yield (kind, fragment) deltas."""
     client, cfg = _ensure_client()
-    response = client.chat.completions.create(
+    # `with` closes the HTTP connection when the stream ends — including when the
+    # caller abandons this generator mid-stream (GeneratorExit unwinds the block).
+    # Without it a cancelled request keeps occupying the server (fatal on a
+    # single-slot gateway).
+    with client.chat.completions.create(
         model=cfg.name,
         messages=messages,
         stream=True,
-    )
-    for chunk in response:
-        if not chunk.choices:  # guard: the final usage-only chunk has empty choices
-            continue
+    ) as response:
+        for chunk in response:
+            if not chunk.choices:
+                continue
         delta = chunk.choices[0].delta
         # Some servers stream thinking under "reasoning" (verified on the wire
         # against vLLM). The field is not part of the SDK's typed model, hence

@@ -48,3 +48,8 @@ ModelBar #endpoint {
 ModelBar #model-select {
     width: 28;
 }
+
+.chatbox--error {
+    color: $error;
+    border-left: thick $error;
+}

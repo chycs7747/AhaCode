@@ -2,6 +2,7 @@ from dataclasses import dataclass, replace
 
 from textual import on, work
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.widgets import Input
@@ -17,6 +18,9 @@ class AhaCodeApp(App):
     """AhaCode: a Textual-based TUI agent client."""
 
     CSS_PATH = "ahacode.tcss"
+    # priority=True: checked before the focused widget's own bindings — the Input
+    # binds ctrl+d to "delete character right" and would otherwise swallow it.
+    BINDINGS = [Binding("ctrl+d", "quit", "Quit", priority=True)]
 
     def __init__(self) -> None:
         super().__init__()
@@ -37,6 +41,14 @@ class AhaCodeApp(App):
         """
 
         text: str
+    
+    @dataclass
+    class ResponseFailed(Message):
+        """Posted when the streaming worker hits an error. The app stays alive;
+        the handler turns the pre-mounted answer bubble into an error bubble."""
+
+        error: str
+        response_box: Chatbox
 
     def compose(self) -> ComposeResult:
         # Static skeleton only — chat bubbles are mounted at runtime.
@@ -142,9 +154,16 @@ class AhaCodeApp(App):
         storage.append_message(
             self.session_path, {"role": "assistant", "content": event.text}
         )
+    
+    @on(ResponseFailed)
+    def response_failed(self, event: ResponseFailed) -> None:
+        # Reuse the pre-mounted answer bubble so the error sits where the reply would.
+        event.response_box.add_class("chatbox--error")
+        event.response_box.append_chunk(f"⚠ {event.error}\n(check the server, then try again)")
 
-    # exclusive=True: submitting a new message cancels the previous worker.
-    @work(thread=True, exclusive=True)
+    # exclusive=True: a new message cancels the previous worker.
+    # exit_on_error=False: a failing worker must not take the whole app down.
+    @work(thread=True, exclusive=True, exit_on_error=False)
     def stream_response(
         self, messages: list[dict], thinking_box: Chatbox, response_box: Chatbox
     ) -> None:
@@ -152,20 +171,28 @@ class AhaCodeApp(App):
         worker = get_current_worker()
         container = self.query_one("#chat-container", VerticalScroll)
         full_text = ""
-        for kind, chunk in client.stream_chat(messages):
-            if worker.is_cancelled:  # cooperative cancellation — threads can't be killed
-                return
-            target = thinking_box if kind == "thinking" else response_box
-            if kind == "text":
-                full_text += chunk
-            self.call_from_thread(target.append_chunk, chunk)
-            # Smart auto-scroll: follow only while the user is near the bottom.
-            if container.scroll_y in range(
-                container.max_scroll_y - 3, container.max_scroll_y + 1
-            ):
-                self.call_from_thread(container.scroll_end, animate=False)
+        stream = client.stream_chat(messages)
+        try:
+            for kind, chunk in stream:
+                if worker.is_cancelled:  # cooperative cancellation — threads can't be killed
+                    return
+                target = thinking_box if kind == "thinking" else response_box
+                if kind == "text":
+                    full_text += chunk
+                self.call_from_thread(target.append_chunk, chunk)
+                # Smart auto-scroll: follow only while the user is near the bottom.
+                if container.scroll_y in range(
+                    container.max_scroll_y - 3, container.max_scroll_y + 1
+                ):
+                    self.call_from_thread(container.scroll_end, animate=False)
+        except Exception as exc:
+            # Server 500, timeout, connection refused... all become a bubble, not a crash.
+            summary = f"{type(exc).__name__}: {exc}"[:300]
+            self.post_message(self.ResponseFailed(summary, response_box))
+            return
+        finally:
+            stream.close()  # release the connection on every exit path (done, cancelled, failed)
         # Normal loop exit means the response is complete.
-        # post_message is thread-safe, so the worker may call it directly.
         self.post_message(self.ResponseComplete(full_text))
 
 

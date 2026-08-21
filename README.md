@@ -55,7 +55,7 @@ uv sync
 uv run textual run ahacode.app
 ```
 
-Type a message and press <kbd>Enter</kbd>. Quit with <kbd>Ctrl+Q</kbd>.
+Type a message and press <kbd>Enter</kbd>. Quit with <kbd>Ctrl+Q</kbd> (or <kbd>Ctrl+D</kbd> if your editor captures Ctrl+Q).
 
 The first run creates `config.toml` in the project root — edit it to point at
 your server:

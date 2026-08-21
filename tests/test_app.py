@@ -194,3 +194,58 @@ async def test_slash_model_updates_the_bar():
         await pilot.press("enter")
         await pilot.pause()
         assert app.query_one("#model-select", Select).value == "custom-model"
+
+
+@pytest.mark.asyncio
+async def test_worker_error_becomes_a_bubble_not_a_crash(monkeypatch):
+    """A failing stream must leave the app alive with an error bubble in place."""
+    def broken(messages):
+        yield ("text", "partial ")
+        raise RuntimeError("boom")
+    monkeypatch.setattr(client, "stream_chat", broken)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.press("h", "i")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        answer = list(app.query(Chatbox))[-1]
+        assert answer.has_class("chatbox--error")
+        assert "boom" in answer._content
+        assert not app._exit  # still running
+    assert [m["role"] for m in app.session.messages] == ["user"]  # no phantom reply recorded
+
+
+@pytest.mark.asyncio
+async def test_stream_is_closed_when_cancelled(monkeypatch):
+    """Sending a new message must close the previous (cancelled) stream."""
+    closed = []
+    def slow(messages):
+        try:
+            for _ in range(50):
+                time.sleep(0.02)
+                yield ("text", "x")
+        finally:
+            closed.append(True)  # runs on exhaustion OR on close()
+    monkeypatch.setattr(client, "stream_chat", slow)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.press("a")
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        await pilot.press("b")   # cancels the first worker
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert len(closed) == 2  # both streams released, including the cancelled one
+
+
+@pytest.mark.asyncio
+async def test_ctrl_d_quits():
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+d")
+        await pilot.pause()
+        assert app._exit
