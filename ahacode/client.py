@@ -60,6 +60,12 @@ def stream_chat(messages: list[dict]) -> Iterator[Delta]:
             yield ("text", delta.content)
 
 
+def list_models() -> list[str]:
+    """Model ids offered by the endpoint (GET /v1/models)."""
+    client, _ = _ensure_client()
+    return [m.id for m in client.models.list()]
+
+
 FAKE_THINKING = "The user greeted me. Keep the reply short."
 FAKE_RESPONSE = "Hello! How can I help you today?"
 

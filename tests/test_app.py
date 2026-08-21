@@ -1,5 +1,5 @@
 import pytest
-from textual.widgets import Input
+from textual.widgets import Input, Select
 
 from ahacode import client, config, storage
 from ahacode.app import AhaCodeApp
@@ -16,6 +16,8 @@ def isolated_environment(monkeypatch, tmp_path):
     """
     monkeypatch.setattr(storage, "SESSIONS_DIR", tmp_path)
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.toml")
+    # The model bar fetches /v1/models on mount — keep tests offline.
+    monkeypatch.setattr(client, "list_models", lambda: ["qwen38", "qwen3-4b"])
     client.reset()
     yield
     client.reset()
@@ -160,3 +162,35 @@ async def test_restore_on_startup(tmp_path):
         await pilot.pause()
         assert len(app.query(Chatbox)) == 2
         assert app.session.messages[0]["content"] == "earlier message"
+
+
+@pytest.mark.asyncio
+async def test_model_bar_shows_current_model():
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()  # model list fetched
+        await pilot.pause()
+        assert app.query_one("#model-select", Select).value == config.DEFAULT_MODEL
+
+
+@pytest.mark.asyncio
+async def test_picking_a_model_persists_and_announces():
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        app.query_one("#model-select", Select).value = "qwen3-4b"  # user picks
+        await pilot.pause()
+        assert "qwen3-4b" in list(app.query(Chatbox))[-1]._content  # system bubble
+    assert config.load().name == "qwen3-4b"  # persisted
+
+
+@pytest.mark.asyncio
+async def test_slash_model_updates_the_bar():
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        app.query_one("#prompt", Input).value = "/model custom-model"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.query_one("#model-select", Select).value == "custom-model"

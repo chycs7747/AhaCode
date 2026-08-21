@@ -2,7 +2,7 @@ from dataclasses import dataclass, replace
 
 from textual import on, work
 from textual.app import App, ComposeResult
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.widgets import Input
 from textual.worker import get_current_worker
@@ -10,6 +10,7 @@ from textual.worker import get_current_worker
 from ahacode import client, config, storage
 from ahacode.session import ChatSession
 from ahacode.widgets.chatbox import Chatbox
+from ahacode.widgets.model_bar import ModelBar
 
 
 class AhaCodeApp(App):
@@ -41,7 +42,9 @@ class AhaCodeApp(App):
         # Static skeleton only — chat bubbles are mounted at runtime.
         with VerticalScroll(id="chat-container") as container:
             container.can_focus = False  # keep initial focus on the input
-        yield Input(placeholder="Type a message and press Enter...", id="prompt")
+        with Vertical(id="bottom"):
+            yield Input(placeholder="Type a message and press Enter...", id="prompt")
+            yield ModelBar()
 
     async def on_mount(self) -> None:
         """Restore saved history as chat bubbles.
@@ -51,6 +54,12 @@ class AhaCodeApp(App):
         container = self.query_one("#chat-container", VerticalScroll)
         for msg in self.session.messages:
             await container.mount(Chatbox(msg["content"], role=msg["role"]))
+        container.scroll_end(animate=False)
+
+    async def _say_system(self, text: str) -> None:
+        """Show an informational bubble (commands, status) — never part of the session."""
+        container = self.query_one("#chat-container", VerticalScroll)
+        await container.mount(Chatbox(text, role="system"))
         container.scroll_end(animate=False)
 
     @on(Input.Submitted)
@@ -63,10 +72,7 @@ class AhaCodeApp(App):
         if text.startswith("/"):
             # Slash commands configure the app; they never reach the LLM
             # and are not recorded in the session.
-            reply = self._handle_command(text)
-            container = self.query_one("#chat-container", VerticalScroll)
-            await container.mount(Chatbox(reply, role="system"))
-            container.scroll_end(animate=False)
+            await self._say_system(self._handle_command(text))
             return
 
         self.session.add_user(text)
@@ -89,6 +95,13 @@ class AhaCodeApp(App):
         # with the main thread.
         self.stream_response(list(self.session.messages), thinking_box, response_box)
 
+    def _switch_model(self, name: str) -> str:
+        """Persist a model choice. The server actually loads it on the next request."""
+        config.save(replace(config.load(), name=name))
+        client.reset()  # next request picks up the new config
+        self.query_one(ModelBar).refresh_state()
+        return f"model switched to: {name} (loads on the next message — may take a while)"
+
     def _handle_command(self, text: str) -> str:
         """Handle a /command typed into the chat input; returns the reply text."""
         parts = text.split()
@@ -105,17 +118,22 @@ class AhaCodeApp(App):
             cfg = config.load()
             if not args:
                 return f"model: {cfg.name}\nendpoint: {cfg.base_url}"
-            config.save(replace(cfg, name=args[0]))
-            client.reset()  # next request picks up the new config
-            return f"model switched to: {args[0]}"
+            return self._switch_model(args[0])
         if cmd == "/url":
             cfg = config.load()
             if not args:
                 return f"endpoint: {cfg.base_url}"
             config.save(replace(cfg, base_url=args[0]))
             client.reset()
+            bar = self.query_one(ModelBar)
+            bar.refresh_state()
+            bar.load_models()  # a new endpoint offers a new model list
             return f"endpoint switched to: {args[0]}"
         return f"unknown command: {cmd} — try /help"
+
+    @on(ModelBar.ModelChosen)
+    async def model_chosen(self, event: ModelBar.ModelChosen) -> None:
+        await self._say_system(self._switch_model(event.name))
 
     @on(ResponseComplete)
     def response_complete(self, event: ResponseComplete) -> None:

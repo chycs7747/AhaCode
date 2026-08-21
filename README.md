@@ -35,8 +35,9 @@ live into a separate, dimmed bubble as it thinks.
 - **Persistent sessions** — every message is appended to a plain-text JSONL
   file under `sessions/` in the project root; the latest session is restored
   on startup. Your history is always `cat`-able.
-- **In-chat commands** — switch model or endpoint with `/model` and `/url`
-  without leaving the conversation; changes persist to the config file.
+- **Model picker & status bar** — the bar under the prompt shows the current
+  endpoint and a dropdown of models fetched from the server's `/v1/models`;
+  pick one and it persists. `/model` and `/url` do the same from the keyboard.
 - **Smart auto-scroll** — follows the stream only while you are at the bottom;
   scrolling up to read is never interrupted.
 
@@ -77,7 +78,7 @@ and are not recorded in your session.
 | Command | Effect |
 |---|---|
 | `/model` | Show the current model and endpoint |
-| `/model <name>` | Switch model (persisted to `config.toml`) |
+| `/model <name>` | Switch model (persisted to `config.toml`; the dropdown under the prompt does the same) |
 | `/url <base_url>` | Switch endpoint (persisted to `config.toml`) |
 | `/help` | List available commands |
 
@@ -106,7 +107,8 @@ ahacode/
 ├── storage.py        # JSONL persistence (./sessions/)
 ├── ahacode.tcss      # styles (no inline CSS)
 └── widgets/
-    └── chatbox.py    # a single chat bubble
+    ├── chatbox.py    # a single chat bubble
+    └── model_bar.py  # endpoint display + model dropdown (fed by /v1/models)
 ```
 
 Design rules the codebase sticks to:

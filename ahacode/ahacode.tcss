@@ -3,8 +3,9 @@
     padding: 1 2;
 }
 
-#prompt {
+#bottom {
     dock: bottom;
+    height: auto;
 }
 
 Chatbox {
@@ -30,4 +31,20 @@ Chatbox {
 .chatbox--system {
     color: $text-muted;   /* command replies — informational, not conversation */
     border-left: thick $warning;
+}
+
+ModelBar {
+    height: 3;
+    padding: 0 1;
+}
+
+ModelBar #endpoint {
+    width: 1fr;
+    height: 3;
+    content-align: left middle;
+    color: $text-muted;
+}
+
+ModelBar #model-select {
+    width: 28;
 }
