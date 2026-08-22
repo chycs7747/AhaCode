@@ -1,3 +1,4 @@
+import re
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -11,7 +12,7 @@ from textual.widgets import Input
 from textual.worker import get_current_worker
 
 from ahacode import agent, client, config, storage, tools
-from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolResult, Usage
+from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage
 from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
@@ -26,6 +27,40 @@ PLAN_SYSTEM_PROMPT = (
     "investigate with the read tool, then call todo_write to lay out a clear, "
     "step-by-step plan for the user to review. Do not carry out the plan."
 )
+
+_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}
+
+
+def _tool_unescape(s: str) -> str:
+    """Decode a (possibly incomplete) JSON string value, escape by escape."""
+    out, i = [], 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and i + 1 < len(s):
+            out.append(_ESCAPES.get(s[i + 1], s[i + 1]))
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _render_tool_stream(name: str, args: str) -> str:
+    """Live label for a streaming tool call whose args JSON may be incomplete.
+
+    write is shown as a path header + streamed content (the roo trick: pull known
+    fields out early); every other tool shows its raw accumulating args.
+    """
+    if name == "write":
+        m = re.search(r'"path"\s*:\s*"((?:[^"\\]|\\.)*)"', args)
+        path = _tool_unescape(m.group(1)) if m else "…"
+        body = ""
+        cm = re.search(r'"content"\s*:\s*"', args)
+        if cm:
+            tail = re.sub(r'"\s*}?\s*$', "", args[cm.end():])
+            body = _tool_unescape(tail)
+        return f"🔧 write · {path}\n{body}"
+    return f"🔧 {name}  {args}"
 
 
 class AhaCodeApp(App):
@@ -246,7 +281,7 @@ class AhaCodeApp(App):
         self._status("")
 
     async def _render_event(
-        self, event, boxes: dict[str, Chatbox | None], container: VerticalScroll
+        self, event, boxes: dict, container: VerticalScroll
     ) -> None:
         """Main-thread renderer: mount/append bubbles as the loop emits events.
 
@@ -267,12 +302,34 @@ class AhaCodeApp(App):
                 await container.mount(boxes["answer"])
             boxes["answer"].append_chunk(event.text)
             self._status("● generating…  (esc to stop)")
+        elif isinstance(event, ToolCallDelta):
+            if event.name == "todo_write":
+                return  # todo_write shows in the panel on its final call, not a bubble
+            boxes["thinking"] = boxes["answer"] = None
+            buf = boxes["tool_buf"].get(event.index, "") + event.fragment
+            boxes["tool_buf"][event.index] = buf
+            box = boxes["tool"].get(event.index)
+            if box is None:
+                box = Chatbox("", role="tool-call")
+                await container.mount(box)
+                boxes["tool"][event.index] = box
+            box._content = _render_tool_stream(event.name, buf)
+            box.update(box._content)
+            verb = "writing" if event.name == "write" else f"running {event.name}"
+            self._status(f"● {verb}…  (esc to stop)")
         elif isinstance(event, ToolCall):
             boxes["thinking"] = boxes["answer"] = None  # next turn opens fresh bubbles
             if event.name == "todo_write":  # goes to the pinned panel, not a bubble
                 self.query_one(TodoPanel).update_todos(event.arguments.get("items", []))
+                boxes["tool"].clear()
+                boxes["tool_buf"].clear()
                 self._status("● planning…  (esc to stop)")
                 return
+            if boxes["tool"]:  # already rendered live via ToolCallDelta
+                boxes["tool"].clear()
+                boxes["tool_buf"].clear()
+                return
+            # Fallback when no deltas streamed (e.g. offline fakes in tests).
             args = ", ".join(f"{k}={v!r}" for k, v in event.arguments.items())
             await container.mount(Chatbox(f"🔧 {event.name}({args})", role="tool-call"))
             self._status(f"● running {event.name}…  (esc to stop)")
@@ -302,7 +359,7 @@ class AhaCodeApp(App):
         worker = get_current_worker()
         container = self.query_one("#chat-container", VerticalScroll)
         # Current turn's live bubbles; _render_event fills these in on the main thread.
-        boxes: dict[str, Chatbox | None] = {"thinking": None, "answer": None}
+        boxes: dict = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}}
 
         stats = {"prompt": 0, "completion": 0, "t_start": time.monotonic(), "t_first": None}
 

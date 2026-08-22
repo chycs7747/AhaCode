@@ -5,7 +5,7 @@ from collections.abc import Iterable, Iterator
 from openai import OpenAI
 
 from ahacode import config
-from ahacode.events import Event, TextDelta, ThinkingDelta, ToolCall, Usage
+from ahacode.events import Event, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, Usage
 
 # The UI never sees provider-specific shapes: this module converts them into the
 # canonical events in events.py. A plain turn emits TextDelta / ThinkingDelta;
@@ -75,8 +75,12 @@ def _iter_events(chunks: Iterable) -> Iterator[Event]:
             fn = getattr(frag, "function", None)
             if fn and fn.name:
                 slot["name"] = fn.name
-            if fn and fn.arguments:
-                slot["args"] += fn.arguments
+            piece = fn.arguments if (fn and fn.arguments) else ""
+            if piece:
+                slot["args"] += piece
+            # Live fragment for the UI (kilocode-style delta); the final parsed
+            # ToolCall is still emitted after the stream for the loop to execute.
+            yield ToolCallDelta(index=frag.index, name=slot["name"], fragment=piece)
 
     # A "length" finish means the model was cut off at the token limit, so any
     # tool call it was mid-way through emitting is half-built and unsafe to run

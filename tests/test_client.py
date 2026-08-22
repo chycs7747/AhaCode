@@ -47,7 +47,8 @@ def test_tool_call_reassembled_across_fragments():
         _chunk(_delta(tool_calls=[_frag(0, arguments="ahacode/app.py")])),
         _chunk(_delta(tool_calls=[_frag(0, arguments='"}')]), finish_reason="tool_calls"),
     ]
-    assert list(client._iter_events(chunks)) == [
+    finals = [e for e in client._iter_events(chunks) if isinstance(e, ToolCall)]
+    assert finals == [
         ToolCall(id="call_1", name="read", arguments={"path": "ahacode/app.py"})
     ]
 
@@ -58,7 +59,8 @@ def test_two_tool_calls_by_index():
         _chunk(_delta(tool_calls=[_frag(1, id="b", name="bash", arguments='{"command":"ls"}')]),
                finish_reason="tool_calls"),
     ]
-    assert list(client._iter_events(chunks)) == [
+    finals = [e for e in client._iter_events(chunks) if isinstance(e, ToolCall)]
+    assert finals == [
         ToolCall(id="a", name="read", arguments={"path": "x"}),
         ToolCall(id="b", name="bash", arguments={"command": "ls"}),
     ]
@@ -90,3 +92,18 @@ def test_usage_trailer_becomes_a_usage_event():
     assert TextDelta("hi") in events
     u = next(e for e in events if isinstance(e, Usage))
     assert (u.prompt_tokens, u.completion_tokens, u.total_tokens) == (12, 7, 19)
+
+
+def test_tool_call_streams_deltas_then_final():
+    from ahacode.events import ToolCall, ToolCallDelta
+    chunks = [
+        _chunk(_delta(tool_calls=[_frag(0, id="c1", name="write", arguments='{"path": "')])),
+        _chunk(_delta(tool_calls=[_frag(0, arguments='a.py", "content": "x')])),
+        _chunk(_delta(tool_calls=[_frag(0, arguments='=1"}')]), finish_reason="tool_calls"),
+    ]
+    events = list(client._iter_events(chunks))
+    deltas = [e for e in events if isinstance(e, ToolCallDelta)]
+    assert deltas and all(d.name == "write" for d in deltas)          # name known from first frag
+    assert "".join(d.fragment for d in deltas) == '{"path": "a.py", "content": "x=1"}'
+    final = [e for e in events if isinstance(e, ToolCall)]
+    assert len(final) == 1 and final[0].arguments == {"path": "a.py", "content": "x=1"}

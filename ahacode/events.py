@@ -25,6 +25,16 @@ class TextDelta:
 
 
 @dataclass
+class ToolCallDelta:
+    """A streamed fragment of a tool call, for live display (append model,
+    like TextDelta). The final parsed ToolCall still follows for execution."""
+
+    index: int
+    name: str
+    fragment: str
+
+
+@dataclass
 class ToolCall:
     """A completed tool call the model wants run.
 
@@ -60,4 +70,4 @@ class Usage:
 
 # The union every consumer switches on. isinstance(event, TextDelta) is the
 # Python equivalent of matching on a discriminated-union `type` tag.
-Event = ThinkingDelta | TextDelta | ToolCall | ToolResult | Usage
+Event = ThinkingDelta | TextDelta | ToolCallDelta | ToolCall | ToolResult | Usage

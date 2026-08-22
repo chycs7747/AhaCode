@@ -546,3 +546,35 @@ async def test_bash_approval_via_button_click(monkeypatch):
         assert results and "hi" in results[-1]._content
 
     assert app.session.messages[2]["content"] == "hi"
+
+
+@pytest.mark.asyncio
+async def test_write_streams_into_one_bubble(monkeypatch, tmp_path):
+    """Streamed ToolCallDeltas fill a single write bubble (path header + content);
+    the final ToolCall doesn't add a second bubble."""
+    import json
+    from ahacode.events import ToolCall, ToolCallDelta
+
+    target = tmp_path / "out.py"
+    content = "x = 1\ny = 2"
+    args_json = json.dumps({"path": str(target), "content": content})
+    frags = [args_json[i:i + 7] for i in range(0, len(args_json), 7)]
+
+    turn1 = [ToolCallDelta(index=0, name="write", fragment=f) for f in frags]
+    turn1.append(ToolCall(id="1", name="write", arguments={"path": str(target), "content": content}))
+    turns = iter([turn1, [TextDelta("done")]])
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter(next(turns)))
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.auto_approve = True  # write needs approval; skip the modal for the test
+        app.query_one("#prompt", Input).value = "write it"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        bubbles = [b for b in app.query(Chatbox) if b.has_class("chatbox--tool-call")]
+        assert len(bubbles) == 1                       # not duplicated by the final ToolCall
+        assert "write · " in bubbles[0]._content       # clean header, not raw JSON
+        assert "x = 1" in bubbles[0]._content          # streamed content, not a label dump
+
+    assert target.read_text(encoding="utf-8") == content  # and it actually wrote
