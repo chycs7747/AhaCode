@@ -521,3 +521,28 @@ async def test_todo_panel_marks_complete_when_all_done(monkeypatch):
         panel = app.query_one(TodoPanel)
         assert panel.has_class("todo-panel--done")
         assert "complete" in panel._content
+
+
+@pytest.mark.asyncio
+async def test_bash_approval_via_button_click(monkeypatch):
+    """The Run button (not just the y key) approves and runs the command."""
+    from ahacode.events import ToolCall
+
+    turns = iter([
+        [ToolCall(id="1", name="bash", arguments={"command": "echo hi"})],
+        [TextDelta("done")],
+    ])
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter(next(turns)))
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", Input).value = "run echo hi"
+        await pilot.press("enter")
+        await _wait_for_modal(pilot, app)
+        await pilot.click("#approve-btn")  # click, don't press a key
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        results = [b for b in app.query(Chatbox) if b.has_class("chatbox--tool-result")]
+        assert results and "hi" in results[-1]._content
+
+    assert app.session.messages[2]["content"] == "hi"

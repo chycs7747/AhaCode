@@ -79,13 +79,14 @@ ModelBar #model-select {
 }
 
 ApprovalModal {
-    align: center middle;   /* center the dialog; ModalScreen dims the rest */
+    align: center bottom;   /* rise from the bottom, near the prompt; ModalScreen dims the rest */
 }
 
 #approval-box {
-    width: 64;
+    width: 72;
     height: auto;
     padding: 1 2;
+    margin-bottom: 1;       /* float just above the very bottom edge */
     border: thick $warning;
     background: $surface;
 }
@@ -100,8 +101,14 @@ ApprovalModal {
     margin: 1 0;
 }
 
-#approval-hint {
-    color: $text-muted;
+#approval-buttons {
+    height: auto;
+    align-horizontal: right;   /* buttons sit at the bottom-right of the dialog */
+}
+
+#approval-buttons Button {
+    margin-left: 2;
+    min-width: 12;
 }
 
 .chatbox--plan {
