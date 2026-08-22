@@ -8,6 +8,16 @@
     height: auto;
 }
 
+/* Multi-line prompt (TextArea). Taller than a one-line Input and grows with the
+   text up to a cap; rounded to match the other boxes. */
+#prompt {
+    height: auto;
+    min-height: 4;
+    max-height: 12;
+    border: round $primary-darken-2;
+    background: $surface;
+}
+
 Chatbox {
     height: auto;     /* only as tall as its content */
     padding: 0 1;

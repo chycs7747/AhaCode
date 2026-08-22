@@ -1,12 +1,13 @@
 import time
 
 import pytest
-from textual.widgets import Checkbox, Input, Select
+from textual.widgets import Checkbox, Select
 
 from ahacode import client, config, storage
 from ahacode.app import AhaCodeApp
 from ahacode.events import TextDelta
 from ahacode.widgets.chatbox import Chatbox
+from ahacode.widgets.prompt_input import PromptInput
 
 
 @pytest.fixture(autouse=True)
@@ -137,7 +138,7 @@ async def test_assistant_answer_renders_as_markdown(monkeypatch):
     monkeypatch.setattr(client, "stream_chat", with_code)
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        app.query_one("#prompt", Input).value = "show code"
+        app.query_one("#prompt", PromptInput).text = "show code"
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -145,6 +146,25 @@ async def test_assistant_answer_renders_as_markdown(monkeypatch):
         assert "```python" in answer._content            # raw markdown kept
         assert isinstance(answer.render(), RichMarkdown)  # rendered as markdown
         assert app._exception is None
+
+
+@pytest.mark.asyncio
+async def test_prompt_enter_sends_and_shift_enter_newlines(fake_llm):
+    """Enter submits the prompt; Shift+Enter inserts a newline (multi-line input).
+    The multi-line text becomes one user turn and the box clears on send."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        prompt = app.query_one("#prompt", PromptInput)
+        await pilot.press("a")
+        await pilot.press("shift+enter")     # newline, stays in the box
+        await pilot.press("b")
+        assert prompt.text == "a\nb"
+        await pilot.press("enter")            # now send
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert prompt.text == ""              # cleared on submit
+        users = [b for b in app.query(Chatbox) if b.has_class("chatbox--user")]
+        assert users and users[-1]._content == "a\nb"
 
 
 @pytest.mark.asyncio
@@ -212,7 +232,7 @@ async def test_slash_command_is_not_a_chat_message():
     """/commands answer locally: no LLM call, nothing recorded in the session."""
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        app.query_one("#prompt", Input).value = "/help"
+        app.query_one("#prompt", PromptInput).text = "/help"
         await pilot.press("enter")
         await pilot.pause()
         boxes = list(app.query(Chatbox))
@@ -225,7 +245,7 @@ async def test_slash_command_is_not_a_chat_message():
 async def test_model_command_switches_and_persists():
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        app.query_one("#prompt", Input).value = "/model my-new-model"
+        app.query_one("#prompt", PromptInput).text = "/model my-new-model"
         await pilot.press("enter")
         await pilot.pause()
         boxes = list(app.query(Chatbox))
@@ -237,7 +257,7 @@ async def test_model_command_switches_and_persists():
 async def test_unknown_command_suggests_help():
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        app.query_one("#prompt", Input).value = "/nonsense"
+        app.query_one("#prompt", PromptInput).text = "/nonsense"
         await pilot.press("enter")
         await pilot.pause()
         assert "/help" in list(app.query(Chatbox))[0]._content
@@ -283,7 +303,7 @@ async def test_slash_model_updates_the_bar():
     app = AhaCodeApp()
     async with app.run_test() as pilot:
         await app.workers.wait_for_complete()
-        app.query_one("#prompt", Input).value = "/model custom-model"
+        app.query_one("#prompt", PromptInput).text = "/model custom-model"
         await pilot.press("enter")
         await pilot.pause()
         assert app.query_one("#model-select", Select).value == "custom-model"
@@ -397,7 +417,7 @@ async def test_bash_prompts_and_runs_on_approval(monkeypatch):
 
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        app.query_one("#prompt", Input).value = "run echo hi"
+        app.query_one("#prompt", PromptInput).text = "run echo hi"
         await pilot.press("enter")
         await _wait_for_modal(pilot, app)
         await pilot.press("y")  # approve
@@ -422,7 +442,7 @@ async def test_bash_skipped_on_denial(monkeypatch):
 
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        app.query_one("#prompt", Input).value = "run echo hi"
+        app.query_one("#prompt", PromptInput).text = "run echo hi"
         await pilot.press("enter")
         await _wait_for_modal(pilot, app)
         await pilot.press("n")  # deny
@@ -452,7 +472,7 @@ async def test_plan_mode_restricts_tools_and_injects_system_prompt(monkeypatch):
         app.query_one("#mode-select", Select).value = "plan"  # toggle via the bar
         await pilot.pause()
         assert app.mode == "plan"
-        app.query_one("#prompt", Input).value = "fix the bug"
+        app.query_one("#prompt", PromptInput).text = "fix the bug"
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -477,7 +497,7 @@ async def test_act_mode_exposes_all_tools(monkeypatch):
 
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        app.query_one("#prompt", Input).value = "hello"
+        app.query_one("#prompt", PromptInput).text = "hello"
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -498,7 +518,7 @@ async def test_escape_stops_the_current_turn(monkeypatch):
 
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        app.query_one("#prompt", Input).value = "go"
+        app.query_one("#prompt", PromptInput).text = "go"
         await pilot.press("enter")
         await pilot.pause(0.1)       # let the stream start
         await pilot.press("escape")  # stop it
@@ -521,7 +541,7 @@ async def test_status_shows_token_stats_after_turn(monkeypatch):
 
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        app.query_one("#prompt", Input).value = "hi"
+        app.query_one("#prompt", PromptInput).text = "hi"
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -548,7 +568,7 @@ async def test_auto_approve_runs_bash_without_a_modal(monkeypatch):
         app.query_one("#auto-approve", Checkbox).value = True  # toggle on
         await pilot.pause()
         assert app.auto_approve is True
-        app.query_one("#prompt", Input).value = "run echo hi"
+        app.query_one("#prompt", PromptInput).text = "run echo hi"
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -576,7 +596,7 @@ async def test_todo_write_updates_pinned_panel_not_a_bubble(monkeypatch):
 
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        app.query_one("#prompt", Input).value = "plan it"
+        app.query_one("#prompt", PromptInput).text = "plan it"
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -602,7 +622,7 @@ async def test_todo_panel_marks_complete_when_all_done(monkeypatch):
 
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        app.query_one("#prompt", Input).value = "go"
+        app.query_one("#prompt", PromptInput).text = "go"
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -624,7 +644,7 @@ async def test_bash_approval_via_button_click(monkeypatch):
 
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        app.query_one("#prompt", Input).value = "run echo hi"
+        app.query_one("#prompt", PromptInput).text = "run echo hi"
         await pilot.press("enter")
         await _wait_for_modal(pilot, app)
         await pilot.click("#approve-btn")  # click, don't press a key
@@ -656,7 +676,7 @@ async def test_write_streams_into_one_bubble(monkeypatch, tmp_path):
     app = AhaCodeApp()
     async with app.run_test() as pilot:
         app.auto_approve = True  # write needs approval; skip the modal for the test
-        app.query_one("#prompt", Input).value = "write it"
+        app.query_one("#prompt", PromptInput).text = "write it"
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -686,7 +706,7 @@ async def test_edit_renders_colored_diff(monkeypatch, tmp_path):
     app = AhaCodeApp()
     async with app.run_test() as pilot:
         app.auto_approve = True
-        app.query_one("#prompt", Input).value = "edit it"
+        app.query_one("#prompt", PromptInput).text = "edit it"
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -726,7 +746,7 @@ async def test_new_command_starts_a_fresh_session(fake_llm):
         first = app.session_path
         assert len(app.session.messages) == 2
 
-        app.query_one("#prompt", Input).value = "/new"
+        app.query_one("#prompt", PromptInput).text = "/new"
         await pilot.press("enter")
         await pilot.pause()
 
@@ -750,12 +770,12 @@ async def test_sessions_picker_switches_back(fake_llm):
         await pilot.pause()
         s1 = app.session_path
 
-        app.query_one("#prompt", Input).value = "/new"
+        app.query_one("#prompt", PromptInput).text = "/new"
         await pilot.press("enter")
         await pilot.pause()
         assert app.session_path != s1
 
-        app.query_one("#prompt", Input).value = "/sessions"
+        app.query_one("#prompt", PromptInput).text = "/sessions"
         await pilot.press("enter")
         await pilot.pause()
         assert isinstance(app.screen, SessionPicker)

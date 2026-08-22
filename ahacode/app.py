@@ -9,7 +9,6 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
-from textual.widgets import Input
 from textual.worker import get_current_worker
 from rich.text import Text
 from rich.theme import Theme
@@ -19,6 +18,7 @@ from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, To
 from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
+from ahacode.widgets.prompt_input import PromptInput
 from ahacode.widgets.session_picker import SessionPicker
 from ahacode.widgets.thinking import ThinkingBlock
 from ahacode.widgets.tool_result import ToolResultBlock
@@ -184,7 +184,7 @@ class AhaCodeApp(App):
         with VerticalScroll(id="chat-container") as container:
             container.can_focus = False  # keep initial focus on the input
         with Vertical(id="bottom"):
-            yield Input(placeholder="Type a message and press Enter...", id="prompt")
+            yield PromptInput(id="prompt")  # multi-line: Enter sends, Shift+Enter newline
             yield ModelBar()
 
     async def on_mount(self) -> None:
@@ -255,12 +255,12 @@ class AhaCodeApp(App):
         await container.mount(Chatbox(text, role="system"))
         container.scroll_end(animate=False)
 
-    @on(Input.Submitted)
-    async def user_submitted(self, event: Input.Submitted) -> None:
-        text = event.value.strip()
+    @on(PromptInput.Submitted)
+    async def user_submitted(self, event: PromptInput.Submitted) -> None:
+        text = event.text.strip()
         if not text:
             return
-        event.input.clear()
+        # PromptInput clears itself on submit.
 
         if text.startswith("/"):
             # Slash commands configure the app; they never reach the LLM
