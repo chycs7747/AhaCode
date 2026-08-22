@@ -150,8 +150,16 @@ TodoPanel.todo-panel--done {
     color: $success;
 }
 
+/* edit diff as a green card: rounded border, path in the title, +N −M chip in the
+   subtitle (Claude Code / the design-artifact look). Line colours come from the
+   Rich diff text itself. */
 .chatbox--tool-diff {
-    border-left: thick $primary;   /* colours come from the Rich diff text itself */
+    border: round $success;
+    border-title-color: $success;
+    border-title-style: bold;
+    border-subtitle-color: $success;
+    padding: 0 1;
+    margin-bottom: 1;
 }
 
 SessionPicker {

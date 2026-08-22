@@ -15,8 +15,14 @@ from rich.console import Group, RenderableType
 from rich.syntax import Syntax
 from rich.text import Text
 
-# Diff line colours (GitHub-ish green/red), matching the chat's edit diff.
-_DIFF_STYLE = {"+": "#2ea043", "-": "#f85149", " ": "dim"}
+# Diff line colours (GitHub-ish green/red) + a subtle line background, so added
+# and removed lines read as highlighted rows (like Claude Code's / the artifact's
+# edit diff), not just coloured text.
+_DIFF_STYLE = {
+    "+": "#3fb950 on #0d2818",
+    "-": "#f0665a on #2d1418",
+    " ": "dim",
+}
 
 # Syntax theme for previews — same low-contrast "nord" the chat uses for fences.
 _CODE_THEME = "nord"
@@ -52,16 +58,32 @@ def diff_rows(old: str, new: str) -> list[tuple[str, str]]:
     return rows
 
 
-def edit_diff(path: str, old: str, new: str) -> tuple[Text, str]:
-    """Return (rich_text, plain_text) for an edit's coloured -/+ diff."""
-    header = f"🔧 edit · {path}"
-    text = Text(header + "\n", style="bold")
-    plain = [header]
+def diff_stats(old: str, new: str) -> tuple[int, int]:
+    """(added, removed) line counts for an edit — shown as the card's chip."""
+    rows = diff_rows(old, new)
+    return sum(s == "+" for s, _ in rows), sum(s == "-" for s, _ in rows)
+
+
+def edit_diff_lines(old: str, new: str) -> tuple[Text, str]:
+    """Return (rich_text, plain_text) for just the coloured -/+ diff lines
+    (no path header — the chat card carries that in its border title)."""
+    text = Text()
+    plain: list[str] = []
     for sign, line in diff_rows(old, new):
         prefix = (sign + " ") if sign != " " else "  "
         text.append(prefix + line + "\n", style=_DIFF_STYLE[sign])
         plain.append(prefix + line)
     return text, "\n".join(plain)
+
+
+def edit_diff(path: str, old: str, new: str) -> tuple[Text, str]:
+    """Return (rich_text, plain_text) for an edit's diff with a path header — used
+    by the approval modal (the chat renders the header in the card border instead)."""
+    header = f"🔧 edit · {path}"
+    lines_text, lines_plain = edit_diff_lines(old, new)
+    text = Text(header + "\n", style="bold")
+    text.append(lines_text)
+    return text, header + "\n" + lines_plain
 
 
 def tool_preview(name: str, args: dict) -> RenderableType:

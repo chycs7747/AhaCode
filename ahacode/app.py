@@ -15,7 +15,7 @@ from rich.theme import Theme
 
 from ahacode import agent, client, config, storage, tools
 from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage
-from ahacode.render import edit_diff
+from ahacode.render import diff_stats, edit_diff_lines
 from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
@@ -204,8 +204,14 @@ class AhaCodeApp(App):
         """Clear the chat and remount the current session's messages as bubbles."""
         container = self.query_one("#chat-container", VerticalScroll)
         await container.remove_children()
+        # Map tool_call_id -> tool name so restored tool results can render as the
+        # same foldable ToolResultBlock the live turn produced.
+        names: dict[str, str] = {}
         for msg in self.session.messages:
-            await container.mount(self._bubble_for(msg))
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for c in msg["tool_calls"]:
+                    names[c["id"]] = c["function"]["name"]
+            await container.mount(self._bubble_for(msg, names))
         container.scroll_end(animate=False)
 
     async def _new_session(self) -> None:
@@ -243,20 +249,23 @@ class AhaCodeApp(App):
             self.run_worker(self._switch_session(result), exclusive=False)
 
     @staticmethod
-    def _bubble_for(msg: dict) -> Chatbox:
-        """Turn a stored message (OpenAI roles) into a display bubble.
+    def _bubble_for(msg: dict, names: dict[str, str] | None = None):
+        """Turn a stored message (OpenAI roles) into a display widget.
 
         Handles the tool-calling shapes: an assistant message may carry
         tool_calls with null content, and tool results use the "tool" role.
+        Tool results become the same foldable ToolResultBlock as a live turn
+        (`names` maps tool_call_id -> tool name so the header is right).
         """
         role = msg["role"]
         content = msg.get("content") or ""
         if role == "assistant" and msg.get("tool_calls"):
-            names = ", ".join(c["function"]["name"] for c in msg["tool_calls"])
-            content = f"🔧 {names}\n{content}".rstrip()
+            tool_names = ", ".join(c["function"]["name"] for c in msg["tool_calls"])
+            content = f"🔧 {tool_names}\n{content}".rstrip()
             return Chatbox(content, role="tool-call")
         if role == "tool":
-            return Chatbox(content, role="tool-result")
+            name = (names or {}).get(msg.get("tool_call_id"), "tool")
+            return ToolResultBlock(name, content)
         # Restored assistant answers render as Markdown too (see _render_event).
         return Chatbox(content, role=role, markdown=(role == "assistant"))
 
@@ -481,11 +490,16 @@ class AhaCodeApp(App):
                 boxes["tool_buf"].clear()
                 self._status("● planning…  (esc to stop)")
                 return
-            if event.name == "edit":  # coloured -/+ diff from old_string/new_string
+            if event.name == "edit":  # green diff card: header + count chip + -/+ lines
                 a = event.arguments
-                text, plain = edit_diff(a.get("path", "?"), a.get("old_string", ""), a.get("new_string", ""))
+                path = a.get("path", "?")
+                old, new = a.get("old_string", ""), a.get("new_string", "")
+                text, plain = edit_diff_lines(old, new)
+                added, removed = diff_stats(old, new)
                 box = Chatbox("", role="tool-diff")
                 box.set_rich(text, plain)
+                box.border_title = f"✏ edit · {path}"
+                box.border_subtitle = f"+{added} −{removed}"
                 await container.mount(box)
                 boxes["tool"].clear()
                 boxes["tool_buf"].clear()

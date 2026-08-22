@@ -43,7 +43,12 @@ class ModelBar(Horizontal):
             allow_blank=False,
             id="mode-select",
         )
-        yield Select([], prompt="model", id="model-select")
+        # Seed with the configured model + allow_blank=False so the dropdown never
+        # shows an empty "model" placeholder entry (refresh_state fills the rest).
+        cfg = config.load()
+        yield Select(
+            [(cfg.name, cfg.name)], value=cfg.name, allow_blank=False, id="model-select"
+        )
         yield Checkbox("auto-approve", value=False, id="auto-approve")
         yield Static(id="status")  # live status / token stats (flexible middle)
         # Send button: a click alternative to Enter; the app flips it to "Stop"
@@ -63,11 +68,13 @@ class ModelBar(Horizontal):
         cfg = config.load()
         if names is not None:
             self._names = list(names)
-        if cfg.name not in self._names:  # the configured model is always selectable
-            self._names = [cfg.name, *self._names]
+        # cfg.name always first: set_options (allow_blank=False) transiently selects
+        # the first option, so keeping the current model there avoids a spurious
+        # Select.Changed that would look like the user picked another model.
+        self._names = [cfg.name, *[n for n in self._names if n != cfg.name]]
         select = self.query_one("#model-select", Select)
-        select.set_options([(n, n) for n in self._names])  # resets the selection...
-        select.value = cfg.name  # ...so re-select the current model
+        select.set_options([(n, n) for n in self._names])
+        select.value = cfg.name  # explicit, in case set_options left it elsewhere
 
     @work(thread=True, exit_on_error=False)
     def load_models(self) -> None:

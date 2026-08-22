@@ -261,6 +261,18 @@ async def test_send_button_becomes_stop_while_streaming(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_model_select_has_no_blank_placeholder(fake_llm):
+    """The model picker must not offer an empty 'model' entry (allow_blank=False)."""
+    from textual.widgets import Select
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.query_one("#model-select", Select)._allow_blank is False
+
+
+@pytest.mark.asyncio
 async def test_no_thinking_bubble_when_model_does_not_think(monkeypatch):
     """A model that never thinks mounts no thinking bubble at all (lazy mount)."""
     def text_only(messages, tools=None):
@@ -805,10 +817,13 @@ async def test_edit_renders_colored_diff(monkeypatch, tmp_path):
         await pilot.pause()
         diffs = [b for b in app.query(Chatbox) if b.has_class("chatbox--tool-diff")]
         assert len(diffs) == 1
-        c = diffs[0]._content
+        box = diffs[0]
+        c = box._content
         assert "- " in c and "+ " in c          # deletions AND additions
         assert "swap(a, j)" in c                 # removed line
         assert "a[j], a[j+1]" in c               # added line
+        assert "edit" in str(box.border_title)   # path header in the card title
+        assert "+" in str(box.border_subtitle)   # +N −M count chip
 
     assert "range(len(a) - 1 - i)" in f.read_text(encoding="utf-8")  # change applied
 
