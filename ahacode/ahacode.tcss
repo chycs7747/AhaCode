@@ -146,6 +146,16 @@ ModelBar #auto-approve {
     background: transparent;
 }
 
+/* When auto-approve is on, the ✓ and its label turn green (the check colour); off,
+   the box is empty and the label is default. */
+ModelBar #auto-approve.-on > .toggle--button {
+    color: $success;
+}
+ModelBar #auto-approve.-on > .toggle--label {
+    color: $success;
+    text-style: bold;
+}
+
 TodoPanel {
     dock: top;
     height: auto;
@@ -240,11 +250,15 @@ ToolResultBlock.tool-block--error > CollapsibleTitle {
     text-style: italic;
 }
 
+/* The output sits in a dark "terminal" block (Claude Code's OUT look) so it reads
+   as a distinct pane, not loose text under the header. */
 ToolResultBlock .chatbox--tool-result,
 ToolResultBlock .chatbox--tool-error {
     border-left: none;
     margin: 0;
-    padding: 0;
+    padding: 0 1;
+    background: $background;
+    border: round $primary-darken-3;
 }
 
 /* Top bar: session title (left) + New / Sessions buttons (right). Docked above
@@ -282,5 +296,13 @@ HeaderBar #endpoint {
 ModelBar #send-btn {
     height: 3;
     min-width: 0;
+    padding: 0 3;      /* a bit more breathing room around the label */
     margin-left: 1;
+}
+
+/* Select dropdowns open upward when there's no room below — the composer sits at
+   the bottom, so the menu inflects above the control (Claude Code style) instead
+   of overlapping the bar. */
+ModelBar SelectOverlay {
+    constrain: none inflect;
 }

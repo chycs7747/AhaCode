@@ -4,8 +4,57 @@ from textual import on, work
 from textual.containers import Horizontal
 from textual.message import Message
 from textual.widgets import Button, Checkbox, Select, Static
+from textual.widgets._select import SelectCurrent, SelectOverlay
 
 from ahacode import client, config
+
+
+class Checkmark(Checkbox):
+    """Checkbox that shows a ✓ when on instead of Textual's default X."""
+
+    BUTTON_INNER = "✓"
+
+
+class ToggleSelect(Select):
+    """A Select whose button also *closes* the open menu when clicked again.
+
+    Textual's default double-fires: clicking the button while the menu is open
+    first blurs the overlay (Dismiss → close) and then the button's own Toggle
+    re-opens it, so a second click never closes it. We remember a just-happened
+    lost-focus dismiss and swallow the Toggle that immediately follows it.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._suppress_reopen = False
+
+    @on(SelectOverlay.Dismiss)
+    def _select_overlay_dismiss(self, event: SelectOverlay.Dismiss) -> None:
+        # prevent_default() breaks the MRO dispatch loop before Select's own
+        # handler runs (ToggleSelect is first in the MRO), so ours fully replaces it.
+        event.stop()
+        event.prevent_default()
+        self.expanded = False
+        if event.lost_focus:
+            # A click on the button blurs the overlay first; block the reopen the
+            # button's Toggle would do next. Cleared on the next frame, so the very
+            # next click (a fresh open) and click-away both still work.
+            self._suppress_reopen = True
+            self.call_after_refresh(self._allow_reopen)
+        else:
+            self.focus()
+
+    def _allow_reopen(self) -> None:
+        self._suppress_reopen = False
+
+    @on(SelectCurrent.Toggle)
+    def _select_current_toggle(self, event: SelectCurrent.Toggle) -> None:
+        event.stop()
+        event.prevent_default()  # replace Select's base toggle (see above)
+        if self._suppress_reopen:
+            self._suppress_reopen = False
+            return  # the blur already closed it — don't reopen
+        self.expanded = not self.expanded
 
 
 class ModelBar(Horizontal):
@@ -34,23 +83,22 @@ class ModelBar(Horizontal):
         self._names: list[str] = []
 
     def compose(self):
-        # Composer footer: settings on the left, live status in the flexible
-        # middle, the send/stop action on the right (Claude Code's shape). The
-        # endpoint moved to the HeaderBar — it's connection identity, not a control.
-        yield Select(
+        # Composer footer: model on the left, live status in the flexible middle,
+        # and the mode + auto-approve controls next to Send on the right (Claude
+        # Code's shape — the "what happens when I send" cluster is together). The
+        # endpoint moved to the HeaderBar; it's connection identity, not a control.
+        cfg = config.load()  # seed the model + allow_blank=False → no empty entry
+        yield ToggleSelect(
+            [(cfg.name, cfg.name)], value=cfg.name, allow_blank=False, id="model-select"
+        )
+        yield Static(id="status")  # live status / token stats (flexible middle)
+        yield ToggleSelect(
             [("act", "act"), ("plan", "plan")],
             value="act",
             allow_blank=False,
             id="mode-select",
         )
-        # Seed with the configured model + allow_blank=False so the dropdown never
-        # shows an empty "model" placeholder entry (refresh_state fills the rest).
-        cfg = config.load()
-        yield Select(
-            [(cfg.name, cfg.name)], value=cfg.name, allow_blank=False, id="model-select"
-        )
-        yield Checkbox("auto-approve", value=False, id="auto-approve")
-        yield Static(id="status")  # live status / token stats (flexible middle)
+        yield Checkmark("auto-approve", value=False, id="auto-approve")
         # Send button: a click alternative to Enter; the app flips it to "Stop"
         # while a turn is streaming. Button.Pressed bubbles to the app.
         yield Button("↑ Send", id="send-btn", variant="primary")

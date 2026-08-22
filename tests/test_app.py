@@ -102,6 +102,31 @@ async def test_assistant_reply_grouped_in_a_turn_rail(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_restored_bash_is_one_card_titled_with_the_command(fake_llm):
+    """A reloaded session shows bash as one card titled with the command — no raw
+    tool-call bubble and no bare '58 lines' with the command missing."""
+    from ahacode.widgets.tool_result import ToolResultBlock
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.messages = [
+            {"role": "user", "content": "check status"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "bash", "arguments": '{"command": "git status --short"}'},
+            }]},
+            {"role": "tool", "tool_call_id": "c1",
+             "content": "\n".join(f"line {i}" for i in range(20))},
+            {"role": "assistant", "content": "done"},
+        ]
+        await app._render_history()
+        await pilot.pause()
+        assert [b for b in app.query(Chatbox) if b.has_class("chatbox--tool-call")] == []
+        cards = list(app.query(ToolResultBlock))
+        assert any("git status --short" in c.title for c in cards)  # command shown, not "20 lines"
+
+
+@pytest.mark.asyncio
 async def test_bracketed_content_renders_without_markup_crash(fake_llm):
     """Regression: model/tool text with '[' — file dumps (list[dict], arr[0]),
     JSON, markdown links — must render literally, not be parsed as Rich markup.
@@ -289,6 +314,35 @@ async def test_model_select_has_no_blank_placeholder(fake_llm):
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app.query_one("#model-select", Select)._allow_blank is False
+
+
+@pytest.mark.asyncio
+async def test_dropdown_button_toggles_open_and_closed(fake_llm):
+    """Clicking the dropdown button again closes the open menu (Textual's default
+    would reopen it). Driven via the internal messages since Pilot can't click an
+    open overlay reliably."""
+    from textual.widgets import Select
+    from textual.widgets._select import SelectCurrent, SelectOverlay
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        s = app.query_one("#model-select", Select)
+
+        async def settle():
+            for _ in range(3):
+                await pilot.pause()
+
+        s.post_message(SelectCurrent.Toggle())
+        await settle()
+        assert s.expanded is True  # opened
+        # a click on the button while open = overlay blur (Dismiss) then Toggle
+        s.post_message(SelectOverlay.Dismiss(lost_focus=True))
+        s.post_message(SelectCurrent.Toggle())
+        await settle()
+        assert s.expanded is False  # closed, not reopened
+        s.post_message(SelectCurrent.Toggle())
+        await settle()
+        assert s.expanded is True  # a later click reopens normally
 
 
 @pytest.mark.asyncio

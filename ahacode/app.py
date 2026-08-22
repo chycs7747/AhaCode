@@ -1,3 +1,4 @@
+import json
 import re
 import threading
 import time
@@ -208,26 +209,44 @@ class AhaCodeApp(App):
         self._turn = None
 
     async def _render_history(self) -> None:
-        """Clear the chat and remount the current session's messages as bubbles."""
+        """Clear the chat and remount the session's messages, matching the live
+        rendering: each assistant turn under a .turn rail, bash/read as one titled
+        card (command/path in the title), edit as a diff card — no raw tool-call
+        bubbles, so a reloaded session looks exactly like the turn that made it."""
         container = self.query_one("#chat-container", VerticalScroll)
         await container.remove_children()
-        # Map tool_call_id -> tool name so restored tool results can render as the
-        # same foldable ToolResultBlock the live turn produced.
-        names: dict[str, str] = {}
-        turn = None  # current assistant-turn rail container
+        call_args: dict[str, dict] = {}   # tool_call_id -> parsed arguments
+        call_names: dict[str, str] = {}   # tool_call_id -> tool name
+        turn = None
         for msg in self.session.messages:
             role = msg["role"]
-            if role == "assistant" and msg.get("tool_calls"):
-                for c in msg["tool_calls"]:
-                    names[c["id"]] = c["function"]["name"]
+            content = msg.get("content") or ""
             if role == "user":
                 turn = None  # a user message closes the previous assistant turn
-                await container.mount(self._bubble_for(msg, names))
-            else:  # assistant / tool -> grouped under one .turn rail
-                if turn is None:
-                    turn = Vertical(classes="turn")
-                    await container.mount(turn)
-                await turn.mount(self._bubble_for(msg, names))
+                await container.mount(Chatbox(content, role="user"))
+                continue
+            if turn is None:  # assistant / tool -> one rail
+                turn = Vertical(classes="turn")
+                await container.mount(turn)
+            if role == "assistant":
+                if content:  # the model's text answer (tool calls become cards)
+                    await turn.mount(Chatbox(content, role="assistant", markdown=True))
+                for c in msg.get("tool_calls") or []:
+                    cid, name = c["id"], c["function"]["name"]
+                    call_names[cid] = name
+                    try:
+                        call_args[cid] = json.loads(c["function"]["arguments"])
+                    except (json.JSONDecodeError, TypeError):
+                        call_args[cid] = {}
+                    if name == "edit":  # its result is skipped below
+                        await turn.mount(self._edit_card(call_args[cid]))
+            elif role == "tool":
+                cid = msg.get("tool_call_id")
+                name = call_names.get(cid, "tool")
+                if name == "edit":
+                    continue  # already shown as the diff card
+                summary = tool_summary(name, call_args.get(cid, {}))
+                await turn.mount(ToolResultBlock(name, content, summary=summary))
         container.scroll_end(animate=False)
 
     async def _new_session(self) -> None:
@@ -265,25 +284,18 @@ class AhaCodeApp(App):
             self.run_worker(self._switch_session(result), exclusive=False)
 
     @staticmethod
-    def _bubble_for(msg: dict, names: dict[str, str] | None = None):
-        """Turn a stored message (OpenAI roles) into a display widget.
-
-        Handles the tool-calling shapes: an assistant message may carry
-        tool_calls with null content, and tool results use the "tool" role.
-        Tool results become the same foldable ToolResultBlock as a live turn
-        (`names` maps tool_call_id -> tool name so the header is right).
-        """
-        role = msg["role"]
-        content = msg.get("content") or ""
-        if role == "assistant" and msg.get("tool_calls"):
-            tool_names = ", ".join(c["function"]["name"] for c in msg["tool_calls"])
-            content = f"🔧 {tool_names}\n{content}".rstrip()
-            return Chatbox(content, role="tool-call")
-        if role == "tool":
-            name = (names or {}).get(msg.get("tool_call_id"), "tool")
-            return ToolResultBlock(name, content)
-        # Restored assistant answers render as Markdown too (see _render_event).
-        return Chatbox(content, role=role, markdown=(role == "assistant"))
+    def _edit_card(args: dict) -> Chatbox:
+        """Build the green edit-diff card (path title + count chip + -/+ lines) —
+        shared by the live turn and history restore."""
+        path = args.get("path", "?")
+        old, new = args.get("old_string", ""), args.get("new_string", "")
+        text, plain = edit_diff_lines(old, new)
+        added, removed = diff_stats(old, new)
+        box = Chatbox("", role="tool-diff")
+        box.set_rich(text, plain)
+        box.border_title = f"✏ edit · {path}"
+        box.border_subtitle = f"+{added} −{removed}"
+        return box
 
     async def _say_system(self, text: str) -> None:
         """Show an informational bubble (commands, status) — never part of the session."""
@@ -521,17 +533,8 @@ class AhaCodeApp(App):
                 boxes["tool_buf"].clear()
                 self._status("● planning…  (esc to stop)")
                 return
-            if event.name == "edit":  # green diff card: header + count chip + -/+ lines
-                a = event.arguments
-                path = a.get("path", "?")
-                old, new = a.get("old_string", ""), a.get("new_string", "")
-                text, plain = edit_diff_lines(old, new)
-                added, removed = diff_stats(old, new)
-                box = Chatbox("", role="tool-diff")
-                box.set_rich(text, plain)
-                box.border_title = f"✏ edit · {path}"
-                box.border_subtitle = f"+{added} −{removed}"
-                await container.mount(box)
+            if event.name == "edit":  # green diff card (shared with history restore)
+                await container.mount(self._edit_card(event.arguments))
                 boxes["tool"].clear()
                 boxes["tool_buf"].clear()
                 self._status("● editing…  (esc to stop)")
@@ -544,6 +547,8 @@ class AhaCodeApp(App):
         elif isinstance(event, ToolResult):
             if event.name == "todo_write":
                 return  # already reflected in the pinned panel
+            if event.name == "edit" and not event.is_error:
+                return  # a successful edit is already shown as the diff card
             # One foldable card: the command/path in the title (IN), the output in
             # the body (OUT). Long output / errors fold away.
             summary = tool_summary(event.name, boxes.get("call_args", {}).get(event.id, {}))
