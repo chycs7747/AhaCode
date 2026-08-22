@@ -39,6 +39,14 @@ ModelBar {
 }
 
 ModelBar #endpoint {
+    width: auto;
+    height: 3;
+    content-align: left middle;
+    color: $text-muted;
+    margin-right: 1;
+}
+
+ModelBar #status {
     width: 1fr;
     height: 3;
     content-align: left middle;
@@ -52,4 +60,55 @@ ModelBar #model-select {
 .chatbox--error {
     color: $error;
     border-left: thick $error;
+}
+.chatbox--tool-call {
+    color: $text-muted;       /* the model's request to run a tool */
+    border-left: thick $primary;
+    text-style: italic;
+}
+
+.chatbox--tool-result {
+    color: $text-muted;       /* tool output, subordinate to the conversation */
+    border-left: thick $primary-darken-2;
+}
+
+.chatbox--tool-error {
+    color: $error;
+    border-left: thick $error;
+    text-style: italic;
+}
+
+ApprovalModal {
+    align: center middle;   /* center the dialog; ModalScreen dims the rest */
+}
+
+#approval-box {
+    width: 64;
+    height: auto;
+    padding: 1 2;
+    border: thick $warning;
+    background: $surface;
+}
+
+#approval-title {
+    text-style: bold;
+    color: $warning;
+}
+
+#approval-cmd {
+    color: $text;
+    margin: 1 0;
+}
+
+#approval-hint {
+    color: $text-muted;
+}
+
+.chatbox--plan {
+    color: $text;
+    border-left: thick $secondary;   /* the plan/checklist stands out from tool output */
+}
+
+ModelBar #mode-select {
+    width: 12;
 }

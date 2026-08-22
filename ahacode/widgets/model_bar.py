@@ -20,17 +20,32 @@ class ModelBar(Horizontal):
     class ModelChosen(Message):
         name: str
 
+    @dataclass
+    class ModeChosen(Message):
+        mode: str
+
     def __init__(self) -> None:
         super().__init__()
         self._names: list[str] = []
 
     def compose(self):
         yield Static(id="endpoint")
+        yield Static(id="status")  # live turn status (Thinking / Running tool / …)
         yield Select([], prompt="model", id="model-select")
+        yield Select(
+            [("act", "act"), ("plan", "plan")],
+            value="act",
+            allow_blank=False,
+            id="mode-select",
+        )
 
     def on_mount(self) -> None:
         self.refresh_state()
         self.load_models()
+
+    def set_status(self, text: str) -> None:
+        """Show live turn status in the bar (empty string = idle)."""
+        self.query_one("#status", Static).update(text)
 
     def refresh_state(self, names: list[str] | None = None) -> None:
         """Sync the bar with config.toml; optionally replace the option list."""
@@ -53,9 +68,14 @@ class ModelBar(Horizontal):
             names = []
         self.app.call_from_thread(self.refresh_state, names)
 
-    @on(Select.Changed)
+    @on(Select.Changed, "#model-select")
     def model_changed(self, event: Select.Changed) -> None:
         event.stop()  # the raw Select event stays inside the bar
         if event.value is Select.NULL or event.value == config.load().name:
             return  # programmatic re-sync, not a user choice
         self.post_message(self.ModelChosen(str(event.value)))
+
+    @on(Select.Changed, "#mode-select")
+    def mode_changed(self, event: Select.Changed) -> None:
+        event.stop()  # the raw Select event stays inside the bar
+        self.post_message(self.ModeChosen(str(event.value)))

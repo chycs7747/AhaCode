@@ -1,8 +1,11 @@
+import time
+
 import pytest
 from textual.widgets import Input, Select
 
 from ahacode import client, config, storage
 from ahacode.app import AhaCodeApp
+from ahacode.events import TextDelta
 from ahacode.widgets.chatbox import Chatbox
 
 
@@ -31,11 +34,12 @@ def fake_llm(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_enter_creates_three_bubbles(fake_llm):
-    """One Enter → user bubble + pre-mounted thinking and assistant bubbles."""
+    """One Enter → user bubble + lazily-mounted thinking and assistant bubbles."""
     app = AhaCodeApp()
     async with app.run_test() as pilot:
         await pilot.press("h", "i")
         await pilot.press("enter")
+        await app.workers.wait_for_complete()  # bubbles appear as deltas arrive
         await pilot.pause()
         assert len(app.query(Chatbox)) == 3
 
@@ -56,10 +60,10 @@ async def test_deltas_routed_to_right_boxes(fake_llm):
 
 
 @pytest.mark.asyncio
-async def test_thinking_box_stays_hidden_without_thinking(monkeypatch):
-    """A model that never thinks must leave the thinking box hidden forever."""
-    def text_only(messages):
-        yield ("text", "Hi!")
+async def test_no_thinking_bubble_when_model_does_not_think(monkeypatch):
+    """A model that never thinks mounts no thinking bubble at all (lazy mount)."""
+    def text_only(messages, tools=None):
+        yield TextDelta("Hi!")
     monkeypatch.setattr(client, "stream_chat", text_only)
 
     app = AhaCodeApp()
@@ -68,9 +72,10 @@ async def test_thinking_box_stays_hidden_without_thinking(monkeypatch):
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
-        _, thinking, response = list(app.query(Chatbox))
-        assert thinking.display is False  # present in the tree, never shown
-        assert response._content == "Hi!"
+        boxes = list(app.query(Chatbox))
+        assert [b for b in boxes if b.has_class("chatbox--thinking")] == []
+        assert len(boxes) == 2  # user + answer only
+        assert boxes[-1]._content == "Hi!"
 
 
 @pytest.mark.asyncio
@@ -78,9 +83,9 @@ async def test_second_turn_carries_history(monkeypatch):
     """The second request must carry the [user, assistant, user] history."""
     captured = []
 
-    def recording_fake(messages):
+    def recording_fake(messages, tools=None):
         captured.append(list(messages))  # spy: record what the client received
-        yield ("text", "answer")
+        yield TextDelta("answer")
 
     monkeypatch.setattr(client, "stream_chat", recording_fake)
 
@@ -199,8 +204,8 @@ async def test_slash_model_updates_the_bar():
 @pytest.mark.asyncio
 async def test_worker_error_becomes_a_bubble_not_a_crash(monkeypatch):
     """A failing stream must leave the app alive with an error bubble in place."""
-    def broken(messages):
-        yield ("text", "partial ")
+    def broken(messages, tools=None):
+        yield TextDelta("partial ")
         raise RuntimeError("boom")
     monkeypatch.setattr(client, "stream_chat", broken)
 
@@ -221,11 +226,11 @@ async def test_worker_error_becomes_a_bubble_not_a_crash(monkeypatch):
 async def test_stream_is_closed_when_cancelled(monkeypatch):
     """Sending a new message must close the previous (cancelled) stream."""
     closed = []
-    def slow(messages):
+    def slow(messages, tools=None):
         try:
             for _ in range(50):
                 time.sleep(0.02)
-                yield ("text", "x")
+                yield TextDelta("x")
         finally:
             closed.append(True)  # runs on exhaustion OR on close()
     monkeypatch.setattr(client, "stream_chat", slow)
@@ -249,3 +254,167 @@ async def test_ctrl_d_quits():
         await pilot.press("ctrl+d")
         await pilot.pause()
         assert app._exit
+
+@pytest.mark.asyncio
+async def test_tool_call_turn_renders_and_persists(monkeypatch):
+    """A tool-calling turn mounts tool bubbles and persists assistant+tool+assistant."""
+    from ahacode.events import ToolCall
+
+    turns = iter([
+        [ToolCall(id="c1", name="read", arguments={"path": "README.md"})],  # turn 1: call read
+        [TextDelta("done")],                                                # turn 2: final answer
+    ])
+
+    def scripted(messages, tools=None):
+        return iter(next(turns))
+
+    monkeypatch.setattr(client, "stream_chat", scripted)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.press("r")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        boxes = list(app.query(Chatbox))
+        assert any(b.has_class("chatbox--tool-call") for b in boxes)     # 🔧 request bubble
+        assert any(b.has_class("chatbox--tool-result") for b in boxes)   # 📄 output bubble
+        assert boxes[-1]._content == "done"                             # final answer bubble
+
+    # The whole turn is persisted in OpenAI message shapes.
+    assert [m["role"] for m in app.session.messages] == ["user", "assistant", "tool", "assistant"]
+    assert app.session.messages[1]["tool_calls"][0]["function"]["name"] == "read"
+    assert "AhaCode" in app.session.messages[2]["content"]  # real README content fed back
+
+
+async def _wait_for_modal(pilot, app):
+    """Give the worker time to reach the tool call and push the approval modal."""
+    from ahacode.widgets.approval_modal import ApprovalModal
+    for _ in range(150):
+        await pilot.pause(0.02)
+        if isinstance(app.screen, ApprovalModal):
+            return
+    raise AssertionError("approval modal never appeared")
+
+
+@pytest.mark.asyncio
+async def test_bash_prompts_and_runs_on_approval(monkeypatch):
+    """bash is gated: pressing 'y' runs the command and feeds its output back."""
+    from ahacode.events import ToolCall
+    turns = iter([
+        [ToolCall(id="c1", name="bash", arguments={"command": "echo hi"})],
+        [TextDelta("ran it")],
+    ])
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter(next(turns)))
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", Input).value = "run echo hi"
+        await pilot.press("enter")
+        await _wait_for_modal(pilot, app)
+        await pilot.press("y")  # approve
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        results = [b for b in app.query(Chatbox) if b.has_class("chatbox--tool-result")]
+        assert results and "hi" in results[-1]._content
+
+    assert [m["role"] for m in app.session.messages] == ["user", "assistant", "tool", "assistant"]
+    assert app.session.messages[2]["content"] == "hi"  # echo hi output, fed back
+
+
+@pytest.mark.asyncio
+async def test_bash_skipped_on_denial(monkeypatch):
+    """Pressing 'n' skips the command; the model sees a 'denied' result."""
+    from ahacode.events import ToolCall
+    turns = iter([
+        [ToolCall(id="c1", name="bash", arguments={"command": "echo hi"})],
+        [TextDelta("ok, skipped")],
+    ])
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter(next(turns)))
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", Input).value = "run echo hi"
+        await pilot.press("enter")
+        await _wait_for_modal(pilot, app)
+        await pilot.press("n")  # deny
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        errors = [b for b in app.query(Chatbox) if b.has_class("chatbox--tool-error")]
+        assert errors and "denied" in errors[-1]._content
+
+    assert app.session.messages[2]["content"] == "denied by user"  # command never ran
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_restricts_tools_and_injects_system_prompt(monkeypatch):
+    """Plan mode exposes only read-only tools and prepends the plan system prompt."""
+    captured = {}
+
+    def rec(messages, tools=None):
+        captured["messages"] = list(messages)
+        captured["tools"] = tools
+        yield TextDelta("here is the plan")
+
+    monkeypatch.setattr(client, "stream_chat", rec)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        app.query_one("#mode-select", Select).value = "plan"  # toggle via the bar
+        await pilot.pause()
+        assert app.mode == "plan"
+        app.query_one("#prompt", Input).value = "fix the bug"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    assert {t["function"]["name"] for t in captured["tools"]} == {"read", "todo_write"}  # no bash
+    assert captured["messages"][0]["role"] == "system"
+    assert "PLAN MODE" in captured["messages"][0]["content"]
+    assert app.session.messages[0]["role"] == "user"  # system prompt is not stored
+
+
+@pytest.mark.asyncio
+async def test_act_mode_exposes_all_tools(monkeypatch):
+    """The default (act) mode exposes the full tool set and injects no system prompt."""
+    captured = {}
+
+    def rec(messages, tools=None):
+        captured["messages"] = list(messages)
+        captured["tools"] = tools
+        yield TextDelta("hi")
+
+    monkeypatch.setattr(client, "stream_chat", rec)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", Input).value = "hello"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    assert {t["function"]["name"] for t in captured["tools"]} == {"read", "write", "bash", "todo_write"}
+    assert captured["messages"][0]["role"] == "user"  # no system prompt in act mode
+
+
+@pytest.mark.asyncio
+async def test_escape_stops_the_current_turn(monkeypatch):
+    """Pressing escape cancels an in-flight response; no assistant reply is recorded."""
+    def slow(messages, tools=None):
+        for _ in range(50):
+            time.sleep(0.02)
+            yield TextDelta("x")
+
+    monkeypatch.setattr(client, "stream_chat", slow)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", Input).value = "go"
+        await pilot.press("enter")
+        await pilot.pause(0.1)       # let the stream start
+        await pilot.press("escape")  # stop it
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    # cancelled before completion -> no assistant turn persisted
+    assert [m["role"] for m in app.session.messages] == ["user"]
