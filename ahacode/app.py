@@ -119,8 +119,14 @@ class AhaCodeApp(App):
         if latest:  # resume the most recent session
             self.session_path = latest
             self.session.messages = storage.load_messages(latest)
-        else:  # first run: start a new session file
+        else:  # first run: start a new session with a header (records model + kind)
             self.session_path = storage.new_session_path()
+            storage.write_header(
+                self.session_path,
+                storage.make_header(
+                    self.session_path.stem, kind="main", model=config.load().name
+                ),
+            )
 
     @dataclass
     class ResponseComplete(Message):

@@ -610,3 +610,17 @@ async def test_edit_renders_colored_diff(monkeypatch, tmp_path):
         assert "a[j], a[j+1]" in c               # added line
 
     assert "range(len(a) - 1 - i)" in f.read_text(encoding="utf-8")  # change applied
+
+
+@pytest.mark.asyncio
+async def test_new_session_starts_with_a_header():
+    """A fresh session file's first line is a header carrying kind + model."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+    header = storage.read_header(app.session_path)
+    assert header is not None
+    assert header["type"] == "header"
+    assert header["kind"] == "main"
+    assert header["model"]  # the configured model was recorded
+    assert header["parent_id"] is None
