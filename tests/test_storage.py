@@ -26,3 +26,54 @@ def test_latest_session_picks_newest(tmp_path):
 
 def test_latest_session_empty_dir(tmp_path):
     assert storage.latest_session(base_dir=tmp_path) is None
+
+
+def test_header_roundtrip(tmp_path):
+    p = storage.new_session_path(base_dir=tmp_path)
+    h = storage.make_header(p.stem, kind="subagent", parent_id="root1",
+                            depth=2, model="qwen3-4b", title="bench")
+    storage.write_header(p, h)
+    assert storage.read_header(p) == h
+
+
+def test_load_messages_skips_header_line(tmp_path):
+    p = storage.new_session_path(base_dir=tmp_path)
+    storage.write_header(p, storage.make_header(p.stem, title="t"))
+    storage.append_message(p, {"role": "user", "content": "hi"})
+    assert storage.load_messages(p) == [{"role": "user", "content": "hi"}]
+
+
+def test_read_header_none_for_legacy_file(tmp_path):
+    p = storage.new_session_path(base_dir=tmp_path)
+    storage.append_message(p, {"role": "user", "content": "hi"})  # no header
+    assert storage.read_header(p) is None
+
+
+def test_list_sessions_reads_headers_and_synthesizes_legacy(tmp_path):
+    p1 = tmp_path / "2026-01-01_000000.jsonl"
+    storage.write_header(p1, storage.make_header(p1.stem, title="withheader"))
+    p2 = tmp_path / "2026-01-02_000000.jsonl"
+    storage.append_message(p2, {"role": "user", "content": "legacy hi"})  # no header
+
+    sessions = storage.list_sessions(base_dir=tmp_path)
+    assert [s["id"] for s in sessions] == ["2026-01-01_000000", "2026-01-02_000000"]
+    assert sessions[0]["title"] == "withheader"
+    assert sessions[1]["title"] == "legacy hi"  # synthesized from the first user message
+
+
+def test_build_tree_nests_by_parent_id(tmp_path):
+    sessions = [
+        storage.make_header("root", kind="main"),
+        storage.make_header("child1", parent_id="root", kind="subagent"),
+        storage.make_header("child2", parent_id="root", kind="subagent"),
+        storage.make_header("grand", parent_id="child1", kind="subagent"),
+    ]
+    roots = storage.build_tree(sessions)
+    assert [r["id"] for r in roots] == ["root"]
+    assert [c["id"] for c in roots[0]["children"]] == ["child1", "child2"]
+    assert [c["id"] for c in roots[0]["children"][0]["children"]] == ["grand"]
+
+
+def test_build_tree_orphan_becomes_root(tmp_path):
+    sessions = [storage.make_header("x", parent_id="ghost")]  # parent not present
+    assert [r["id"] for r in storage.build_tree(sessions)] == ["x"]
