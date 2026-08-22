@@ -15,7 +15,7 @@ from rich.theme import Theme
 
 from ahacode import agent, client, config, storage, tools
 from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage
-from ahacode.render import diff_stats, edit_diff_lines
+from ahacode.render import diff_stats, edit_diff_lines, tool_summary
 from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
@@ -470,20 +470,28 @@ class AhaCodeApp(App):
                 return  # edit's coloured diff is rendered on the final ToolCall
             self._fold_thinking(boxes)
             boxes["answer"] = None
-            buf = boxes["tool_buf"].get(event.index, "") + event.fragment
-            boxes["tool_buf"][event.index] = buf
-            box = boxes["tool"].get(event.index)
-            if box is None:
-                box = Chatbox("", role="tool-call")
-                await container.mount(box)
-                boxes["tool"][event.index] = box
-            box._content = _render_tool_stream(event.name, buf)
-            box.update(box._content)
-            verb = "writing" if event.name == "write" else f"running {event.name}"
-            self._status(f"● {verb}…  (esc to stop)")
+            if event.name == "write":
+                # write streams its content live into one bubble (kilocode-style)
+                buf = boxes["tool_buf"].get(event.index, "") + event.fragment
+                boxes["tool_buf"][event.index] = buf
+                box = boxes["tool"].get(event.index)
+                if box is None:
+                    box = Chatbox("", role="tool-call")
+                    await container.mount(box)
+                    boxes["tool"][event.index] = box
+                box._content = _render_tool_stream(event.name, buf)
+                box.update(box._content)
+                self._status("● writing…  (esc to stop)")
+            else:
+                # bash / read / grep …: no call bubble — the result card shows the
+                # command in its title (IN) and the output in its body (OUT), the
+                # Claude Code shape. The status bar reports progress until it lands.
+                self._status(f"● running {event.name}…  (esc to stop)")
         elif isinstance(event, ToolCall):
             self._fold_thinking(boxes)  # fold reasoning; next turn opens fresh bubbles
             boxes["answer"] = None
+            # Remember the call's input so the result card can title itself with it.
+            boxes.setdefault("call_args", {})[event.id] = event.arguments
             if event.name == "todo_write":  # goes to the pinned panel, not a bubble
                 self.query_one(TodoPanel).update_todos(event.arguments.get("items", []))
                 boxes["tool"].clear()
@@ -505,20 +513,19 @@ class AhaCodeApp(App):
                 boxes["tool_buf"].clear()
                 self._status("● editing…  (esc to stop)")
                 return
-            if boxes["tool"]:  # already rendered live via ToolCallDelta
-                boxes["tool"].clear()
-                boxes["tool_buf"].clear()
-                return
-            # Fallback when no deltas streamed (e.g. offline fakes in tests).
-            args = ", ".join(f"{k}={v!r}" for k, v in event.arguments.items())
-            await container.mount(Chatbox(f"🔧 {event.name}({args})", role="tool-call"))
+            # write streamed a live content bubble (kept); other tools show only the
+            # result card, so there's no call bubble to keep here.
+            boxes["tool"].clear()
+            boxes["tool_buf"].clear()
             self._status(f"● running {event.name}…  (esc to stop)")
         elif isinstance(event, ToolResult):
             if event.name == "todo_write":
                 return  # already reflected in the pinned panel
-            # A foldable card (icon + tool + size); long output/errors fold away.
+            # One foldable card: the command/path in the title (IN), the output in
+            # the body (OUT). Long output / errors fold away.
+            summary = tool_summary(event.name, boxes.get("call_args", {}).get(event.id, {}))
             await container.mount(
-                ToolResultBlock(event.name, event.output, event.is_error)
+                ToolResultBlock(event.name, event.output, event.is_error, summary=summary)
             )
         # Smart auto-scroll: follow only while the user is near the bottom.
         if container.scroll_y in range(
@@ -562,7 +569,7 @@ class AhaCodeApp(App):
         worker = get_current_worker()
         container = self.query_one("#chat-container", VerticalScroll)
         # Current turn's live bubbles; _render_event fills these in on the main thread.
-        boxes: dict = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}}
+        boxes: dict = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}, "call_args": {}}
 
         stats = {"prompt": 0, "completion": 0, "t_start": time.monotonic(), "t_first": None}
 

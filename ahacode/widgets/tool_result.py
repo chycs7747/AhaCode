@@ -34,19 +34,24 @@ class ToolResultBlock(Collapsible):
     same Textual Collapsible as ThinkingBlock, so the toggle/▼▶ come for free.
     """
 
-    def __init__(self, name: str, output: str, is_error: bool = False) -> None:
+    def __init__(
+        self, name: str, output: str, is_error: bool = False, summary: str = ""
+    ) -> None:
         icon = _ICONS.get(name, "🔧")
         lines = output.count("\n") + 1 if output else 0
         role = "tool-error" if is_error else "tool-result"
-        size = "failed" if is_error else f"{lines} line{'s' if lines != 1 else ''}"
         prefix = "✘ " if is_error else ""
-        # Keep a handle to the inner bubble so tests/logic stay text-based and so
-        # streamed content could later append here.
+        # Title shows the INPUT (command / path) when known — that's the "IN" of a
+        # Claude Code-style card — else the output size. Errors append " · failed".
+        detail = summary or f"{lines} line{'s' if lines != 1 else ''}"
+        if is_error:
+            detail = f"{summary} · failed" if summary else "failed"
+        # Keep a handle to the inner bubble so tests/logic stay text-based.
         self._box = Chatbox(output or "(no output)", role=role)
         collapsed = is_error or lines > _COLLAPSE_OVER
         super().__init__(
             self._box,
-            title=f"{prefix}{icon} {name} · {size}",
+            title=f"{prefix}{icon} {name} · {detail}",
             collapsed=collapsed,
             classes="tool-block--error" if is_error else "tool-block--ok",
         )

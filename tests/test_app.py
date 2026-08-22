@@ -489,9 +489,12 @@ async def test_tool_call_turn_renders_and_persists(monkeypatch):
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
+        from ahacode.widgets.tool_result import ToolResultBlock
+
         boxes = list(app.query(Chatbox))
-        assert any(b.has_class("chatbox--tool-call") for b in boxes)     # 🔧 request bubble
-        assert any(b.has_class("chatbox--tool-result") for b in boxes)   # 📄 output bubble
+        cards = list(app.query(ToolResultBlock))
+        assert any("read" in c.title for c in cards)                     # tool + input in the card title (IN)
+        assert any(b.has_class("chatbox--tool-result") for b in boxes)   # output (OUT) bubble
         assert boxes[-1]._content == "done"                             # final answer bubble
 
     # The whole turn is persisted in OpenAI message shapes.

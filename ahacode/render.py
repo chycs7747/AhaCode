@@ -58,6 +58,21 @@ def diff_rows(old: str, new: str) -> list[tuple[str, str]]:
     return rows
 
 
+def tool_summary(name: str, args: dict) -> str:
+    """One-line summary of a tool call's INPUT for the result card's title —
+    bash → the command, read/write/list → the path, grep/glob → the pattern. This
+    is what turns a card into a Claude Code-style IN (title) / OUT (body) block."""
+    if name == "bash":
+        raw = args.get("command", "")
+    elif name in ("grep", "glob"):
+        raw = args.get("pattern", "")
+    else:
+        raw = args.get("path", "")
+    raw = raw.strip()
+    first = raw.splitlines()[0] if raw else ""
+    return first if len(first) <= 60 else first[:57] + "…"
+
+
 def diff_stats(old: str, new: str) -> tuple[int, int]:
     """(added, removed) line counts for an edit — shown as the card's chip."""
     rows = diff_rows(old, new)
