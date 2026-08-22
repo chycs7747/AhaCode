@@ -117,6 +117,34 @@ def read_header(path: Path) -> dict | None:
     return obj if obj.get("type") == "header" else None
 
 
+def set_title(path: Path, title: str) -> None:
+    """Record/replace a session's title as an append-only metadata line (last wins)."""
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "title", "title": title}, ensure_ascii=False) + "\n")
+
+
+def read_session_meta(path: Path) -> dict | None:
+    """The header with its title overridden by the latest {type:"title"} line.
+
+    None for a headerless/legacy file (caller falls back to a synthesized header).
+    """
+    header = read_header(path)
+    if header is None:
+        return None
+    title = header.get("title", "")
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("type") == "title" and isinstance(obj.get("title"), str):
+                title = obj["title"]
+    return {**header, "title": title}
+
+
 def _legacy_header(path: Path) -> dict:
     """Synthesize a header for a pre-header file so old sessions still list/tree."""
     msgs = load_messages(path)
@@ -130,7 +158,7 @@ def list_sessions(base_dir: Path | None = None) -> list[dict]:
     if not base_dir.exists():
         return []
     return [
-        read_header(path) or _legacy_header(path)
+        read_session_meta(path) or _legacy_header(path)
         for path in sorted(base_dir.glob("*.jsonl"))
     ]
 

@@ -31,6 +31,11 @@ PLAN_SYSTEM_PROMPT = (
     "step-by-step plan for the user to review. Do not carry out the plan."
 )
 
+TITLE_SYSTEM = (
+    "You write a very short title (2-5 words) for a conversation. "
+    "Reply with ONLY the title — no quotes, no trailing punctuation."
+)
+
 _ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}
 
 
@@ -128,6 +133,8 @@ class AhaCodeApp(App):
                     self.session_path.stem, kind="main", model=config.load().name
                 ),
             )
+        # Skip auto-titling if this (resumed) session already has a title.
+        self._has_title = bool((storage.read_session_meta(self.session_path) or {}).get("title"))
 
     @dataclass
     class ResponseComplete(Message):
@@ -176,6 +183,7 @@ class AhaCodeApp(App):
             self.session_path,
             storage.make_header(self.session_path.stem, kind="main", model=config.load().name),
         )
+        self._has_title = False
         self.query_one(TodoPanel).display = False
         await self._render_history()
         self._status("")
@@ -186,6 +194,7 @@ class AhaCodeApp(App):
         self.session = ChatSession()
         self.session_path = storage.SESSIONS_DIR / f"{session_id}.jsonl"
         self.session.messages = storage.load_messages(self.session_path)
+        self._has_title = bool((storage.read_session_meta(self.session_path) or {}).get("title"))
         self.query_one(TodoPanel).display = False
         await self._render_history()
         self._status("")
@@ -350,6 +359,10 @@ class AhaCodeApp(App):
             self.session.messages.append(msg)
             storage.append_message(self.session_path, msg)
         self._status(event.stats)
+        # First real reply of an untitled session -> generate a title in the background.
+        if not self._has_title and any(m.get("role") == "assistant" for m in self.session.messages):
+            self._has_title = True
+            self.generate_title(list(self.session.messages), self.session_path)
 
     @on(ResponseFailed)
     async def response_failed(self, event: ResponseFailed) -> None:
@@ -444,6 +457,24 @@ class AhaCodeApp(App):
         if worker is not None and worker.is_running:
             worker.cancel()
             self._status("■ stopped")
+
+    @work(thread=True, exit_on_error=False)
+    def generate_title(self, messages: list[dict], path) -> None:
+        """Ask the model for a short session title (background, non-streaming)."""
+        convo = "\n".join(
+            f"{m['role']}: {m.get('content', '')}"
+            for m in messages
+            if m.get("role") in ("user", "assistant") and m.get("content")
+        )[:1500]
+        try:
+            title = client.complete(
+                [{"role": "system", "content": TITLE_SYSTEM}, {"role": "user", "content": convo}]
+            )
+        except Exception:
+            return  # a failed title is not worth surfacing; leave it untitled
+        title = title.strip().strip('"').strip()[:60]
+        if title:
+            self.call_from_thread(storage.set_title, path, title)
 
     # exclusive=True: a new message cancels the previous worker.
     # exit_on_error=False: a failing worker must not take the whole app down.

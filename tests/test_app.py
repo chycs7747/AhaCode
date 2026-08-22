@@ -21,6 +21,10 @@ def isolated_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.toml")
     # The model bar fetches /v1/models on mount — keep tests offline.
     monkeypatch.setattr(client, "list_models", lambda: ["qwen38", "qwen3-4b"])
+    # Auto-title runs after a turn as a background worker that would hit the network;
+    # keep it offline + fast. Tests that check the trigger override generate_title.
+    monkeypatch.setattr(client, "complete", lambda messages: "")
+    monkeypatch.setattr(AhaCodeApp, "generate_title", lambda self, *a, **k: None)
     client.reset()
     yield
     client.reset()
@@ -678,3 +682,24 @@ async def test_sessions_picker_switches_back(fake_llm):
 
     assert app.session_path.stem == s1.stem
     assert [m["role"] for m in app.session.messages] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_auto_title_triggered_once_per_session(monkeypatch, fake_llm):
+    """The first assistant reply of an untitled session kicks off titling exactly once."""
+    calls = []
+    monkeypatch.setattr(AhaCodeApp, "generate_title", lambda self, msgs, path: calls.append(path))
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.press("h", "i")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(calls) == 1                 # titled after the first reply
+
+        await pilot.press("y", "o")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(calls) == 1                 # already titled -> not triggered again

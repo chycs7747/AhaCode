@@ -77,3 +77,21 @@ def test_build_tree_nests_by_parent_id(tmp_path):
 def test_build_tree_orphan_becomes_root(tmp_path):
     sessions = [storage.make_header("x", parent_id="ghost")]  # parent not present
     assert [r["id"] for r in storage.build_tree(sessions)] == ["x"]
+
+
+def test_set_title_and_read_session_meta_last_wins(tmp_path):
+    p = storage.new_session_path(base_dir=tmp_path)
+    storage.write_header(p, storage.make_header(p.stem, title=""))
+    storage.append_message(p, {"role": "user", "content": "hi"})
+    storage.set_title(p, "first title")
+    storage.set_title(p, "final title")  # a later title overrides
+
+    meta = storage.read_session_meta(p)
+    assert meta["title"] == "final title"
+    assert storage.load_messages(p) == [{"role": "user", "content": "hi"}]  # title lines skipped
+
+
+def test_read_session_meta_none_for_legacy(tmp_path):
+    p = storage.new_session_path(base_dir=tmp_path)
+    storage.append_message(p, {"role": "user", "content": "hi"})  # no header
+    assert storage.read_session_meta(p) is None

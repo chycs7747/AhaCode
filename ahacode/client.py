@@ -121,6 +121,16 @@ def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterat
         yield from _iter_events(response)
 
 
+def complete(messages: list[dict]) -> str:
+    """One-shot, non-streaming completion — for short utility calls (e.g. titling).
+
+    Separate from stream_chat: no tools, no streaming, just the text back.
+    """
+    client, cfg = _ensure_client()
+    resp = client.chat.completions.create(model=cfg.name, messages=messages, stream=False)
+    return (resp.choices[0].message.content or "").strip()
+
+
 def list_models() -> list[str]:
     """Model ids offered by the endpoint (GET /v1/models)."""
     client, _ = _ensure_client()
