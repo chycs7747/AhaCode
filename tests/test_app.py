@@ -168,6 +168,60 @@ async def test_prompt_enter_sends_and_shift_enter_newlines(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_send_button_submits_the_prompt(fake_llm):
+    """Clicking the composer's Send button submits the prompt, like Enter."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        prompt = app.query_one("#prompt", PromptInput)
+        prompt.text = "hello there"
+        await pilot.click("#send-btn")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert prompt.text == ""  # cleared on send
+        users = [b for b in app.query(Chatbox) if b.has_class("chatbox--user")]
+        assert users and users[-1]._content == "hello there"
+
+
+@pytest.mark.asyncio
+async def test_header_new_button_starts_new_session(fake_llm):
+    """The header's New button clears the chat and starts a fresh session."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "hi"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.session.messages  # a turn happened
+        await pilot.click("#new-session-btn")
+        await pilot.pause()
+        assert app.session.messages == []  # fresh session
+
+
+@pytest.mark.asyncio
+async def test_header_sessions_button_opens_picker():
+    """The header's Sessions button opens the SessionPicker modal."""
+    from ahacode.widgets.session_picker import SessionPicker
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.click("#open-sessions-btn")
+        await pilot.pause()
+        assert isinstance(app.screen, SessionPicker)
+
+
+@pytest.mark.asyncio
+async def test_header_bar_shows_session_title(fake_llm):
+    """The top bar reflects the session title set on it."""
+    from ahacode.widgets.header_bar import HeaderBar
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app._set_header_title("Quicksort bench")
+        await pilot.pause()
+        assert "Quicksort bench" in app.query_one(HeaderBar)._title_text
+
+
+@pytest.mark.asyncio
 async def test_no_thinking_bubble_when_model_does_not_think(monkeypatch):
     """A model that never thinks mounts no thinking bubble at all (lazy mount)."""
     def text_only(messages, tools=None):

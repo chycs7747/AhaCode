@@ -9,6 +9,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
+from textual.widgets import Button
 from textual.worker import get_current_worker
 from rich.text import Text
 from rich.theme import Theme
@@ -18,6 +19,7 @@ from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, To
 from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
+from ahacode.widgets.header_bar import HeaderBar
 from ahacode.widgets.prompt_input import PromptInput
 from ahacode.widgets.session_picker import SessionPicker
 from ahacode.widgets.thinking import ThinkingBlock
@@ -180,6 +182,7 @@ class AhaCodeApp(App):
 
     def compose(self) -> ComposeResult:
         # Static skeleton only — chat bubbles are mounted at runtime.
+        yield HeaderBar()  # docked top: session title + New / Sessions buttons
         yield TodoPanel()  # pinned plan checklist (docked top, hidden until used)
         with VerticalScroll(id="chat-container") as container:
             container.can_focus = False  # keep initial focus on the input
@@ -190,7 +193,29 @@ class AhaCodeApp(App):
     async def on_mount(self) -> None:
         """Restore saved history as chat bubbles (Compose runs before Mount)."""
         self.console.push_theme(MARKDOWN_THEME)  # soften Rich Markdown colours
+        meta = storage.read_session_meta(self.session_path) or {}
+        self._set_header_title(meta.get("title", ""))
         await self._render_history()
+        self.query_one("#prompt", PromptInput).focus()  # not the header buttons
+
+    def _set_header_title(self, title: str) -> None:
+        """Reflect the current session's title in the top bar."""
+        self.query_one(HeaderBar).set_title(title)
+
+    @on(Button.Pressed, "#new-session-btn")
+    async def _on_new_session_button(self, event: Button.Pressed) -> None:
+        event.stop()
+        await self._new_session()
+
+    @on(Button.Pressed, "#open-sessions-btn")
+    def _on_open_sessions_button(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.push_screen(SessionPicker(), self._session_picked)
+
+    @on(Button.Pressed, "#send-btn")
+    def _on_send_button(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.query_one("#prompt", PromptInput).submit()
 
     async def _render_history(self) -> None:
         """Clear the chat and remount the current session's messages as bubbles."""
@@ -209,6 +234,7 @@ class AhaCodeApp(App):
             storage.make_header(self.session_path.stem, kind="main", model=config.load().name),
         )
         self._has_title = False
+        self._set_header_title("")
         self.query_one(TodoPanel).display = False
         await self._render_history()
         self._status("")
@@ -219,7 +245,9 @@ class AhaCodeApp(App):
         self.session = ChatSession()
         self.session_path = storage.SESSIONS_DIR / f"{session_id}.jsonl"
         self.session.messages = storage.load_messages(self.session_path)
-        self._has_title = bool((storage.read_session_meta(self.session_path) or {}).get("title"))
+        meta = storage.read_session_meta(self.session_path) or {}
+        self._has_title = bool(meta.get("title"))
+        self._set_header_title(meta.get("title", ""))
         self.query_one(TodoPanel).display = False
         await self._render_history()
         self._status("")
@@ -521,6 +549,8 @@ class AhaCodeApp(App):
         title = title.strip().strip('"').strip()[:60]
         if title:
             self.call_from_thread(storage.set_title, path, title)
+            if path == self.session_path:  # not if the user already switched away
+                self.call_from_thread(self._set_header_title, title)
 
     # exclusive=True: a new message cancels the previous worker.
     # exit_on_error=False: a failing worker must not take the whole app down.

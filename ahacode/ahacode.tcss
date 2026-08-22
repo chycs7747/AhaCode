@@ -64,7 +64,7 @@ ModelBar #status {
 }
 
 ModelBar #model-select {
-    width: 28;
+    width: 20;
 }
 
 .chatbox--error {
@@ -127,7 +127,7 @@ ApprovalModal {
 }
 
 ModelBar #mode-select {
-    width: 12;
+    width: 10;
 }
 
 ModelBar #auto-approve {
@@ -228,4 +228,34 @@ ToolResultBlock .chatbox--tool-error {
     border-left: none;
     margin: 0;
     padding: 0;
+}
+
+/* Top bar: session title (left) + New / Sessions buttons (right). Docked above
+   the TodoPanel; both dock:top so they stack in mount order (HeaderBar first). */
+HeaderBar {
+    dock: top;
+    height: 3;
+    background: $panel;
+    padding: 0 1;
+}
+
+#session-title {
+    width: 1fr;
+    height: 3;
+    content-align: left middle;   /* vertically centre the title in the bar */
+    text-style: bold;
+    color: $text;
+}
+
+.header-btn {
+    height: 3;
+    min-width: 0;
+    margin-left: 1;
+}
+
+/* Composer Send button, right end of the ModelBar. */
+ModelBar #send-btn {
+    height: 3;
+    min-width: 0;
+    margin-left: 1;
 }

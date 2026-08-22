@@ -1,0 +1,25 @@
+from textual.app import ComposeResult
+from textual.containers import Horizontal
+from textual.widgets import Button, Static
+
+
+class HeaderBar(Horizontal):
+    """Top bar: the current session's title on the left, session actions on the
+    right ([+ New], [≡ Sessions]).
+
+    Real Button widgets (not clickable text) so the hit target is unambiguous —
+    this mirrors Claude Code's header (title + new + history) and elia's clickable
+    header (reference/elia/.../app_header.py), while reusing our existing
+    SessionPicker modal and background auto-title. Button.Pressed bubbles up to the
+    app, which owns session state.
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Static("AhaCode", id="session-title")
+        yield Button("+ New", id="new-session-btn", classes="header-btn")
+        yield Button("≡ Sessions", id="open-sessions-btn", classes="header-btn")
+
+    def set_title(self, title: str) -> None:
+        """Show the session's (auto-generated) title next to the app name."""
+        self._title_text = f"AhaCode · {title}" if title else "AhaCode"
+        self.query_one("#session-title", Static).update(self._title_text)

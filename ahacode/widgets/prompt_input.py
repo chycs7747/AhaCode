@@ -32,16 +32,20 @@ class PromptInput(TextArea):
         self.show_line_numbers = False
         self.border_subtitle = "Enter to send · Shift+Enter for newline"
 
+    def submit(self) -> None:
+        """Send the current text (used by Enter and the composer's Send button)."""
+        text = self.text.strip()
+        if text:
+            self.post_message(self.Submitted(text))
+            self.clear()
+
     async def _on_key(self, event: events.Key) -> None:
         # Enter sends; the newline combos insert a line break; everything else is
         # normal TextArea editing (printable insert, cursor moves, …).
         if event.key == "enter":
             event.stop()
             event.prevent_default()
-            text = self.text.strip()
-            if text:
-                self.post_message(self.Submitted(text))
-                self.clear()
+            self.submit()
             return
         if event.key in self._NEWLINE_KEYS:
             event.stop()

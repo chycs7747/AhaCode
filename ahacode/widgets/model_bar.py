@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from textual import on, work
 from textual.containers import Horizontal
 from textual.message import Message
-from textual.widgets import Checkbox, Select, Static
+from textual.widgets import Button, Checkbox, Select, Static
 
 from ahacode import client, config
 
@@ -43,6 +43,9 @@ class ModelBar(Horizontal):
             id="mode-select",
         )
         yield Checkbox("auto-approve", value=False, id="auto-approve")
+        # Send button: a click alternative to Enter. Button.Pressed bubbles to the
+        # app, which reads the prompt and submits it.
+        yield Button("↑ Send", id="send-btn", variant="primary")
 
     def on_mount(self) -> None:
         self.refresh_state()
