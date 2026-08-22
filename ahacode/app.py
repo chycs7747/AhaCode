@@ -18,6 +18,7 @@ from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, To
 from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
+from ahacode.widgets.session_picker import SessionPicker
 from ahacode.widgets.todo_panel import TodoPanel
 from ahacode.widgets.model_bar import ModelBar
 
@@ -156,14 +157,45 @@ class AhaCodeApp(App):
             yield ModelBar()
 
     async def on_mount(self) -> None:
-        """Restore saved history as chat bubbles.
+        """Restore saved history as chat bubbles (Compose runs before Mount)."""
+        await self._render_history()
 
-        Compose is guaranteed to run before Mount, so #chat-container exists here.
-        """
+    async def _render_history(self) -> None:
+        """Clear the chat and remount the current session's messages as bubbles."""
         container = self.query_one("#chat-container", VerticalScroll)
+        await container.remove_children()
         for msg in self.session.messages:
             await container.mount(self._bubble_for(msg))
         container.scroll_end(animate=False)
+
+    async def _new_session(self) -> None:
+        """Start a fresh session (new file + header) and clear the view."""
+        self.session = ChatSession()
+        self.session_path = storage.new_session_path()
+        storage.write_header(
+            self.session_path,
+            storage.make_header(self.session_path.stem, kind="main", model=config.load().name),
+        )
+        self.query_one(TodoPanel).display = False
+        await self._render_history()
+        self._status("")
+        await self._say_system("new session started")
+
+    async def _switch_session(self, session_id: str) -> None:
+        """Load another session by id and show its history."""
+        self.session = ChatSession()
+        self.session_path = storage.SESSIONS_DIR / f"{session_id}.jsonl"
+        self.session.messages = storage.load_messages(self.session_path)
+        self.query_one(TodoPanel).display = False
+        await self._render_history()
+        self._status("")
+
+    def _session_picked(self, result: str | None) -> None:
+        """SessionPicker dismissed — run the switch/new as an async worker."""
+        if result == "new":
+            self.run_worker(self._new_session(), exclusive=False)
+        elif result:
+            self.run_worker(self._switch_session(result), exclusive=False)
 
     @staticmethod
     def _bubble_for(msg: dict) -> Chatbox:
@@ -198,6 +230,12 @@ class AhaCodeApp(App):
         if text.startswith("/"):
             # Slash commands configure the app; they never reach the LLM
             # and are not recorded in the session.
+            if text == "/new":
+                await self._new_session()
+                return
+            if text == "/sessions":
+                self.push_screen(SessionPicker(), self._session_picked)
+                return
             await self._say_system(self._handle_command(text))
             return
 
@@ -250,6 +288,8 @@ class AhaCodeApp(App):
                 "  /model           show the current model and endpoint\n"
                 "  /model <name>    switch to a different model\n"
                 "  /url <base_url>  switch to a different endpoint\n"
+                "  /new             start a new session\n"
+                "  /sessions        switch between sessions\n"
                 "  /help            this message"
             )
         if cmd == "/model":

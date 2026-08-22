@@ -143,3 +143,27 @@ TodoPanel.todo-panel--done {
 .chatbox--tool-diff {
     border-left: thick $primary;   /* colours come from the Rich diff text itself */
 }
+
+SessionPicker {
+    align: center middle;
+}
+
+#picker-box {
+    width: 76;
+    height: auto;
+    max-height: 80%;
+    padding: 1 2;
+    border: thick $accent;
+    background: $surface;
+}
+
+#picker-title {
+    text-style: bold;
+    color: $accent;
+    margin-bottom: 1;
+}
+
+#picker-list {
+    height: auto;
+    max-height: 22;
+}

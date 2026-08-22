@@ -624,3 +624,57 @@ async def test_new_session_starts_with_a_header():
     assert header["kind"] == "main"
     assert header["model"]  # the configured model was recorded
     assert header["parent_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_new_command_starts_a_fresh_session(fake_llm):
+    """/new switches to a new session file and clears the chat."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.press("h", "i")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        first = app.session_path
+        assert len(app.session.messages) == 2
+
+        app.query_one("#prompt", Input).value = "/new"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.session_path != first          # a different file
+        assert app.session.messages == []          # fresh state
+        assert storage.read_header(app.session_path)["kind"] == "main"
+        boxes = list(app.query(Chatbox))
+        assert len(boxes) == 1 and boxes[0].has_class("chatbox--system")  # only "new session"
+
+
+@pytest.mark.asyncio
+async def test_sessions_picker_switches_back(fake_llm):
+    """/sessions opens the picker; choosing a session loads its history."""
+    from ahacode.widgets.session_picker import SessionPicker
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.press("a")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        s1 = app.session_path
+
+        app.query_one("#prompt", Input).value = "/new"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.session_path != s1
+
+        app.query_one("#prompt", Input).value = "/sessions"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, SessionPicker)
+        app.screen.dismiss(s1.stem)                 # choose session 1
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    assert app.session_path.stem == s1.stem
+    assert [m["role"] for m in app.session.messages] == ["user", "assistant"]

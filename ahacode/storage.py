@@ -17,7 +17,13 @@ def new_session_path(base_dir: Path | None = None) -> Path:
     base_dir.mkdir(parents=True, exist_ok=True)
     # No colons in the timestamp — Windows forbids them in file names.
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    return base_dir / f"{stamp}.jsonl"
+    path = base_dir / f"{stamp}.jsonl"
+    # Two sessions in the same second would collide — bump with a suffix.
+    n = 2
+    while path.exists():
+        path = base_dir / f"{stamp}_{n}.jsonl"
+        n += 1
+    return path
 
 
 def append_message(path: Path, message: dict) -> None:
