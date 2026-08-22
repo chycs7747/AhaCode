@@ -139,3 +139,7 @@ TodoPanel.todo-panel--done {
     border-bottom: solid $success;
     color: $success;
 }
+
+.chatbox--tool-diff {
+    border-left: thick $primary;   /* colours come from the Rich diff text itself */
+}

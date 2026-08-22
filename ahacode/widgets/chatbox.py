@@ -15,3 +15,9 @@ class Chatbox(Static):
             self.display = True
         self._content += chunk
         self.update(self._content)
+
+    def set_rich(self, renderable, plain: str) -> None:
+        """Display a Rich renderable (e.g. a coloured diff) while keeping a
+        plain-text mirror in _content so logic/tests stay text-based."""
+        self._content = plain
+        self.update(renderable)

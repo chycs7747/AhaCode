@@ -394,7 +394,7 @@ async def test_act_mode_exposes_all_tools(monkeypatch):
         await app.workers.wait_for_complete()
         await pilot.pause()
 
-    assert {t["function"]["name"] for t in captured["tools"]} == {"read", "write", "bash", "todo_write"}
+    assert {t["function"]["name"] for t in captured["tools"]} == {"read", "write", "edit", "bash", "todo_write"}
     assert captured["messages"][0]["role"] == "user"  # no system prompt in act mode
 
 
@@ -578,3 +578,35 @@ async def test_write_streams_into_one_bubble(monkeypatch, tmp_path):
         assert "x = 1" in bubbles[0]._content          # streamed content, not a label dump
 
     assert target.read_text(encoding="utf-8") == content  # and it actually wrote
+
+
+@pytest.mark.asyncio
+async def test_edit_renders_colored_diff(monkeypatch, tmp_path):
+    """An edit call renders one -/+ diff bubble and actually applies the change."""
+    from ahacode.events import ToolCall
+
+    f = tmp_path / "a.py"
+    f.write_text("keep\nfor j in range(len(a)):\n    swap(a, j)\nkeep2\n", encoding="utf-8")
+    old = "for j in range(len(a)):\n    swap(a, j)"
+    new = "for j in range(len(a) - 1 - i):\n    a[j], a[j+1] = a[j+1], a[j]"
+    turns = iter([
+        [ToolCall(id="1", name="edit", arguments={"path": str(f), "old_string": old, "new_string": new})],
+        [TextDelta("done")],
+    ])
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter(next(turns)))
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.auto_approve = True
+        app.query_one("#prompt", Input).value = "edit it"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        diffs = [b for b in app.query(Chatbox) if b.has_class("chatbox--tool-diff")]
+        assert len(diffs) == 1
+        c = diffs[0]._content
+        assert "- " in c and "+ " in c          # deletions AND additions
+        assert "swap(a, j)" in c                 # removed line
+        assert "a[j], a[j+1]" in c               # added line
+
+    assert "range(len(a) - 1 - i)" in f.read_text(encoding="utf-8")  # change applied

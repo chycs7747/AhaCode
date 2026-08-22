@@ -5,12 +5,13 @@ tool set; adding a tool means writing its module and registering it here.
 
 from ahacode.tools.base import Tool
 from ahacode.tools.bash import BASH
+from ahacode.tools.edit import EDIT
 from ahacode.tools.plan import TODO_WRITE
 from ahacode.tools.read import READ
 from ahacode.tools.write import WRITE
 
 # Name -> Tool. The agent looks tools up here when the model calls one by name.
-REGISTRY: dict[str, Tool] = {t.name: t for t in (READ, WRITE, BASH, TODO_WRITE)}
+REGISTRY: dict[str, Tool] = {t.name: t for t in (READ, WRITE, EDIT, BASH, TODO_WRITE)}
 
 
 def specs(registry: dict[str, Tool] | None = None) -> list[dict]:
@@ -32,4 +33,4 @@ def specs(registry: dict[str, Tool] | None = None) -> list[dict]:
     ]
 
 
-__all__ = ["Tool", "READ", "WRITE", "BASH", "TODO_WRITE", "REGISTRY", "specs"]
+__all__ = ["Tool", "READ", "WRITE", "EDIT", "BASH", "TODO_WRITE", "REGISTRY", "specs"]

@@ -27,14 +27,14 @@ def test_bash_reports_nonzero_exit():
 
 
 def test_registry_and_approval_flags():
-    assert set(tools.REGISTRY) == {"read", "write", "bash", "todo_write"}
+    assert set(tools.REGISTRY) == {"read", "write", "edit", "bash", "todo_write"}
     assert tools.REGISTRY["bash"].requires_approval is True
     assert tools.REGISTRY["read"].requires_approval is False
 
 
 def test_specs_are_openai_function_schema():
     specs = tools.specs()
-    assert {s["function"]["name"] for s in specs} == {"read", "write", "bash", "todo_write"}
+    assert {s["function"]["name"] for s in specs} == {"read", "write", "edit", "bash", "todo_write"}
     read_spec = next(s for s in specs if s["function"]["name"] == "read")
     assert read_spec["type"] == "function"
     assert read_spec["function"]["parameters"]["required"] == ["path"]

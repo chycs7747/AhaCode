@@ -1,3 +1,4 @@
+import difflib
 import re
 import threading
 import time
@@ -10,6 +11,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.widgets import Input
 from textual.worker import get_current_worker
+from rich.text import Text
 
 from ahacode import agent, client, config, storage, tools
 from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage
@@ -61,6 +63,38 @@ def _render_tool_stream(name: str, args: str) -> str:
             body = _tool_unescape(tail)
         return f"🔧 write · {path}\n{body}"
     return f"🔧 {name}  {args}"
+
+
+def _diff_rows(old: str, new: str) -> list[tuple[str, str]]:
+    """LCS line diff -> list of (" " | "-" | "+", line)."""
+    o, n = old.splitlines(), new.splitlines()
+    rows: list[tuple[str, str]] = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=o, b=n).get_opcodes():
+        if tag == "equal":
+            rows += [(" ", ln) for ln in o[i1:i2]]
+        elif tag == "delete":
+            rows += [("-", ln) for ln in o[i1:i2]]
+        elif tag == "insert":
+            rows += [("+", ln) for ln in n[j1:j2]]
+        else:  # replace
+            rows += [("-", ln) for ln in o[i1:i2]]
+            rows += [("+", ln) for ln in n[j1:j2]]
+    return rows
+
+
+_DIFF_STYLE = {"+": "#2ea043", "-": "#f85149", " ": "dim"}
+
+
+def _edit_diff(path: str, old: str, new: str):
+    """Return (rich_text, plain_text) for an edit's coloured -/+ diff."""
+    header = f"🔧 edit · {path}"
+    text = Text(header + "\n", style="bold")
+    plain = [header]
+    for sign, line in _diff_rows(old, new):
+        prefix = (sign + " ") if sign != " " else "  "
+        text.append(prefix + line + "\n", style=_DIFF_STYLE[sign])
+        plain.append(prefix + line)
+    return text, "\n".join(plain)
 
 
 class AhaCodeApp(App):
@@ -305,6 +339,10 @@ class AhaCodeApp(App):
         elif isinstance(event, ToolCallDelta):
             if event.name == "todo_write":
                 return  # todo_write shows in the panel on its final call, not a bubble
+            if event.name == "edit":
+                boxes["thinking"] = boxes["answer"] = None
+                self._status("● editing…  (esc to stop)")
+                return  # edit's coloured diff is rendered on the final ToolCall
             boxes["thinking"] = boxes["answer"] = None
             buf = boxes["tool_buf"].get(event.index, "") + event.fragment
             boxes["tool_buf"][event.index] = buf
@@ -324,6 +362,16 @@ class AhaCodeApp(App):
                 boxes["tool"].clear()
                 boxes["tool_buf"].clear()
                 self._status("● planning…  (esc to stop)")
+                return
+            if event.name == "edit":  # coloured -/+ diff from old_string/new_string
+                a = event.arguments
+                text, plain = _edit_diff(a.get("path", "?"), a.get("old_string", ""), a.get("new_string", ""))
+                box = Chatbox("", role="tool-diff")
+                box.set_rich(text, plain)
+                await container.mount(box)
+                boxes["tool"].clear()
+                boxes["tool_buf"].clear()
+                self._status("● editing…  (esc to stop)")
                 return
             if boxes["tool"]:  # already rendered live via ToolCallDelta
                 boxes["tool"].clear()
