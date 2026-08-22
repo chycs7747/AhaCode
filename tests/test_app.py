@@ -125,6 +125,29 @@ async def test_tool_result_block_folds_by_size_and_error(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_assistant_answer_renders_as_markdown(monkeypatch):
+    """Assistant answers render as Markdown so ```code``` / ```diff fences become
+    highlighted blocks (elia's rich.markdown.Markdown), not literal backticks. The
+    raw markdown is still kept in _content for logic/tests."""
+    from rich.markdown import Markdown as RichMarkdown
+
+    def with_code(messages, tools=None):
+        yield TextDelta("Here you go:\n\n```python\nprint('hi')\n```\n")
+
+    monkeypatch.setattr(client, "stream_chat", with_code)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", Input).value = "show code"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        answer = [b for b in app.query(Chatbox) if b.has_class("chatbox--assistant")][-1]
+        assert "```python" in answer._content            # raw markdown kept
+        assert isinstance(answer.render(), RichMarkdown)  # rendered as markdown
+        assert app._exception is None
+
+
+@pytest.mark.asyncio
 async def test_no_thinking_bubble_when_model_does_not_think(monkeypatch):
     """A model that never thinks mounts no thinking bubble at all (lazy mount)."""
     def text_only(messages, tools=None):

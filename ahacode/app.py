@@ -223,7 +223,8 @@ class AhaCodeApp(App):
             return Chatbox(content, role="tool-call")
         if role == "tool":
             return Chatbox(content, role="tool-result")
-        return Chatbox(content, role=role)
+        # Restored assistant answers render as Markdown too (see _render_event).
+        return Chatbox(content, role=role, markdown=(role == "assistant"))
 
     async def _say_system(self, text: str) -> None:
         """Show an informational bubble (commands, status) — never part of the session."""
@@ -406,7 +407,9 @@ class AhaCodeApp(App):
         elif isinstance(event, TextDelta):
             self._fold_thinking(boxes)  # answer starting → auto-collapse the reasoning
             if boxes["answer"] is None:
-                boxes["answer"] = Chatbox("", role="assistant")
+                # markdown=True: render the answer as Markdown so ```code``` and
+                # ```diff fences become highlighted blocks (elia's Chatbox model).
+                boxes["answer"] = Chatbox("", role="assistant", markdown=True)
                 await container.mount(boxes["answer"])
             boxes["answer"].append_chunk(event.text)
             self._status("● generating…  (esc to stop)")
