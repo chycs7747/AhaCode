@@ -1,26 +1,22 @@
+import json
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 
 from openai import OpenAI
 
 from ahacode import config
+from ahacode.events import Event, TextDelta, ThinkingDelta, ToolCall
 
-# The unified delta format the UI consumes.
-# Provider-specific differences are absorbed entirely inside this module.
-Delta = tuple[str, str]  # ("thinking" | "text", text fragment)
+# The UI never sees provider-specific shapes: this module converts them into the
+# canonical events in events.py. A plain turn emits TextDelta / ThinkingDelta;
+# when tools are offered, completed ToolCalls are emitted once reassembled.
 
-# Client and config are created lazily on the first real request, so merely
-# importing this module has no side effects (no config file written, no
-# network client built) — tests that fake stream_chat never touch either.
 _client: OpenAI | None = None
 _cfg: config.ModelConfig | None = None
 
 
 def reset() -> None:
-    """Forget the cached client and config; the next request reloads from disk.
-
-    Called after /commands change the config file.
-    """
+    """Forget the cached client and config; the next request reloads from disk."""
     global _client, _cfg
     _client = None
     _cfg = None
@@ -30,38 +26,83 @@ def _ensure_client() -> tuple[OpenAI, config.ModelConfig]:
     global _client, _cfg
     if _client is None:
         _cfg = config.load()
-        # Local servers often ignore the key, but the SDK requires one.
-        # The timeout caps how long a blocking read may wait between chunks.
         _client = OpenAI(
             base_url=_cfg.base_url, api_key=_cfg.api_key, timeout=_cfg.timeout
         )
     return _client, _cfg
 
 
-def stream_chat(messages: list[dict]) -> Iterator[Delta]:
-    """Send the full conversation history and yield (kind, fragment) deltas."""
-    client, cfg = _ensure_client()
-    # `with` closes the HTTP connection when the stream ends — including when the
-    # caller abandons this generator mid-stream (GeneratorExit unwinds the block).
-    # Without it a cancelled request keeps occupying the server (fatal on a
-    # single-slot gateway).
-    with client.chat.completions.create(
-        model=cfg.name,
-        messages=messages,
-        stream=True,
-    ) as response:
-        for chunk in response:
-            if not chunk.choices:
-                continue
-        delta = chunk.choices[0].delta
-        # Some servers stream thinking under "reasoning" (verified on the wire
-        # against vLLM). The field is not part of the SDK's typed model, hence
-        # the defensive getattr.
+def _iter_events(chunks: Iterable) -> Iterator[Event]:
+    """Convert raw OpenAI stream chunks into canonical events.
+
+    Pure (no network) so the reassembly logic is unit-testable with synthetic
+    chunks. Tool-call arguments arrive as JSON fragments spread across many
+    chunks (`{"path": "` -> `Se` -> `oul` -> `"}`), keyed by an index; we buffer
+    per index and only parse once the stream ends — the classic "message framing"
+    problem: a byte stream carries no record boundaries, so the receiver must
+    reassemble whole messages itself.
+    """
+    pending: dict[int, dict] = {}  # index -> {"id", "name", "args"}
+    finish_reason: str | None = None
+
+    for chunk in chunks:
+        if not chunk.choices:  # usage-only trailer chunk (stream_options.include_usage)
+            continue
+        choice = chunk.choices[0]
+        if choice.finish_reason:
+            finish_reason = choice.finish_reason
+        delta = choice.delta
+
+        # Thinking: some servers stream it under "reasoning" (verified on the wire
+        # against vLLM); not in the SDK's typed model, hence the defensive getattr.
         reasoning = getattr(delta, "reasoning", None)
         if isinstance(reasoning, str) and reasoning:
-            yield ("thinking", reasoning)
+            yield ThinkingDelta(reasoning)
         if isinstance(delta.content, str) and delta.content:
-            yield ("text", delta.content)
+            yield TextDelta(delta.content)
+
+        for frag in getattr(delta, "tool_calls", None) or []:
+            slot = pending.setdefault(frag.index, {"id": "", "name": "", "args": ""})
+            if frag.id:
+                slot["id"] = frag.id
+            fn = getattr(frag, "function", None)
+            if fn and fn.name:
+                slot["name"] = fn.name
+            if fn and fn.arguments:
+                slot["args"] += fn.arguments
+
+    # A "length" finish means the model was cut off at the token limit, so any
+    # tool call it was mid-way through emitting is half-built and unsafe to run
+    # (Roo Code / Pi both refuse these). Skip them rather than execute garbage.
+    if finish_reason == "length" and pending:
+        yield TextDelta("\n[response truncated at token limit — tool call(s) skipped]")
+        return
+
+    for slot in pending.values():
+        try:
+            arguments = json.loads(slot["args"] or "{}")
+        except json.JSONDecodeError:
+            yield TextDelta(f"\n[tool call '{slot['name']}' had unparseable arguments — skipped]")
+            continue
+        yield ToolCall(id=slot["id"], name=slot["name"], arguments=arguments)
+
+
+def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterator[Event]:
+    """Send the conversation (optionally with tool specs) and yield canonical events."""
+    client, cfg = _ensure_client()
+    kwargs: dict = {"model": cfg.name, "messages": messages, "stream": True}
+    if tools:
+        kwargs["tools"] = tools
+        # Explicit even though "auto" is the API default: it states plainly that
+        # the *model* decides whether to call a tool (vs "required"/"none"/a named
+        # tool, which would force its hand). Only sent alongside tools — some
+        # servers reject tool_choice without a tools list.
+        kwargs["tool_choice"] = "auto"
+    # `with` closes the HTTP connection on every exit path — including when the
+    # caller abandons this generator mid-stream (GeneratorExit) — so a cancelled
+    # request stops occupying the single-slot gateway.
+    with client.chat.completions.create(**kwargs) as response:
+        yield from _iter_events(response)
 
 
 def list_models() -> list[str]:
@@ -74,11 +115,11 @@ FAKE_THINKING = "The user greeted me. Keep the reply short."
 FAKE_RESPONSE = "Hello! How can I help you today?"
 
 
-def stream_chat_fake(messages: list[dict]) -> Iterator[Delta]:
-    """Offline fake stream with the same (kind, fragment) protocol — for tests."""
+def stream_chat_fake(messages: list[dict], tools: list[dict] | None = None) -> Iterator[Event]:
+    """Offline fake stream emitting the same canonical events — for tests."""
     for word in FAKE_THINKING.split(" "):
         time.sleep(0.01)
-        yield ("thinking", word + " ")
+        yield ThinkingDelta(word + " ")
     for word in FAKE_RESPONSE.split(" "):
         time.sleep(0.01)
-        yield ("text", word + " ")
+        yield TextDelta(word + " ")
