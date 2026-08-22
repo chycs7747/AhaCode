@@ -146,10 +146,13 @@ ModelBar #auto-approve {
     background: transparent;
 }
 
-/* When auto-approve is on, the ✓ and its label turn green (the check colour); off,
-   the box is empty and the label is default. */
+/* auto-approve: OFF shows an empty box (the ✓ is hidden by matching the box
+   background); ON shows a green ✓ and a green label. */
+ModelBar #auto-approve > .toggle--button {
+    color: $panel;          /* ✓ invisible when off — blends into the box */
+}
 ModelBar #auto-approve.-on > .toggle--button {
-    color: $success;
+    color: $success;        /* green ✓ when on */
 }
 ModelBar #auto-approve.-on > .toggle--label {
     color: $success;
@@ -300,9 +303,10 @@ ModelBar #send-btn {
     margin-left: 1;
 }
 
-/* Select dropdowns open upward when there's no room below — the composer sits at
-   the bottom, so the menu inflects above the control (Claude Code style) instead
-   of overlapping the bar. */
+/* Select dropdowns float ABOVE the button with a gap (the composer is at the
+   bottom): margin-bottom lifts the overlay clear of the control so it never covers
+   it — the button stays visible and clickable to close (Claude Code style). */
 ModelBar SelectOverlay {
-    constrain: none inflect;
+    constrain: none inside;
+    margin-bottom: 4;
 }

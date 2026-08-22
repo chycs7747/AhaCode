@@ -10,9 +10,31 @@ from ahacode import client, config
 
 
 class Checkmark(Checkbox):
-    """Checkbox that shows a ✓ when on instead of Textual's default X."""
+    """Checkbox that shows a ✓ when on and a truly empty box when off.
+
+    Textual always draws BUTTON_INNER (its default off-state just dims it, so a
+    mark still shows); we render a space when off so the box is genuinely empty
+    until checked.
+    """
 
     BUTTON_INNER = "✓"
+
+    @property
+    def _button(self):
+        from textual.content import Content
+        from textual.style import Style
+
+        inner = self.BUTTON_INNER if self.value else " "
+        button_style = self.get_visual_style("toggle--button")
+        side_style = Style(
+            foreground=button_style.background,
+            background=self.background_colors[1],
+        )
+        return Content.assemble(
+            (self.BUTTON_LEFT, side_style),
+            (inner, button_style),
+            (self.BUTTON_RIGHT, side_style),
+        )
 
 
 class ToggleSelect(Select):
