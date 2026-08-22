@@ -34,9 +34,18 @@ Chatbox {
     text-style: italic;
 }
 
-.chatbox--assistant {
+/* One assistant turn (thinking → tools → answer) is wrapped in a .turn container
+   with a green left rail, so the whole flow reads as one connected group instead
+   of a flat stack of toggles. The answer's own border is dropped — the rail is
+   the green line now. */
+.turn {
+    height: auto;
     border-left: thick $success;
+    padding: 0 0 0 1;
+    margin-bottom: 1;
 }
+/* .chatbox--assistant has no own border now — the enclosing .turn rail is the
+   green line. (Rule intentionally omitted so it inherits the base Chatbox.) */
 
 .chatbox--system {
     color: $text-muted;   /* command replies — informational, not conversation */

@@ -83,6 +83,25 @@ async def test_thinking_block_autocollapses_after_answer(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_assistant_reply_grouped_in_a_turn_rail(fake_llm):
+    """A reply's blocks (thinking, answer, …) are grouped in one .turn rail; the
+    user message stays outside it, so the turn's flow reads as one group."""
+    from textual.containers import Vertical
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.press("h", "i")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        turns = [w for w in app.query(Vertical) if w.has_class("turn")]
+        assert len(turns) == 1
+        inside = list(turns[0].query(Chatbox))
+        assert any(b.has_class("chatbox--assistant") for b in inside)  # answer in the rail
+        assert not any(b.has_class("chatbox--user") for b in inside)   # user stays outside
+
+
+@pytest.mark.asyncio
 async def test_bracketed_content_renders_without_markup_crash(fake_llm):
     """Regression: model/tool text with '[' — file dumps (list[dict], arr[0]),
     JSON, markdown links — must render literally, not be parsed as Rich markup.

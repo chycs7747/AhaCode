@@ -200,6 +200,13 @@ class AhaCodeApp(App):
         btn.label = "■ Stop" if running else "↑ Send"
         btn.variant = "error" if running else "primary"
 
+    def _prune_empty_turn(self) -> None:
+        """Drop the turn's rail if the reply produced no blocks (immediate error)."""
+        turn = getattr(self, "_turn", None)
+        if turn is not None and turn.is_mounted and not turn.children:
+            turn.remove()
+        self._turn = None
+
     async def _render_history(self) -> None:
         """Clear the chat and remount the current session's messages as bubbles."""
         container = self.query_one("#chat-container", VerticalScroll)
@@ -207,11 +214,20 @@ class AhaCodeApp(App):
         # Map tool_call_id -> tool name so restored tool results can render as the
         # same foldable ToolResultBlock the live turn produced.
         names: dict[str, str] = {}
+        turn = None  # current assistant-turn rail container
         for msg in self.session.messages:
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            role = msg["role"]
+            if role == "assistant" and msg.get("tool_calls"):
                 for c in msg["tool_calls"]:
                     names[c["id"]] = c["function"]["name"]
-            await container.mount(self._bubble_for(msg, names))
+            if role == "user":
+                turn = None  # a user message closes the previous assistant turn
+                await container.mount(self._bubble_for(msg, names))
+            else:  # assistant / tool -> grouped under one .turn rail
+                if turn is None:
+                    turn = Vertical(classes="turn")
+                    await container.mount(turn)
+                await turn.mount(self._bubble_for(msg, names))
         container.scroll_end(animate=False)
 
     async def _new_session(self) -> None:
@@ -299,6 +315,11 @@ class AhaCodeApp(App):
 
         container = self.query_one("#chat-container", VerticalScroll)
         await container.mount(Chatbox(text, role="user"))
+        # The assistant's whole reply (thinking → tools → answer) is mounted into one
+        # .turn container with a green left rail, so the steps read as one connected
+        # flow rather than a flat stack. The user message stays outside it.
+        self._turn = Vertical(classes="turn")
+        await container.mount(self._turn)
         container.scroll_end(animate=False)
 
         # Run the agent loop in a worker. A snapshot copy is passed so the worker
@@ -308,7 +329,7 @@ class AhaCodeApp(App):
         if self.mode == "plan":
             history = [{"role": "system", "content": PLAN_SYSTEM_PROMPT}, *history]
         self._status("● waiting…  (esc to stop)")
-        self._response_worker = self.stream_response(history)
+        self._response_worker = self.stream_response(history, self._turn)
         self._set_send_running(True)  # the Send button becomes Stop
 
     @staticmethod
@@ -402,6 +423,7 @@ class AhaCodeApp(App):
     @on(ResponseComplete)
     def response_complete(self, event: ResponseComplete) -> None:
         self._set_send_running(False)  # turn done — Stop reverts to Send
+        self._prune_empty_turn()
         # Shared state is only ever touched on the main thread. Persist the whole
         # turn — assistant text, tool calls, and tool results alike.
         for msg in event.messages:
@@ -416,6 +438,7 @@ class AhaCodeApp(App):
     @on(ResponseFailed)
     async def response_failed(self, event: ResponseFailed) -> None:
         self._set_send_running(False)
+        self._prune_empty_turn()
         container = self.query_one("#chat-container", VerticalScroll)
         await container.mount(
             Chatbox(f"⚠ {event.error}\n(check the server, then try again)", role="error")
@@ -527,11 +550,13 @@ class AhaCodeApp(App):
             await container.mount(
                 ToolResultBlock(event.name, event.output, event.is_error, summary=summary)
             )
-        # Smart auto-scroll: follow only while the user is near the bottom.
-        if container.scroll_y in range(
-            container.max_scroll_y - 3, container.max_scroll_y + 1
+        # Smart auto-scroll on the chat scroller (container is the turn, not the
+        # scroller): follow only while the user is near the bottom.
+        scroller = self.query_one("#chat-container", VerticalScroll)
+        if scroller.scroll_y in range(
+            scroller.max_scroll_y - 3, scroller.max_scroll_y + 1
         ):
-            container.scroll_end(animate=False)
+            scroller.scroll_end(animate=False)
 
     def action_stop(self) -> None:
         """Cancel the in-flight response (cooperative — the loop checks is_cancelled)."""
@@ -564,10 +589,10 @@ class AhaCodeApp(App):
     # exclusive=True: a new message cancels the previous worker.
     # exit_on_error=False: a failing worker must not take the whole app down.
     @work(thread=True, exclusive=True, exit_on_error=False)
-    def stream_response(self, messages: list[dict]) -> None:
+    def stream_response(self, messages: list[dict], turn) -> None:
         """Run the agent loop in a thread, rendering its events into the chat."""
         worker = get_current_worker()
-        container = self.query_one("#chat-container", VerticalScroll)
+        container = turn  # the reply's blocks mount into this turn's rail container
         # Current turn's live bubbles; _render_event fills these in on the main thread.
         boxes: dict = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}, "call_args": {}}
 
