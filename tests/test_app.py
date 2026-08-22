@@ -64,6 +64,24 @@ async def test_deltas_routed_to_right_boxes(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_thinking_block_autocollapses_after_answer(fake_llm):
+    """The reasoning block stays open while streaming, then folds once the answer
+    begins — kilocode's auto_collapse_reasoning. Its content is preserved so a
+    click can reopen it."""
+    from ahacode.widgets.thinking import ThinkingBlock
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.press("h", "i")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        block = app.query_one(ThinkingBlock)
+        assert block.collapsed is True  # folded after the answer started
+        assert block._box._content.strip() == client.FAKE_THINKING
+
+
+@pytest.mark.asyncio
 async def test_no_thinking_bubble_when_model_does_not_think(monkeypatch):
     """A model that never thinks mounts no thinking bubble at all (lazy mount)."""
     def text_only(messages, tools=None):

@@ -19,6 +19,7 @@ from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.session_picker import SessionPicker
+from ahacode.widgets.thinking import ThinkingBlock
 from ahacode.widgets.todo_panel import TodoPanel
 from ahacode.widgets.model_bar import ModelBar
 
@@ -373,6 +374,18 @@ class AhaCodeApp(App):
         container.scroll_end(animate=False)
         self._status("")
 
+    def _fold_thinking(self, boxes: dict) -> None:
+        """Collapse this turn's thinking block once the reasoning is done.
+
+        Mirrors kilocode's `auto_collapse_reasoning` (config.ts:109 — "collapse
+        reasoning blocks after the agent finishes writing them"): the block stays
+        open while it streams, then folds when the answer or a tool call begins.
+        """
+        block = boxes["thinking"]
+        if block is not None:
+            block.done()
+            boxes["thinking"] = None
+
     async def _render_event(
         self, event, boxes: dict, container: VerticalScroll
     ) -> None:
@@ -385,11 +398,12 @@ class AhaCodeApp(App):
         """
         if isinstance(event, ThinkingDelta):
             if boxes["thinking"] is None:
-                boxes["thinking"] = Chatbox("", role="thinking")
+                boxes["thinking"] = ThinkingBlock()  # foldable; starts expanded
                 await container.mount(boxes["thinking"])
             boxes["thinking"].append_chunk(event.text)
             self._status("● thinking…  (esc to stop)")
         elif isinstance(event, TextDelta):
+            self._fold_thinking(boxes)  # answer starting → auto-collapse the reasoning
             if boxes["answer"] is None:
                 boxes["answer"] = Chatbox("", role="assistant")
                 await container.mount(boxes["answer"])
@@ -399,10 +413,12 @@ class AhaCodeApp(App):
             if event.name == "todo_write":
                 return  # todo_write shows in the panel on its final call, not a bubble
             if event.name == "edit":
-                boxes["thinking"] = boxes["answer"] = None
+                self._fold_thinking(boxes)
+                boxes["answer"] = None
                 self._status("● editing…  (esc to stop)")
                 return  # edit's coloured diff is rendered on the final ToolCall
-            boxes["thinking"] = boxes["answer"] = None
+            self._fold_thinking(boxes)
+            boxes["answer"] = None
             buf = boxes["tool_buf"].get(event.index, "") + event.fragment
             boxes["tool_buf"][event.index] = buf
             box = boxes["tool"].get(event.index)
@@ -415,7 +431,8 @@ class AhaCodeApp(App):
             verb = "writing" if event.name == "write" else f"running {event.name}"
             self._status(f"● {verb}…  (esc to stop)")
         elif isinstance(event, ToolCall):
-            boxes["thinking"] = boxes["answer"] = None  # next turn opens fresh bubbles
+            self._fold_thinking(boxes)  # fold reasoning; next turn opens fresh bubbles
+            boxes["answer"] = None
             if event.name == "todo_write":  # goes to the pinned panel, not a bubble
                 self.query_one(TodoPanel).update_todos(event.arguments.get("items", []))
                 boxes["tool"].clear()

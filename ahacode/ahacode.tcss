@@ -167,3 +167,25 @@ SessionPicker {
     height: auto;
     max-height: 22;
 }
+
+/* Foldable reasoning block (Textual Collapsible). Blend it into the chat: no
+   panel chrome, a muted italic title, and drop the inner bubble's left border
+   since the Collapsible already provides the visual nesting. */
+ThinkingBlock {
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin-bottom: 1;
+}
+
+ThinkingBlock > CollapsibleTitle {
+    background: transparent;
+    color: $text-muted;
+    text-style: italic;
+}
+
+ThinkingBlock .chatbox--thinking {
+    border-left: none;
+    margin: 0;
+    padding: 0;
+}
