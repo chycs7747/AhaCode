@@ -469,3 +469,55 @@ async def test_auto_approve_runs_bash_without_a_modal(monkeypatch):
         assert results and "hi" in results[-1]._content
 
     assert app.session.messages[2]["content"] == "hi"  # command actually ran
+
+
+@pytest.mark.asyncio
+async def test_todo_write_updates_pinned_panel_not_a_bubble(monkeypatch):
+    """todo_write fills the pinned panel; it does not drop an inline tool bubble."""
+    from ahacode.events import ToolCall
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    turns = iter([
+        [ToolCall(id="1", name="todo_write", arguments={"items": [
+            {"content": "step one", "status": "done"},
+            {"content": "step two", "status": "pending"},
+        ]})],
+        [TextDelta("planned")],
+    ])
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter(next(turns)))
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", Input).value = "plan it"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        panel = app.query_one(TodoPanel)
+        assert panel.display is True
+        assert "step one" in panel._content and "step two" in panel._content
+        # no inline tool-call / plan bubble was mounted for todo_write
+        assert [b for b in app.query(Chatbox) if b.has_class("chatbox--tool-call")] == []
+
+
+@pytest.mark.asyncio
+async def test_todo_panel_marks_complete_when_all_done(monkeypatch):
+    from ahacode.events import ToolCall
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    turns = iter([
+        [ToolCall(id="1", name="todo_write", arguments={"items": [
+            {"content": "only step", "status": "done"},
+        ]})],
+        [TextDelta("done")],
+    ])
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter(next(turns)))
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", Input).value = "go"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        panel = app.query_one(TodoPanel)
+        assert panel.has_class("todo-panel--done")
+        assert "complete" in panel._content

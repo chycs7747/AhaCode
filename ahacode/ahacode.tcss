@@ -119,3 +119,16 @@ ModelBar #auto-approve {
     border: none;
     background: transparent;
 }
+
+TodoPanel {
+    dock: top;
+    height: auto;
+    padding: 0 2;
+    border-bottom: solid $secondary;
+    color: $text-muted;
+}
+
+TodoPanel.todo-panel--done {
+    border-bottom: solid $success;
+    color: $success;
+}

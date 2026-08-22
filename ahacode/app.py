@@ -15,6 +15,7 @@ from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolResult, Usage
 from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
+from ahacode.widgets.todo_panel import TodoPanel
 from ahacode.widgets.model_bar import ModelBar
 
 
@@ -72,6 +73,7 @@ class AhaCodeApp(App):
 
     def compose(self) -> ComposeResult:
         # Static skeleton only — chat bubbles are mounted at runtime.
+        yield TodoPanel()  # pinned plan checklist (docked top, hidden until used)
         with VerticalScroll(id="chat-container") as container:
             container.can_focus = False  # keep initial focus on the input
         with Vertical(id="bottom"):
@@ -266,17 +268,18 @@ class AhaCodeApp(App):
             boxes["answer"].append_chunk(event.text)
             self._status("● generating…  (esc to stop)")
         elif isinstance(event, ToolCall):
+            boxes["thinking"] = boxes["answer"] = None  # next turn opens fresh bubbles
+            if event.name == "todo_write":  # goes to the pinned panel, not a bubble
+                self.query_one(TodoPanel).update_todos(event.arguments.get("items", []))
+                self._status("● planning…  (esc to stop)")
+                return
             args = ", ".join(f"{k}={v!r}" for k, v in event.arguments.items())
             await container.mount(Chatbox(f"🔧 {event.name}({args})", role="tool-call"))
-            boxes["thinking"] = boxes["answer"] = None  # next turn opens fresh bubbles
             self._status(f"● running {event.name}…  (esc to stop)")
         elif isinstance(event, ToolResult):
-            if event.is_error:
-                role = "tool-error"
-            elif event.name == "todo_write":
-                role = "plan"  # render the plan checklist distinctly
-            else:
-                role = "tool-result"
+            if event.name == "todo_write":
+                return  # already reflected in the pinned panel
+            role = "tool-error" if event.is_error else "tool-result"
             await container.mount(Chatbox(event.output, role=role))
         # Smart auto-scroll: follow only while the user is near the bottom.
         if container.scroll_y in range(
