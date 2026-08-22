@@ -1,7 +1,7 @@
 import time
 
 import pytest
-from textual.widgets import Input, Select
+from textual.widgets import Checkbox, Input, Select
 
 from ahacode import client, config, storage
 from ahacode.app import AhaCodeApp
@@ -441,3 +441,31 @@ async def test_status_shows_token_stats_after_turn(monkeypatch):
     assert "prompt 100" in status
     assert "gen 20" in status
     assert "tok/s" in status
+
+
+@pytest.mark.asyncio
+async def test_auto_approve_runs_bash_without_a_modal(monkeypatch):
+    """With auto-approve on, a bash call runs without the confirmation modal."""
+    from ahacode.events import ToolCall
+    from ahacode.widgets.approval_modal import ApprovalModal
+
+    turns = iter([
+        [ToolCall(id="1", name="bash", arguments={"command": "echo hi"})],
+        [TextDelta("done")],
+    ])
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter(next(turns)))
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#auto-approve", Checkbox).value = True  # toggle on
+        await pilot.pause()
+        assert app.auto_approve is True
+        app.query_one("#prompt", Input).value = "run echo hi"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert not isinstance(app.screen, ApprovalModal)  # never prompted
+        results = [b for b in app.query(Chatbox) if b.has_class("chatbox--tool-result")]
+        assert results and "hi" in results[-1]._content
+
+    assert app.session.messages[2]["content"] == "hi"  # command actually ran

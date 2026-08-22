@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from textual import on, work
 from textual.containers import Horizontal
 from textual.message import Message
-from textual.widgets import Select, Static
+from textual.widgets import Checkbox, Select, Static
 
 from ahacode import client, config
 
@@ -24,6 +24,10 @@ class ModelBar(Horizontal):
     class ModeChosen(Message):
         mode: str
 
+    @dataclass
+    class AutoApproveChanged(Message):
+        value: bool
+
     def __init__(self) -> None:
         super().__init__()
         self._names: list[str] = []
@@ -38,6 +42,7 @@ class ModelBar(Horizontal):
             allow_blank=False,
             id="mode-select",
         )
+        yield Checkbox("auto-approve", value=False, id="auto-approve")
 
     def on_mount(self) -> None:
         self.refresh_state()
@@ -79,3 +84,8 @@ class ModelBar(Horizontal):
     def mode_changed(self, event: Select.Changed) -> None:
         event.stop()  # the raw Select event stays inside the bar
         self.post_message(self.ModeChosen(str(event.value)))
+
+    @on(Checkbox.Changed, "#auto-approve")
+    def auto_approve_changed(self, event: Checkbox.Changed) -> None:
+        event.stop()  # the raw Checkbox event stays inside the bar
+        self.post_message(self.AutoApproveChanged(event.value))

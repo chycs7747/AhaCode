@@ -44,6 +44,7 @@ class AhaCodeApp(App):
         self.session = ChatSession()
         self.mode = "act"  # "act" (full tools) or "plan" (read-only + todo_write)
         self._last_status = ""
+        self.auto_approve = False  # session-only: skip the approval modal when on
         latest = storage.latest_session()
         if latest:  # resume the most recent session
             self.session_path = latest
@@ -205,6 +206,19 @@ class AhaCodeApp(App):
         else:
             await self._say_system("act mode — full tools (bash asks first).")
 
+    @on(ModelBar.AutoApproveChanged)
+    async def auto_approve_changed(self, event: ModelBar.AutoApproveChanged) -> None:
+        if event.value == self.auto_approve:
+            return  # programmatic re-sync, not a real toggle
+        self.auto_approve = event.value
+        if event.value:
+            await self._say_system(
+                "auto-approve ON — tools run without asking "
+                "(dangerous commands are still blocked)."
+            )
+        else:
+            await self._say_system("auto-approve OFF — tools ask first.")
+
     def _registry_for_mode(self) -> dict:
         """Plan mode hides side-effecting tools so the model can only investigate + plan."""
         if self.mode == "plan":
@@ -301,6 +315,8 @@ class AhaCodeApp(App):
             self.call_from_thread(self._render_event, event, boxes, container)
 
         def approve(call) -> bool:
+            if self.auto_approve:  # denylist already hard-blocked the dangerous ones
+                return True
             # Cross-thread handshake: the loop runs here (worker thread) but the
             # modal lives on the main thread. We push it (non-blocking) via
             # call_from_thread, then block this thread on an Event until the user

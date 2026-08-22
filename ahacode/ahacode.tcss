@@ -112,3 +112,10 @@ ApprovalModal {
 ModelBar #mode-select {
     width: 12;
 }
+
+ModelBar #auto-approve {
+    height: 3;
+    content-align: left middle;
+    border: none;
+    background: transparent;
+}
