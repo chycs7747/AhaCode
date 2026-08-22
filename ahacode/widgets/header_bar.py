@@ -16,6 +16,7 @@ class HeaderBar(Horizontal):
 
     def compose(self) -> ComposeResult:
         yield Static("AhaCode", id="session-title")
+        yield Static("", id="endpoint")  # connection identity lives up here, not in the composer
         yield Button("+ New", id="new-session-btn", classes="header-btn")
         yield Button("≡ Sessions", id="open-sessions-btn", classes="header-btn")
 
@@ -23,3 +24,11 @@ class HeaderBar(Horizontal):
         """Show the session's (auto-generated) title next to the app name."""
         self._title_text = f"AhaCode · {title}" if title else "AhaCode"
         self.query_one("#session-title", Static).update(self._title_text)
+
+    def set_endpoint(self, url: str) -> None:
+        """Show a compact host:port (drop the scheme and trailing /v1)."""
+        short = url.split("://", 1)[-1].rstrip("/")
+        if short.endswith("/v1"):
+            short = short[:-3]
+        self._endpoint_text = short
+        self.query_one("#endpoint", Static).update(short)

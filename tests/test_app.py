@@ -222,6 +222,45 @@ async def test_header_bar_shows_session_title(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_endpoint_shows_in_header_not_the_composer(fake_llm):
+    """The endpoint moved to the header bar; the composer footer no longer has it."""
+    from ahacode.widgets.header_bar import HeaderBar
+    from ahacode.widgets.model_bar import ModelBar
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        shown = app.query_one(HeaderBar)._endpoint_text
+        assert "127.0.0.1:" in shown       # compact host:port
+        assert "http://" not in shown and not shown.endswith("/v1")  # scheme/suffix stripped
+        assert not app.query_one(ModelBar).query("#endpoint")        # gone from the footer
+
+
+@pytest.mark.asyncio
+async def test_send_button_becomes_stop_while_streaming(monkeypatch):
+    """While a turn streams the Send button reads Stop; clicking it cancels."""
+    from textual.widgets import Button
+
+    def slow(messages, tools=None):
+        for _ in range(50):
+            time.sleep(0.02)
+            yield TextDelta("x")
+
+    monkeypatch.setattr(client, "stream_chat", slow)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "go"
+        await pilot.press("enter")
+        await pilot.pause(0.1)  # streaming now
+        btn = app.query_one("#send-btn", Button)
+        assert "Stop" in str(btn.label)
+        await pilot.click("#send-btn")  # the button doubles as Stop
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "Send" in str(btn.label)  # reverted once cancelled
+
+
+@pytest.mark.asyncio
 async def test_no_thinking_bubble_when_model_does_not_think(monkeypatch):
     """A model that never thinks mounts no thinking bubble at all (lazy mount)."""
     def text_only(messages, tools=None):

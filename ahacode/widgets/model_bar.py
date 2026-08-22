@@ -9,11 +9,12 @@ from ahacode import client, config
 
 
 class ModelBar(Horizontal):
-    """Status bar under the prompt: current endpoint plus a model picker.
+    """Composer footer under the prompt: mode + model + auto-approve controls, a
+    live status/stats readout, and the Send button.
 
-    The picker is filled from the server's /v1/models. Picking an entry posts
-    ModelChosen so the app can persist it — the app owns config and client state,
-    the bar only displays and reports.
+    The model picker is filled from the server's /v1/models. Picking an entry (or
+    changing mode / auto-approve) posts a message so the app can persist it — the
+    app owns config and client state, the bar only displays and reports.
     """
 
     @dataclass
@@ -33,18 +34,20 @@ class ModelBar(Horizontal):
         self._names: list[str] = []
 
     def compose(self):
-        yield Static(id="endpoint")
-        yield Static(id="status")  # live turn status (Thinking / Running tool / …)
-        yield Select([], prompt="model", id="model-select")
+        # Composer footer: settings on the left, live status in the flexible
+        # middle, the send/stop action on the right (Claude Code's shape). The
+        # endpoint moved to the HeaderBar — it's connection identity, not a control.
         yield Select(
             [("act", "act"), ("plan", "plan")],
             value="act",
             allow_blank=False,
             id="mode-select",
         )
+        yield Select([], prompt="model", id="model-select")
         yield Checkbox("auto-approve", value=False, id="auto-approve")
-        # Send button: a click alternative to Enter. Button.Pressed bubbles to the
-        # app, which reads the prompt and submits it.
+        yield Static(id="status")  # live status / token stats (flexible middle)
+        # Send button: a click alternative to Enter; the app flips it to "Stop"
+        # while a turn is streaming. Button.Pressed bubbles to the app.
         yield Button("↑ Send", id="send-btn", variant="primary")
 
     def on_mount(self) -> None:
@@ -58,7 +61,6 @@ class ModelBar(Horizontal):
     def refresh_state(self, names: list[str] | None = None) -> None:
         """Sync the bar with config.toml; optionally replace the option list."""
         cfg = config.load()
-        self.query_one("#endpoint", Static).update(cfg.base_url)
         if names is not None:
             self._names = list(names)
         if cfg.name not in self._names:  # the configured model is always selectable

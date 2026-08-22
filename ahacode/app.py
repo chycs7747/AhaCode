@@ -163,12 +163,17 @@ class AhaCodeApp(App):
         self.console.push_theme(MARKDOWN_THEME)  # soften Rich Markdown colours
         meta = storage.read_session_meta(self.session_path) or {}
         self._set_header_title(meta.get("title", ""))
+        self._set_header_endpoint()
         await self._render_history()
         self.query_one("#prompt", PromptInput).focus()  # not the header buttons
 
     def _set_header_title(self, title: str) -> None:
         """Reflect the current session's title in the top bar."""
         self.query_one(HeaderBar).set_title(title)
+
+    def _set_header_endpoint(self) -> None:
+        """Reflect the current server endpoint in the top bar."""
+        self.query_one(HeaderBar).set_endpoint(config.load().base_url)
 
     @on(Button.Pressed, "#new-session-btn")
     async def _on_new_session_button(self, event: Button.Pressed) -> None:
@@ -183,7 +188,17 @@ class AhaCodeApp(App):
     @on(Button.Pressed, "#send-btn")
     def _on_send_button(self, event: Button.Pressed) -> None:
         event.stop()
-        self.query_one("#prompt", PromptInput).submit()
+        worker = getattr(self, "_response_worker", None)
+        if worker is not None and worker.is_running:
+            self.action_stop()  # the button doubles as Stop while a turn streams
+        else:
+            self.query_one("#prompt", PromptInput).submit()
+
+    def _set_send_running(self, running: bool) -> None:
+        """Flip the composer button between Send (idle) and Stop (streaming)."""
+        btn = self.query_one("#send-btn", Button)
+        btn.label = "■ Stop" if running else "↑ Send"
+        btn.variant = "error" if running else "primary"
 
     async def _render_history(self) -> None:
         """Clear the chat and remount the current session's messages as bubbles."""
@@ -285,6 +300,7 @@ class AhaCodeApp(App):
             history = [{"role": "system", "content": PLAN_SYSTEM_PROMPT}, *history]
         self._status("● waiting…  (esc to stop)")
         self._response_worker = self.stream_response(history)
+        self._set_send_running(True)  # the Send button becomes Stop
 
     @staticmethod
     def _format_stats(stats: dict) -> str:
@@ -337,6 +353,7 @@ class AhaCodeApp(App):
             bar = self.query_one(ModelBar)
             bar.refresh_state()
             bar.load_models()  # a new endpoint offers a new model list
+            self._set_header_endpoint()
             return f"endpoint switched to: {args[0]}"
         return f"unknown command: {cmd} — try /help"
 
@@ -375,6 +392,7 @@ class AhaCodeApp(App):
 
     @on(ResponseComplete)
     def response_complete(self, event: ResponseComplete) -> None:
+        self._set_send_running(False)  # turn done — Stop reverts to Send
         # Shared state is only ever touched on the main thread. Persist the whole
         # turn — assistant text, tool calls, and tool results alike.
         for msg in event.messages:
@@ -388,6 +406,7 @@ class AhaCodeApp(App):
 
     @on(ResponseFailed)
     async def response_failed(self, event: ResponseFailed) -> None:
+        self._set_send_running(False)
         container = self.query_one("#chat-container", VerticalScroll)
         await container.mount(
             Chatbox(f"⚠ {event.error}\n(check the server, then try again)", role="error")
@@ -499,6 +518,7 @@ class AhaCodeApp(App):
         if worker is not None and worker.is_running:
             worker.cancel()
             self._status("■ stopped")
+            self._set_send_running(False)
 
     @work(thread=True, exit_on_error=False)
     def generate_title(self, messages: list[dict], path) -> None:

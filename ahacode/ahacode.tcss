@@ -48,23 +48,16 @@ ModelBar {
     padding: 0 1;
 }
 
-ModelBar #endpoint {
-    width: auto;
-    height: 3;
-    content-align: left middle;
-    color: $text-muted;
-    margin-right: 1;
-}
-
 ModelBar #status {
     width: 1fr;
     height: 3;
     content-align: left middle;
     color: $text-muted;
+    margin-left: 1;
 }
 
 ModelBar #model-select {
-    width: 20;
+    width: 24;
 }
 
 .chatbox--error {
@@ -134,7 +127,7 @@ ApprovalModal {
 }
 
 ModelBar #mode-select {
-    width: 10;
+    width: 12;
 }
 
 ModelBar #auto-approve {
@@ -252,6 +245,14 @@ HeaderBar {
     content-align: left middle;   /* vertically centre the title in the bar */
     text-style: bold;
     color: $text;
+}
+
+HeaderBar #endpoint {
+    width: auto;
+    height: 3;
+    content-align: right middle;
+    color: $text-muted;
+    margin-right: 2;
 }
 
 .header-btn {
