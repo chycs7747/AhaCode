@@ -189,3 +189,33 @@ ThinkingBlock .chatbox--thinking {
     margin: 0;
     padding: 0;
 }
+
+/* Tool result as a foldable card (Textual Collapsible, same as ThinkingBlock).
+   Blend into the chat; the inner bubble keeps its tool-result/error colour but
+   drops its own border since the Collapsible provides the nesting. */
+ToolResultBlock {
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin-bottom: 1;
+}
+
+ToolResultBlock > CollapsibleTitle {
+    background: transparent;
+}
+
+ToolResultBlock.tool-block--ok > CollapsibleTitle {
+    color: $text-muted;       /* results stay subordinate to the conversation */
+}
+
+ToolResultBlock.tool-block--error > CollapsibleTitle {
+    color: $error;            /* a failed call reads red even while collapsed */
+    text-style: italic;
+}
+
+ToolResultBlock .chatbox--tool-result,
+ToolResultBlock .chatbox--tool-error {
+    border-left: none;
+    margin: 0;
+    padding: 0;
+}

@@ -100,6 +100,31 @@ async def test_bracketed_content_renders_without_markup_crash(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_tool_result_block_folds_by_size_and_error(fake_llm):
+    """Tool results render as foldable cards: a short success stays open, a long
+    result and any error start collapsed (the reference long-output auto-collapse
+    + failure-collapses pattern). The inner bubble keeps its role class + content."""
+    from ahacode.widgets.tool_result import ToolResultBlock
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        c = app.query_one("#chat-container")
+        short = ToolResultBlock("bash", "hi", is_error=False)
+        long = ToolResultBlock("read", "\n".join(f"line {i}" for i in range(40)))
+        err = ToolResultBlock("bash", "boom", is_error=True)
+        await c.mount(short)
+        await c.mount(long)
+        await c.mount(err)
+        await pilot.pause()
+        assert short.collapsed is False           # short success stays open
+        assert long.collapsed is True             # long output folds away
+        assert err.collapsed is True              # failures fold to the header
+        assert err.has_class("tool-block--error")
+        assert long._box.has_class("chatbox--tool-result")
+        assert app._exception is None             # rendered without a crash
+
+
+@pytest.mark.asyncio
 async def test_no_thinking_bubble_when_model_does_not_think(monkeypatch):
     """A model that never thinks mounts no thinking bubble at all (lazy mount)."""
     def text_only(messages, tools=None):

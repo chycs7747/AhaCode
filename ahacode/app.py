@@ -20,6 +20,7 @@ from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.session_picker import SessionPicker
 from ahacode.widgets.thinking import ThinkingBlock
+from ahacode.widgets.tool_result import ToolResultBlock
 from ahacode.widgets.todo_panel import TodoPanel
 from ahacode.widgets.model_bar import ModelBar
 
@@ -460,8 +461,10 @@ class AhaCodeApp(App):
         elif isinstance(event, ToolResult):
             if event.name == "todo_write":
                 return  # already reflected in the pinned panel
-            role = "tool-error" if event.is_error else "tool-result"
-            await container.mount(Chatbox(event.output, role=role))
+            # A foldable card (icon + tool + size); long output/errors fold away.
+            await container.mount(
+                ToolResultBlock(event.name, event.output, event.is_error)
+            )
         # Smart auto-scroll: follow only while the user is near the bottom.
         if container.scroll_y in range(
             container.max_scroll_y - 3, container.max_scroll_y + 1
