@@ -77,3 +77,16 @@ def test_length_truncation_skips_partial_tool_call():
 def test_usage_only_trailer_chunk_is_ignored():
     chunks = [_chunk(_delta(content="hi")), _chunk(no_choices=True)]
     assert list(client._iter_events(chunks)) == [TextDelta("hi")]
+
+
+def test_usage_trailer_becomes_a_usage_event():
+    from ahacode.events import Usage
+    usage = SimpleNamespace(prompt_tokens=12, completion_tokens=7, total_tokens=19)
+    chunks = [
+        _chunk(_delta(content="hi"), finish_reason="stop"),
+        SimpleNamespace(choices=[], usage=usage),  # the include_usage trailer
+    ]
+    events = list(client._iter_events(chunks))
+    assert TextDelta("hi") in events
+    u = next(e for e in events if isinstance(e, Usage))
+    assert (u.prompt_tokens, u.completion_tokens, u.total_tokens) == (12, 7, 19)

@@ -48,6 +48,16 @@ class ToolResult:
     is_error: bool = False
 
 
+@dataclass
+class Usage:
+    """Token accounting for one model call, from the stream's usage trailer
+    (choices=[] chunk sent when stream_options.include_usage is on)."""
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
 # The union every consumer switches on. isinstance(event, TextDelta) is the
 # Python equivalent of matching on a discriminated-union `type` tag.
-Event = ThinkingDelta | TextDelta | ToolCall | ToolResult
+Event = ThinkingDelta | TextDelta | ToolCall | ToolResult | Usage

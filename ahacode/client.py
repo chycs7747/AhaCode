@@ -5,7 +5,7 @@ from collections.abc import Iterable, Iterator
 from openai import OpenAI
 
 from ahacode import config
-from ahacode.events import Event, TextDelta, ThinkingDelta, ToolCall
+from ahacode.events import Event, TextDelta, ThinkingDelta, ToolCall, Usage
 
 # The UI never sees provider-specific shapes: this module converts them into the
 # canonical events in events.py. A plain turn emits TextDelta / ThinkingDelta;
@@ -46,7 +46,14 @@ def _iter_events(chunks: Iterable) -> Iterator[Event]:
     finish_reason: str | None = None
 
     for chunk in chunks:
-        if not chunk.choices:  # usage-only trailer chunk (stream_options.include_usage)
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            yield Usage(
+                prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+                total_tokens=getattr(usage, "total_tokens", 0) or 0,
+            )
+        if not chunk.choices:  # usage-only trailer chunk (choices is empty here)
             continue
         choice = chunk.choices[0]
         if choice.finish_reason:
@@ -90,7 +97,12 @@ def _iter_events(chunks: Iterable) -> Iterator[Event]:
 def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterator[Event]:
     """Send the conversation (optionally with tool specs) and yield canonical events."""
     client, cfg = _ensure_client()
-    kwargs: dict = {"model": cfg.name, "messages": messages, "stream": True}
+    kwargs: dict = {
+        "model": cfg.name,
+        "messages": messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},  # ask for the token-usage trailer
+    }
     if tools:
         kwargs["tools"] = tools
         # Explicit even though "auto" is the API default: it states plainly that

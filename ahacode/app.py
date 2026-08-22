@@ -1,4 +1,5 @@
 import threading
+import time
 from dataclasses import dataclass, replace
 
 from textual import on, work
@@ -10,7 +11,7 @@ from textual.widgets import Input
 from textual.worker import get_current_worker
 
 from ahacode import agent, client, config, storage, tools
-from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolResult
+from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolResult, Usage
 from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
@@ -42,6 +43,7 @@ class AhaCodeApp(App):
         # Session state lives in a plain Python object, decoupled from widgets.
         self.session = ChatSession()
         self.mode = "act"  # "act" (full tools) or "plan" (read-only + todo_write)
+        self._last_status = ""
         latest = storage.latest_session()
         if latest:  # resume the most recent session
             self.session_path = latest
@@ -58,6 +60,7 @@ class AhaCodeApp(App):
         """
 
         messages: list[dict]
+        stats: str = ""
 
     @dataclass
     class ResponseFailed(Message):
@@ -136,8 +139,20 @@ class AhaCodeApp(App):
         self._status("● waiting…  (esc to stop)")
         self._response_worker = self.stream_response(history)
 
+    @staticmethod
+    def _format_stats(stats: dict) -> str:
+        """One-line token/speed summary for the status bar (empty if no output)."""
+        gen = stats["completion"]
+        if not gen:
+            return ""
+        first = stats["t_first"] or stats["t_start"]
+        gen_elapsed = max(time.monotonic() - first, 1e-9)
+        ttft = (stats["t_first"] - stats["t_start"]) if stats["t_first"] else 0.0
+        return f"prompt {stats['prompt']} · gen {gen} · {gen / gen_elapsed:.0f} tok/s · ttft {ttft:.1f}s"
+
     def _status(self, text: str) -> None:
         """Push live turn status to the bar (empty = idle)."""
+        self._last_status = text
         self.query_one(ModelBar).set_status(text)
 
     def _switch_model(self, name: str) -> str:
@@ -203,7 +218,7 @@ class AhaCodeApp(App):
         for msg in event.messages:
             self.session.messages.append(msg)
             storage.append_message(self.session_path, msg)
-        self._status("")
+        self._status(event.stats)
 
     @on(ResponseFailed)
     async def response_failed(self, event: ResponseFailed) -> None:
@@ -272,7 +287,15 @@ class AhaCodeApp(App):
         # Current turn's live bubbles; _render_event fills these in on the main thread.
         boxes: dict[str, Chatbox | None] = {"thinking": None, "answer": None}
 
+        stats = {"prompt": 0, "completion": 0, "t_start": time.monotonic(), "t_first": None}
+
         def emit(event) -> None:
+            if isinstance(event, Usage):  # accounting only — never a bubble
+                stats["prompt"] += event.prompt_tokens
+                stats["completion"] += event.completion_tokens
+                return
+            if stats["t_first"] is None and isinstance(event, (ThinkingDelta, TextDelta)):
+                stats["t_first"] = time.monotonic()
             # Hop to the main thread to touch widgets. call_from_thread blocks the
             # worker until the UI has rendered — built-in backpressure.
             self.call_from_thread(self._render_event, event, boxes, container)
@@ -313,7 +336,7 @@ class AhaCodeApp(App):
             return
         if worker.is_cancelled:  # cancelled mid-run: don't persist a partial turn
             return
-        self.post_message(self.ResponseComplete(new_messages))
+        self.post_message(self.ResponseComplete(new_messages, self._format_stats(stats)))
 
 
 app = AhaCodeApp

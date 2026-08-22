@@ -418,3 +418,26 @@ async def test_escape_stops_the_current_turn(monkeypatch):
         await pilot.pause()
     # cancelled before completion -> no assistant turn persisted
     assert [m["role"] for m in app.session.messages] == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_status_shows_token_stats_after_turn(monkeypatch):
+    """After a turn, the status bar shows the token counts from the usage trailer."""
+    from ahacode.events import Usage
+
+    def fake(messages, tools=None):
+        yield TextDelta("hello there")
+        yield Usage(prompt_tokens=100, completion_tokens=20, total_tokens=120)
+
+    monkeypatch.setattr(client, "stream_chat", fake)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", Input).value = "hi"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        status = app._last_status
+    assert "prompt 100" in status
+    assert "gen 20" in status
+    assert "tok/s" in status
