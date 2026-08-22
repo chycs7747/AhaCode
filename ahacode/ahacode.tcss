@@ -87,7 +87,7 @@ ApprovalModal {
     height: auto;
     padding: 1 2;
     margin-bottom: 1;       /* float just above the very bottom edge */
-    border: thick $warning;
+    border: round $warning;
     background: $surface;
 }
 
@@ -153,7 +153,7 @@ SessionPicker {
     height: auto;
     max-height: 80%;
     padding: 1 2;
-    border: thick $accent;
+    border: round $accent;
     background: $surface;
 }
 

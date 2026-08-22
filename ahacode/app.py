@@ -12,6 +12,7 @@ from textual.message import Message
 from textual.widgets import Input
 from textual.worker import get_current_worker
 from rich.text import Text
+from rich.theme import Theme
 
 from ahacode import agent, client, config, storage, tools
 from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage
@@ -36,6 +37,27 @@ PLAN_SYSTEM_PROMPT = (
 TITLE_SYSTEM = (
     "You write a very short title (2-5 words) for a conversation. "
     "Reply with ONLY the title — no quotes, no trailing punctuation."
+)
+
+# Eye-friendly Markdown palette. Rich's defaults paint headings magenta and inline
+# code "bold cyan on black" — harsh reds/boxes on a dark terminal. We push softer
+# styles onto the app console; a Markdown renderable resolves these by name at draw
+# time (verified: pushing a theme recolours Static-rendered Markdown in Textual).
+MARKDOWN_THEME = Theme(
+    {
+        "markdown.h1": "bold #7dcfff",
+        "markdown.h2": "bold #82aaff",
+        "markdown.h3": "bold #c792ea",
+        "markdown.h4": "#c792ea",
+        "markdown.h5": "italic #c792ea",
+        "markdown.h6": "dim italic",
+        "markdown.code": "#a6e3a1",          # soft green, no black-box background
+        "markdown.block_quote": "#82aaff",
+        "markdown.list": "#82aaff",
+        "markdown.item.number": "#82aaff",
+        "markdown.link": "underline #82aaff",
+        "markdown.link_url": "dim #82aaff",
+    }
 )
 
 _ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}
@@ -167,6 +189,7 @@ class AhaCodeApp(App):
 
     async def on_mount(self) -> None:
         """Restore saved history as chat bubbles (Compose runs before Mount)."""
+        self.console.push_theme(MARKDOWN_THEME)  # soften Rich Markdown colours
         await self._render_history()
 
     async def _render_history(self) -> None:

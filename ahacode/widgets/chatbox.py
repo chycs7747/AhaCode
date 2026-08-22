@@ -2,6 +2,11 @@ from rich.markdown import Markdown
 from rich.text import Text
 from textual.widgets import Static
 
+# Syntax theme for fenced code blocks — "nord" is soft/low-contrast (easier on the
+# eyes than Rich's default "monokai"). Heading/inline-code colours are themed
+# separately on the app console (see app.MARKDOWN_THEME).
+_CODE_THEME = "nord"
+
 
 class Chatbox(Static):
     """A single chat bubble, styled by role (user / assistant / thinking / …).
@@ -26,7 +31,7 @@ class Chatbox(Static):
         if self._rich is not None:
             return self._rich
         if self._markdown and self._content:
-            return Markdown(self._content)
+            return Markdown(self._content, code_theme=_CODE_THEME)
         return Text(self._content)
 
     def append_chunk(self, chunk: str) -> None:
