@@ -93,8 +93,10 @@ ApprovalModal {
 }
 
 #approval-box {
-    width: 72;
+    width: 88;
+    max-width: 90%;
     height: auto;
+    max-height: 90%;        /* keep the dialog on-screen even for big writes */
     padding: 1 2;
     margin-bottom: 1;       /* float just above the very bottom edge */
     border: round $warning;
@@ -106,9 +108,14 @@ ApprovalModal {
     color: $warning;
 }
 
-#approval-cmd {
+/* Scrollable preview of the tool's effect (code / diff / command). Capped short
+   enough that the title and Run/Skip buttons always stay visible; longer content
+   scrolls inside this box. */
+#approval-preview {
+    height: auto;
+    max-height: 15;
+    margin: 0 0 1 0;
     color: $text;
-    margin: 1 0;
 }
 
 #approval-buttons {

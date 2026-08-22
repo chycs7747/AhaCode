@@ -1,4 +1,3 @@
-import difflib
 import re
 import threading
 import time
@@ -16,6 +15,7 @@ from rich.theme import Theme
 
 from ahacode import agent, client, config, storage, tools
 from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage
+from ahacode.render import edit_diff
 from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
@@ -95,38 +95,6 @@ def _render_tool_stream(name: str, args: str) -> str:
             body = _tool_unescape(tail)
         return f"🔧 write · {path}\n{body}"
     return f"🔧 {name}  {args}"
-
-
-def _diff_rows(old: str, new: str) -> list[tuple[str, str]]:
-    """LCS line diff -> list of (" " | "-" | "+", line)."""
-    o, n = old.splitlines(), new.splitlines()
-    rows: list[tuple[str, str]] = []
-    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=o, b=n).get_opcodes():
-        if tag == "equal":
-            rows += [(" ", ln) for ln in o[i1:i2]]
-        elif tag == "delete":
-            rows += [("-", ln) for ln in o[i1:i2]]
-        elif tag == "insert":
-            rows += [("+", ln) for ln in n[j1:j2]]
-        else:  # replace
-            rows += [("-", ln) for ln in o[i1:i2]]
-            rows += [("+", ln) for ln in n[j1:j2]]
-    return rows
-
-
-_DIFF_STYLE = {"+": "#2ea043", "-": "#f85149", " ": "dim"}
-
-
-def _edit_diff(path: str, old: str, new: str):
-    """Return (rich_text, plain_text) for an edit's coloured -/+ diff."""
-    header = f"🔧 edit · {path}"
-    text = Text(header + "\n", style="bold")
-    plain = [header]
-    for sign, line in _diff_rows(old, new):
-        prefix = (sign + " ") if sign != " " else "  "
-        text.append(prefix + line + "\n", style=_DIFF_STYLE[sign])
-        plain.append(prefix + line)
-    return text, "\n".join(plain)
 
 
 class AhaCodeApp(App):
@@ -496,7 +464,7 @@ class AhaCodeApp(App):
                 return
             if event.name == "edit":  # coloured -/+ diff from old_string/new_string
                 a = event.arguments
-                text, plain = _edit_diff(a.get("path", "?"), a.get("old_string", ""), a.get("new_string", ""))
+                text, plain = edit_diff(a.get("path", "?"), a.get("old_string", ""), a.get("new_string", ""))
                 box = Chatbox("", role="tool-diff")
                 box.set_rich(text, plain)
                 await container.mount(box)
@@ -586,13 +554,13 @@ class AhaCodeApp(App):
             verdict: dict[str, bool] = {}
 
             def ask() -> None:
-                summary = ", ".join(f"{k}={v!r}" for k, v in call.arguments.items())
-
                 def on_dismiss(approved: bool | None) -> None:
                     verdict["ok"] = bool(approved)
                     answered.set()
 
-                self.push_screen(ApprovalModal(call.name, summary), on_dismiss)
+                # Pass the raw arguments; the modal renders a proper per-tool
+                # preview (write → code, edit → diff) inside a scrollable box.
+                self.push_screen(ApprovalModal(call.name, call.arguments), on_dismiss)
 
             self.call_from_thread(ask)
             answered.wait()
