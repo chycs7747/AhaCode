@@ -5,7 +5,11 @@ class Chatbox(Static):
     """A single chat bubble, styled by role (user / assistant / thinking)."""
 
     def __init__(self, content: str = "", role: str = "user") -> None:
-        super().__init__(content)
+        # markup=False: bubble content is arbitrary model/tool/user text — file
+        # dumps (`list[dict]`, `arr[0]`), JSON, and links all carry '[' which
+        # Textual would otherwise parse as Rich markup and crash on (MarkupError).
+        # A Rich renderable passed via set_rich() still renders regardless.
+        super().__init__(content, markup=False)
         self._content = content
         self.add_class(f"chatbox--{role}")
 

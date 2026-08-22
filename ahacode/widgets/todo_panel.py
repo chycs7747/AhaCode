@@ -15,7 +15,9 @@ class TodoPanel(Static):
     _MARKS = {"done": "☑", "in_progress": "▶", "pending": "☐"}
 
     def __init__(self) -> None:
-        super().__init__("")
+        # markup=False: todo text comes from the model and may contain '[' (code,
+        # paths) — see Chatbox for why unparsed content avoids a MarkupError crash.
+        super().__init__("", markup=False)
         self._content = ""
         self.display = False  # nothing to show until a plan exists
 

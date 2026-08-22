@@ -82,6 +82,24 @@ async def test_thinking_block_autocollapses_after_answer(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_bracketed_content_renders_without_markup_crash(fake_llm):
+    """Regression: model/tool text with '[' — file dumps (list[dict], arr[0]),
+    JSON, markdown links — must render literally, not be parsed as Rich markup.
+    This crashed the app with MarkupError the moment a tool returned Python source
+    (run_test re-raises app._exception on exit, so a markup crash fails here)."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        container = app.query_one("#chat-container")
+        crash = 'def f(x: list[dict]): return x[0]  # [name="read"]'
+        box = Chatbox(crash, role="tool-result")
+        await container.mount(box)
+        await pilot.pause()
+        assert app._exception is None       # no render crash (was MarkupError)
+        assert box._render_markup is False  # content treated literally
+        assert box._content == crash
+
+
+@pytest.mark.asyncio
 async def test_no_thinking_bubble_when_model_does_not_think(monkeypatch):
     """A model that never thinks mounts no thinking bubble at all (lazy mount)."""
     def text_only(messages, tools=None):
