@@ -180,8 +180,12 @@ ModelBar #auto-approve.-on > .toggle--label {
     text-style: bold;
 }
 
+/* NOT docked: two widgets docked to the same edge overlap here (measured — the
+   later one covers the HeaderBar), so the panel lives in normal flow instead. With
+   HeaderBar docked top and #bottom docked bottom, a non-docked TodoPanel sits at the
+   top of the remaining middle region — just under the header, above the chat — and
+   collapses to nothing when hidden (display:none), giving the chat the full height. */
 TodoPanel {
-    dock: top;
     height: auto;
     padding: 0 2;
     border-bottom: solid $secondary;
@@ -285,8 +289,8 @@ ToolResultBlock .chatbox--tool-error {
     border: round $primary-darken-3;
 }
 
-/* Top bar: session title (left) + New / Sessions buttons (right). Docked above
-   the TodoPanel; both dock:top so they stack in mount order (HeaderBar first). */
+/* Top bar: session title (left) + New / Sessions buttons (right). Docked top; the
+   TodoPanel is NOT docked (see its rule) so it flows just below without overlap. */
 HeaderBar {
     dock: top;
     height: 3;

@@ -1362,3 +1362,18 @@ async def test_run_threads_prior_results_into_later_steps(monkeypatch):
     # step 1 sees the task but no prior-results section; step 2 sees step 1's result.
     assert "the task" in seen_prompts[0] and "earlier phases" not in seen_prompts[0]
     assert "done0" in seen_prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_todo_panel_does_not_cover_the_header():
+    """The pinned plan must sit BELOW the header, not overlap its session buttons
+    (two widgets docked to the same edge overlap in this Textual build)."""
+    from ahacode.widgets.header_bar import HeaderBar
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    app = AhaCodeApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        app.query_one(TodoPanel).update_todos([{"content": "a step", "status": "pending"}])
+        await pilot.pause()
+        header, panel = app.query_one(HeaderBar), app.query_one(TodoPanel)
+        assert panel.region.y >= header.region.y + header.region.height  # stacked, not on top
