@@ -117,6 +117,7 @@ class AhaCodeApp(App):
         self.mode = "act"  # "act" (full tools) or "plan" (read-only + todo_write)
         self._last_status = ""
         self.auto_approve = False  # session-only: skip the approval modal when on
+        self._approval_lock = threading.Lock()  # one approval modal at a time (parallel children queue)
         latest = storage.latest_session()
         if latest:  # resume the most recent session
             self.session_path = latest
@@ -628,25 +629,28 @@ class AhaCodeApp(App):
         def approve(call) -> bool:
             if self.auto_approve:  # denylist already hard-blocked the dangerous ones
                 return True
-            # Cross-thread handshake: the loop runs here (worker thread) but the
-            # modal lives on the main thread. We push it (non-blocking) via
-            # call_from_thread, then block this thread on an Event until the user
-            # answers — the modal's dismiss callback sets the Event.
-            answered = threading.Event()
-            verdict: dict[str, bool] = {}
+            # Serialize modals: parallel sub-agents may each need approval at once,
+            # but only one dialog can be on screen — the rest queue on this lock.
+            with self._approval_lock:
+                # Cross-thread handshake: the loop runs here (worker thread) but the
+                # modal lives on the main thread. We push it (non-blocking) via
+                # call_from_thread, then block this thread on an Event until the user
+                # answers — the modal's dismiss callback sets the Event.
+                answered = threading.Event()
+                verdict: dict[str, bool] = {}
 
-            def ask() -> None:
-                def on_dismiss(approved: bool | None) -> None:
-                    verdict["ok"] = bool(approved)
-                    answered.set()
+                def ask() -> None:
+                    def on_dismiss(approved: bool | None) -> None:
+                        verdict["ok"] = bool(approved)
+                        answered.set()
 
-                # Pass the raw arguments; the modal renders a proper per-tool
-                # preview (write → code, edit → diff) inside a scrollable box.
-                self.push_screen(ApprovalModal(call.name, call.arguments), on_dismiss)
+                    # Pass the raw arguments; the modal renders a proper per-tool
+                    # preview (write → code, edit → diff) inside a scrollable box.
+                    self.push_screen(ApprovalModal(call.name, call.arguments), on_dismiss)
 
-            self.call_from_thread(ask)
-            answered.wait()
-            return verdict.get("ok", False)
+                self.call_from_thread(ask)
+                answered.wait()
+                return verdict.get("ok", False)
 
         def run_subagent(prompt: str, description: str) -> str:
             # The `task` tool calls this (through ctx) to delegate a subtask. A

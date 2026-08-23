@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 
 from ahacode import client, tools
 from ahacode.events import Event, TextDelta, ToolCall, ToolResult
@@ -47,11 +48,10 @@ def _tool_message(call_id: str, output: str) -> dict:
     return {"role": "tool", "tool_call_id": call_id, "content": output}
 
 
-def _run_tool(
-    call: ToolCall, registry: dict, approve: ApproveFn | None, ctx: object | None = None
-) -> ToolResult:
-    """Execute one tool call, converting any failure into an error ToolResult so
-    the loop never crashes on a bad call — the model sees the error and adapts."""
+def _gate_tool(call: ToolCall, registry: dict, approve: ApproveFn | None):
+    """Approval/safety phase — runs SEQUENTIALLY so approval modals never race.
+    Returns the Tool to execute, or a blocking ToolResult (unknown / dangerous /
+    denied) that skips execution."""
     tool = registry.get(call.name)
     if tool is None:
         return ToolResult(call.id, call.name, f"unknown tool: {call.name}", is_error=True)
@@ -63,6 +63,12 @@ def _run_tool(
             return ToolResult(call.id, call.name, f"blocked (dangerous): {reason}", is_error=True)
     if tool.requires_approval and not (approve and approve(call)):
         return ToolResult(call.id, call.name, "denied by user", is_error=True)
+    return tool
+
+
+def _exec_tool(call: ToolCall, tool, ctx: object | None = None) -> ToolResult:
+    """Execution phase — safe to run in PARALLEL for parallelizable tools. Converts
+    any failure into an error ToolResult so the loop never crashes on a bad call."""
     try:
         # wants_ctx tools (task) need the running context to spawn a sub-agent;
         # the rest keep the simple execute(args) contract.
@@ -70,6 +76,16 @@ def _run_tool(
         return ToolResult(call.id, call.name, output, is_error=False)
     except Exception as exc:  # a broken tool must not take down the agent
         return ToolResult(call.id, call.name, f"{type(exc).__name__}: {exc}", is_error=True)
+
+
+def _run_tool(
+    call: ToolCall, registry: dict, approve: ApproveFn | None, ctx: object | None = None
+) -> ToolResult:
+    """Gate then execute one tool call — the sequential path (and direct callers)."""
+    gated = _gate_tool(call, registry, approve)
+    if isinstance(gated, ToolResult):
+        return gated
+    return _exec_tool(call, gated, ctx)
 
 
 def run(
@@ -116,9 +132,26 @@ def run(
         if not calls:
             return messages[start:]
 
-        # --- run each requested tool, feed results back, then loop ---
-        for call in calls:
-            result = _run_tool(call, registry, approve, ctx)
+        # --- run the requested tools, feed results back, then loop ---
+        # Approval/safety runs sequentially (so modals never race); execution then
+        # runs in PARALLEL when there is more than one runnable tool and all are
+        # parallelizable (a task fan-out). The global gate in client.py still bounds
+        # true gateway concurrency. Results are emitted/appended in call order so the
+        # tool messages line up with the assistant's tool_calls.
+        gated = [(call, _gate_tool(call, registry, approve)) for call in calls]
+        runnable = [(call, t) for call, t in gated if not isinstance(t, ToolResult)]
+        if len(runnable) > 1 and all(tool.parallelizable for _, tool in runnable):
+            with ThreadPoolExecutor(max_workers=len(runnable)) as pool:
+                futures = {
+                    call.id: pool.submit(_exec_tool, call, tool, ctx)
+                    for call, tool in runnable
+                }
+            done = {cid: fut.result() for cid, fut in futures.items()}
+        else:
+            done = {call.id: _exec_tool(call, tool, ctx) for call, tool in runnable}
+
+        for call, gate in gated:
+            result = gate if isinstance(gate, ToolResult) else done[call.id]
             emit(result)
             messages.append(_tool_message(call.id, result.output))
 

@@ -12,18 +12,25 @@ SESSIONS_DIR = PROJECT_ROOT / "sessions"
 
 
 def new_session_path(base_dir: Path | None = None) -> Path:
-    """Return a path for a new session file (the file is created on first append)."""
+    """Return a path for a new session file, atomically claiming the name by creating
+    an empty file. The claim closes a race where two threads spawning sub-agents in
+    the same second would otherwise compute the same name and clobber each other
+    (parallel task fan-out); the header/messages are appended right after."""
     base_dir = base_dir or SESSIONS_DIR
     base_dir.mkdir(parents=True, exist_ok=True)
     # No colons in the timestamp — Windows forbids them in file names.
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     path = base_dir / f"{stamp}.jsonl"
-    # Two sessions in the same second would collide — bump with a suffix.
     n = 2
-    while path.exists():
-        path = base_dir / f"{stamp}_{n}.jsonl"
-        n += 1
-    return path
+    while True:
+        try:
+            # O_CREAT|O_EXCL: create-and-claim in one atomic step, so two racing
+            # callers can never be handed the same path.
+            path.touch(exist_ok=False)
+            return path
+        except FileExistsError:  # taken (existing session, or a concurrent claim) — bump
+            path = base_dir / f"{stamp}_{n}.jsonl"
+            n += 1
 
 
 def append_message(path: Path, message: dict) -> None:

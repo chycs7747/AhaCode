@@ -13,6 +13,7 @@ DEFAULT_MODEL = "qwen38-nvfp4"
 DEFAULT_API_KEY = "EMPTY"
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_SUBAGENT_DEPTH = 1  # generations of sub-agents that may nest (0 = none)
+DEFAULT_MAX_PARALLEL_AGENTS = 8  # cap on concurrent gateway requests (measured knee)
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,9 @@ class ModelConfig:
     timeout: float
     # Agent behaviour (not model connection): how deep sub-agent nesting may go.
     subagent_depth: int = DEFAULT_SUBAGENT_DEPTH
+    # Max concurrent gateway requests across ALL agents (main + sub-agents at every
+    # depth). One process-wide cap protecting the single-GPU backend (~8 measured).
+    max_parallel_agents: int = DEFAULT_MAX_PARALLEL_AGENTS
 
 
 DEFAULTS = ModelConfig(
@@ -49,6 +53,9 @@ timeout = {cfg.timeout}    # seconds; caps how long a read may block between chu
 # How many generations of sub-agents may nest. 1 = the main agent may spawn
 # sub-agents, but those sub-agents cannot spawn their own (no grandchildren).
 subagent_depth = {cfg.subagent_depth}
+# Max concurrent requests to the gateway across all agents (the single-GPU backend
+# saturates around here; higher just queues and adds latency).
+max_parallel_agents = {cfg.max_parallel_agents}
 """
 
 
@@ -75,4 +82,5 @@ def load(path: Path | None = None) -> ModelConfig:
         api_key=model.get("api_key", DEFAULT_API_KEY),
         timeout=float(model.get("timeout", DEFAULT_TIMEOUT)),
         subagent_depth=int(agent.get("subagent_depth", DEFAULT_SUBAGENT_DEPTH)),
+        max_parallel_agents=int(agent.get("max_parallel_agents", DEFAULT_MAX_PARALLEL_AGENTS)),
     )

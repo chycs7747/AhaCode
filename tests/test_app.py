@@ -1045,3 +1045,89 @@ async def test_task_tool_spawns_subagent(monkeypatch):
             m.get("role") == "tool" and "sub-agent finding" in m.get("content", "")
             for m in app.session.messages
         )
+
+
+def test_gate_caps_concurrent_requests(monkeypatch):
+    """The global gate bounds concurrent gateway requests to max_parallel_agents, no
+    matter how many callers — this is what stops a parallel sub-agent fan-out from
+    swamping the single-GPU backend. Held per-request, so it never deadlocks."""
+    import threading as _t
+    from concurrent.futures import ThreadPoolExecutor
+    from dataclasses import replace
+
+    config.save(replace(config.DEFAULTS, max_parallel_agents=2))
+    client.reset()
+
+    counter, peak, lock = [0], [0], _t.Lock()
+
+    class FakeStream:
+        def __enter__(self):
+            with lock:
+                counter[0] += 1
+                peak[0] = max(peak[0], counter[0])
+            time.sleep(0.1)
+            return iter([])  # no chunks -> _iter_events yields nothing
+
+        def __exit__(self, *a):
+            with lock:
+                counter[0] -= 1
+            return False
+
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kw):
+                    return FakeStream()
+
+    monkeypatch.setattr(client, "_ensure_client", lambda: (FakeClient(), config.load()))
+
+    def one(_):
+        list(client.stream_chat([{"role": "user", "content": "x"}]))
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        list(ex.map(one, range(6)))
+
+    assert peak[0] == 2      # gate allowed exactly the cap to run in parallel
+    assert counter[0] == 0   # every permit was released
+
+
+@pytest.mark.asyncio
+async def test_parallel_task_fanout(monkeypatch):
+    """Two task calls in one turn spawn two sub-agents concurrently: two nested
+    cards, two child sessions, both results injected in call order. The fake stream
+    is hit from parallel threads, so it branches on message content (thread-safe),
+    not a shared counter."""
+    from ahacode.events import ToolCall
+    from ahacode.widgets.subagent_card import SubagentCard
+
+    def scripted(messages, tools=None):
+        # a child: its history opens with the sub-agent system prompt
+        if messages and messages[0].get("role") == "system" and "sub-agent" in messages[0]["content"]:
+            yield TextDelta("child result")
+            return
+        # the parent, after both delegations have returned -> final answer
+        if any(m.get("role") == "tool" for m in messages):
+            yield TextDelta("all done")
+            return
+        # the parent's first turn: fan out to two sub-agents at once
+        yield ToolCall(id="t1", name="task", arguments={"prompt": "A", "description": "a"})
+        yield ToolCall(id="t2", name="task", arguments={"prompt": "B", "description": "b"})
+
+    monkeypatch.setattr(client, "stream_chat", scripted)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "fan out"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        assert len(app.query(SubagentCard)) == 2  # two nested cards
+        subs = [h for h in (storage.read_header(p) for p in storage.SESSIONS_DIR.glob("*.jsonl"))
+                if h and h.get("kind") == "subagent"]
+        assert len(subs) == 2
+        # both results injected in call order (t1 then t2), matching the tool_calls
+        tool_ids = [m["tool_call_id"] for m in app.session.messages if m.get("role") == "tool"]
+        assert tool_ids == ["t1", "t2"]

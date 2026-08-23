@@ -95,3 +95,13 @@ def test_read_session_meta_none_for_legacy(tmp_path):
     p = storage.new_session_path(base_dir=tmp_path)
     storage.append_message(p, {"role": "user", "content": "hi"})  # no header
     assert storage.read_session_meta(p) is None
+
+
+def test_new_session_path_unique_under_threads(tmp_path):
+    """Concurrent callers (parallel sub-agent spawns in the same second) each get a
+    distinct path — the atomic claim stops two children clobbering one file."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        paths = list(ex.map(lambda _: storage.new_session_path(base_dir=tmp_path), range(8)))
+    assert len(set(paths)) == 8

@@ -122,3 +122,67 @@ def test_final_text_helper():
     assert subagent._final_text(
         [{"role": "assistant", "content": "A"}, {"role": "assistant", "content": "B"}]
     ) == "B"
+
+
+def test_parallel_tool_calls_overlap():
+    """A turn of parallelizable calls runs them concurrently, and their results are
+    appended in call order (so they line up with the assistant's tool_calls)."""
+    import threading
+    import time as _time
+
+    counter, peak, lock = [0], [0], threading.Lock()
+
+    def slow(args):
+        with lock:
+            counter[0] += 1
+            peak[0] = max(peak[0], counter[0])
+        _time.sleep(0.1)
+        with lock:
+            counter[0] -= 1
+        return "ok"
+
+    tool = Tool(name="slow", description="", parameters={"type": "object", "properties": {}},
+                execute=slow, parallelizable=True)
+    msgs = agent.run(
+        [{"role": "user", "content": "go"}],
+        emit=lambda e: None,
+        stream=scripted_stream(
+            [ToolCall(id="a", name="slow", arguments={}),
+             ToolCall(id="b", name="slow", arguments={}),
+             ToolCall(id="c", name="slow", arguments={})],
+            [TextDelta("done")],
+        ),
+        registry={"slow": tool},
+    )
+    assert peak[0] >= 2  # the three calls overlapped
+    assert [m["tool_call_id"] for m in msgs if m.get("role") == "tool"] == ["a", "b", "c"]
+
+
+def test_non_parallelizable_calls_stay_sequential():
+    """When any runnable tool is not parallelizable, the turn runs sequentially."""
+    import threading
+    import time as _time
+
+    counter, peak, lock = [0], [0], threading.Lock()
+
+    def slow(args):
+        with lock:
+            counter[0] += 1
+            peak[0] = max(peak[0], counter[0])
+        _time.sleep(0.1)
+        with lock:
+            counter[0] -= 1
+        return "ok"
+
+    tool = Tool(name="s", description="", parameters={"type": "object", "properties": {}},
+                execute=slow, parallelizable=False)
+    agent.run(
+        [{"role": "user", "content": "go"}],
+        emit=lambda e: None,
+        stream=scripted_stream(
+            [ToolCall(id="a", name="s", arguments={}), ToolCall(id="b", name="s", arguments={})],
+            [TextDelta("done")],
+        ),
+        registry={"s": tool},
+    )
+    assert peak[0] == 1  # never overlapped

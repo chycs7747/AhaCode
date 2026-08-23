@@ -39,3 +39,6 @@ class Tool:
     # A tool that spawns a sub-agent (task) needs the running context, so the loop
     # calls execute(args, ctx) instead of execute(args). Plain tools leave this False.
     wants_ctx: bool = False
+    # A turn's tool calls run in parallel only when EVERY runnable tool is
+    # parallelizable — safe for delegation (task), off for side-effecting tools.
+    parallelizable: bool = False

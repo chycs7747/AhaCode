@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from collections.abc import Iterable, Iterator
 
@@ -13,13 +14,28 @@ from ahacode.events import Event, TextDelta, ThinkingDelta, ToolCall, ToolCallDe
 
 _client: OpenAI | None = None
 _cfg: config.ModelConfig | None = None
+# Process-wide concurrency gate — see _ensure_gate. Sized from config on first use.
+_gate: threading.BoundedSemaphore | None = None
 
 
 def reset() -> None:
-    """Forget the cached client and config; the next request reloads from disk."""
-    global _client, _cfg
+    """Forget the cached client, config, and concurrency gate; the next request
+    reloads from disk (so an edited max_parallel_agents resizes the gate)."""
+    global _client, _cfg, _gate
     _client = None
     _cfg = None
+    _gate = None
+
+
+def _ensure_gate() -> threading.BoundedSemaphore:
+    """The one gate every request funnels through, so total concurrency against the
+    single-GPU gateway is bounded no matter how the sub-agent tree fans out. Sized
+    from max_parallel_agents; a permit is held only for a request's lifetime (never
+    across a sub-agent delegation), so nested spawning cannot deadlock."""
+    global _gate
+    if _gate is None:
+        _gate = threading.BoundedSemaphore(config.load().max_parallel_agents)
+    return _gate
 
 
 def _ensure_client() -> tuple[OpenAI, config.ModelConfig]:
@@ -114,11 +130,14 @@ def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterat
         # tool, which would force its hand). Only sent alongside tools — some
         # servers reject tool_choice without a tools list.
         kwargs["tool_choice"] = "auto"
-    # `with` closes the HTTP connection on every exit path — including when the
-    # caller abandons this generator mid-stream (GeneratorExit) — so a cancelled
-    # request stops occupying the single-slot gateway.
-    with client.chat.completions.create(**kwargs) as response:
-        yield from _iter_events(response)
+    # Hold a global concurrency permit for the request's lifetime: acquired here,
+    # released when this generator is exhausted or closed (the outer `with` exits).
+    # All agents funnel through here, so this bounds true gateway concurrency (see
+    # _ensure_gate). The inner `with` closes the HTTP connection on every exit path —
+    # including when the caller abandons the generator mid-stream (GeneratorExit).
+    with _ensure_gate():
+        with client.chat.completions.create(**kwargs) as response:
+            yield from _iter_events(response)
 
 
 def complete(messages: list[dict]) -> str:

@@ -53,4 +53,5 @@ TASK = Tool(
     execute=_task,
     requires_approval=True,  # each spawn is gated by the human
     wants_ctx=True,          # needs the running context to spawn a child
+    parallelizable=True,     # a fan-out of task calls runs concurrently
 )
