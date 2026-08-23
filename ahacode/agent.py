@@ -48,7 +48,7 @@ def _tool_message(call_id: str, output: str) -> dict:
 
 
 def _run_tool(
-    call: ToolCall, registry: dict, approve: ApproveFn | None
+    call: ToolCall, registry: dict, approve: ApproveFn | None, ctx: object | None = None
 ) -> ToolResult:
     """Execute one tool call, converting any failure into an error ToolResult so
     the loop never crashes on a bad call — the model sees the error and adapts."""
@@ -64,7 +64,10 @@ def _run_tool(
     if tool.requires_approval and not (approve and approve(call)):
         return ToolResult(call.id, call.name, "denied by user", is_error=True)
     try:
-        return ToolResult(call.id, call.name, tool.execute(call.arguments), is_error=False)
+        # wants_ctx tools (task) need the running context to spawn a sub-agent;
+        # the rest keep the simple execute(args) contract.
+        output = tool.execute(call.arguments, ctx) if tool.wants_ctx else tool.execute(call.arguments)
+        return ToolResult(call.id, call.name, output, is_error=False)
     except Exception as exc:  # a broken tool must not take down the agent
         return ToolResult(call.id, call.name, f"{type(exc).__name__}: {exc}", is_error=True)
 
@@ -77,6 +80,7 @@ def run(
     approve: ApproveFn | None = None,
     stream: StreamFn | None = None,
     registry: dict | None = None,
+    ctx: object | None = None,  # opaque bag for wants_ctx tools (task → sub-agents)
     max_turns: int = 10,
 ) -> list[dict]:
     """Drive the loop and return the messages appended to history this run.
@@ -114,7 +118,7 @@ def run(
 
         # --- run each requested tool, feed results back, then loop ---
         for call in calls:
-            result = _run_tool(call, registry, approve)
+            result = _run_tool(call, registry, approve, ctx)
             emit(result)
             messages.append(_tool_message(call.id, result.output))
 

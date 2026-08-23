@@ -36,3 +36,6 @@ class Tool:
     # Optional safety gate, checked *before* approval: return a reason to hard-block
     # the call (it never runs, never prompts), or None to allow it through.
     validate: Callable[[dict], str | None] | None = None
+    # A tool that spawns a sub-agent (task) needs the running context, so the loop
+    # calls execute(args, ctx) instead of execute(args). Plain tools leave this False.
+    wants_ctx: bool = False
