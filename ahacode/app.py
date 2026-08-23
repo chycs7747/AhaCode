@@ -14,7 +14,7 @@ from textual.worker import get_current_worker
 from rich.text import Text
 from rich.theme import Theme
 
-from ahacode import agent, client, config, storage, tools
+from ahacode import agent, client, config, storage, subagent, tools
 from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage
 from ahacode.render import diff_stats, edit_diff_lines, tool_summary
 from ahacode.session import ChatSession
@@ -23,6 +23,7 @@ from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.header_bar import HeaderBar
 from ahacode.widgets.prompt_input import PromptInput
 from ahacode.widgets.session_picker import SessionPicker
+from ahacode.widgets.subagent_card import SubagentCard
 from ahacode.widgets.thinking import ThinkingBlock
 from ahacode.widgets.tool_result import ToolResultBlock
 from ahacode.widgets.todo_panel import TodoPanel
@@ -130,6 +131,9 @@ class AhaCodeApp(App):
             )
         # Skip auto-titling if this (resumed) session already has a title.
         self._has_title = bool((storage.read_session_meta(self.session_path) or {}).get("title"))
+        # Depth in the session tree (0 = a main session); gates whether this session
+        # is offered the `task` tool — a sub-agent at the limit cannot recurse.
+        self.session_depth = int((storage.read_header(self.session_path) or {}).get("depth", 0))
 
     @dataclass
     class ResponseComplete(Message):
@@ -257,6 +261,7 @@ class AhaCodeApp(App):
             self.session_path,
             storage.make_header(self.session_path.stem, kind="main", model=config.load().name),
         )
+        self.session_depth = 0
         self._has_title = False
         self._set_header_title("")
         self.query_one(TodoPanel).display = False
@@ -270,6 +275,7 @@ class AhaCodeApp(App):
         self.session_path = storage.SESSIONS_DIR / f"{session_id}.jsonl"
         self.session.messages = storage.load_messages(self.session_path)
         meta = storage.read_session_meta(self.session_path) or {}
+        self.session_depth = int(meta.get("depth", 0))
         self._has_title = bool(meta.get("title"))
         self._set_header_title(meta.get("title", ""))
         self.query_one(TodoPanel).display = False
@@ -427,10 +433,13 @@ class AhaCodeApp(App):
             await self._say_system("auto-approve OFF — tools ask first.")
 
     def _registry_for_mode(self) -> dict:
-        """Plan mode hides side-effecting tools so the model can only investigate + plan."""
+        """The tools this session may use this turn. Plan mode stays read-only (no
+        side effects — and no `task`, since a sub-agent could act). Act mode gets the
+        base tools plus `task`, but only while depth < subagent_depth so a sub-agent
+        at the limit cannot recurse (see tools.registry_for)."""
         if self.mode == "plan":
             return {"read": tools.READ, "todo_write": tools.TODO_WRITE}
-        return tools.REGISTRY
+        return tools.registry_for(self.session_depth, config.load().subagent_depth)
 
     @on(ResponseComplete)
     def response_complete(self, event: ResponseComplete) -> None:
@@ -549,6 +558,8 @@ class AhaCodeApp(App):
                 return  # already reflected in the pinned panel
             if event.name == "edit" and not event.is_error:
                 return  # a successful edit is already shown as the diff card
+            if event.name == "task":
+                return  # the sub-agent's own 🤖 card already shows its flow + result
             # One foldable card: the command/path in the title (IN), the output in
             # the body (OUT). Long output / errors fold away.
             summary = tool_summary(event.name, boxes.get("call_args", {}).get(event.id, {}))
@@ -637,6 +648,42 @@ class AhaCodeApp(App):
             answered.wait()
             return verdict.get("ok", False)
 
+        def run_subagent(prompt: str, description: str) -> str:
+            # The `task` tool calls this (through ctx) to delegate a subtask. A
+            # sub-agent is just another agent loop, run to completion HERE on this
+            # worker thread — so the parent naturally pauses until it returns (Roo's
+            # sequential delegate → resume). It gets its own session file (parent_id
+            # set, so the picker nests it) and a nested 🤖 card its events render into.
+            cfg = config.load()
+            child_depth = self.session_depth + 1
+            child_path = storage.new_session_path()
+            storage.write_header(child_path, storage.make_header(
+                child_path.stem, parent_id=self.session_path.stem, kind="subagent",
+                depth=child_depth, model=cfg.name, title=(description or prompt)[:40],
+            ))
+            card = SubagentCard(description or "task", cfg.name)
+            self.call_from_thread(container.mount, card)
+            child_boxes = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}, "call_args": {}}
+
+            def child_emit(event) -> None:
+                if isinstance(event, Usage):
+                    return  # child token accounting isn't surfaced in this slice
+                self.call_from_thread(self._render_event, event, child_boxes, card.body)
+
+            result = subagent.run(
+                prompt,
+                emit=child_emit,
+                approve=approve,  # the child's own bash/write are confirmed too
+                registry=tools.registry_for(child_depth, cfg.subagent_depth),
+                ctx=ctx,          # lets a grandchild spawn when subagent_depth > 1
+                is_cancelled=lambda: worker.is_cancelled,
+            )
+            for msg in result.messages:
+                storage.append_message(child_path, msg)
+            return result.result
+
+        ctx = subagent.AgentContext(run_subagent=run_subagent)
+
         try:
             new_messages = agent.run(
                 messages,
@@ -644,6 +691,7 @@ class AhaCodeApp(App):
                 is_cancelled=lambda: worker.is_cancelled,
                 approve=approve,                    # bash and friends are confirmed first
                 registry=self._registry_for_mode(),  # plan mode = read-only subset
+                ctx=ctx,                            # task delegates through this
             )
         except Exception as exc:
             # Server 500, timeout, connection refused... all become a bubble, not a crash.

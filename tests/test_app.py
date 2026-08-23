@@ -683,7 +683,11 @@ async def test_act_mode_exposes_all_tools(monkeypatch):
         await app.workers.wait_for_complete()
         await pilot.pause()
 
-    assert {t["function"]["name"] for t in captured["tools"]} == {"read", "write", "edit", "bash", "todo_write"}
+    # act mode at depth 0 also offers `task` (the main agent may spawn sub-agents;
+    # subagent_depth defaults to 1, so depth 0 < 1 exposes it).
+    assert {t["function"]["name"] for t in captured["tools"]} == {
+        "read", "write", "edit", "bash", "todo_write", "task"
+    }
     assert captured["messages"][0]["role"] == "user"  # no system prompt in act mode
 
 
@@ -991,3 +995,53 @@ async def test_auto_title_triggered_once_per_session(monkeypatch, fake_llm):
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert len(calls) == 1                 # already titled -> not triggered again
+
+
+@pytest.mark.asyncio
+async def test_task_tool_spawns_subagent(monkeypatch):
+    """The model calling `task` spawns a child agent: its flow renders in a nested
+    SubagentCard, it gets its own session file nested under the parent, and its
+    result is injected back into the parent transcript."""
+    from ahacode import tools
+    from ahacode.events import ToolCall
+    from ahacode.widgets.subagent_card import SubagentCard
+
+    calls = {"n": 0}
+
+    def scripted(messages, tools=None):
+        calls["n"] += 1
+        if calls["n"] == 1:  # parent turn 1: delegate via task
+            yield ToolCall(id="t1", name="task",
+                           arguments={"prompt": "investigate X", "description": "probe"})
+        elif calls["n"] == 2:  # child turn 1: the sub-agent answers
+            yield TextDelta("sub-agent finding")
+        else:  # parent turn 2: final answer
+            yield TextDelta("all done")
+
+    monkeypatch.setattr(client, "stream_chat", scripted)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.auto_approve = True  # skip the spawn-approval modal
+        app.query_one("#prompt", PromptInput).text = "delegate please"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        # 1) a nested sub-agent card was mounted
+        assert len(app.query(SubagentCard)) == 1
+
+        # 2) the child ran as its own session file, nested under the parent
+        headers = [storage.read_header(p) for p in storage.SESSIONS_DIR.glob("*.jsonl")]
+        subs = [h for h in headers if h and h.get("kind") == "subagent"]
+        assert len(subs) == 1
+        assert subs[0]["depth"] == 1 and subs[0]["parent_id"] is not None
+
+        # 3) at depth 1 (== subagent_depth) the child has no task tool -> cannot recurse
+        assert "task" not in tools.registry_for(subs[0]["depth"], config.load().subagent_depth)
+
+        # 4) the child's result was injected back into the parent transcript
+        assert any(
+            m.get("role") == "tool" and "sub-agent finding" in m.get("content", "")
+            for m in app.session.messages
+        )

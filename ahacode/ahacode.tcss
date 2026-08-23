@@ -47,6 +47,27 @@ Chatbox {
 /* .chatbox--assistant has no own border now — the enclosing .turn rail is the
    green line. (Rule intentionally omitted so it inherits the base Chatbox.) */
 
+/* A spawned sub-agent renders into a foldable 🤖 card (Collapsible, like
+   ThinkingBlock). Its body carries a PURPLE left rail — one nesting level in — so a
+   delegated task reads apart from the parent's green turn rail. */
+.subagent-card {
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0 0 1 0;
+}
+.subagent-card > CollapsibleTitle {
+    background: transparent;
+    color: $secondary;
+    text-style: bold;
+}
+.subagent-body {
+    height: auto;
+    border-left: thick $secondary;
+    padding: 0 0 0 1;
+    margin: 0;
+}
+
 .chatbox--system {
     color: $text-muted;   /* command replies — informational, not conversation */
     border-left: thick $warning;
