@@ -105,3 +105,14 @@ def test_new_session_path_unique_under_threads(tmp_path):
     with ThreadPoolExecutor(max_workers=8) as ex:
         paths = list(ex.map(lambda _: storage.new_session_path(base_dir=tmp_path), range(8)))
     assert len(set(paths)) == 8
+
+
+def test_latest_session_skips_subagent(tmp_path):
+    """Startup resumes the newest MAIN session, never a (newer) sub-agent child —
+    landing in a depth-gated sub-agent session makes the task tool look missing."""
+    main = tmp_path / "2026-08-23_100000.jsonl"
+    storage.write_header(main, storage.make_header(main.stem, kind="main"))
+    sub = tmp_path / "2026-08-23_110000.jsonl"  # newer, but a spawned child
+    storage.write_header(sub, storage.make_header(
+        sub.stem, kind="subagent", parent_id=main.stem, depth=1))
+    assert storage.latest_session(base_dir=tmp_path).name == main.name

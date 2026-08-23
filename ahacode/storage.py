@@ -61,13 +61,22 @@ def load_messages(path: Path) -> list[dict]:
 
 
 def latest_session(base_dir: Path | None = None) -> Path | None:
-    """Most recent session file, or None — used to resume on startup."""
+    """Most recent MAIN session to resume on startup, or None.
+
+    Skips sub-agent (and fork) sessions: those are spawned by an agent as children,
+    not conversations the user opened. A sub-agent session is depth-gated out of the
+    `task` tool, so silently resuming into one (it may well be the newest file) makes
+    delegation look broken. Legacy headerless files count as main and stay resumable.
+    """
     base_dir = base_dir or SESSIONS_DIR
     if not base_dir.exists():
         return None
-    # File names are timestamps, so lexical order == chronological order.
-    files = sorted(base_dir.glob("*.jsonl"))
-    return files[-1] if files else None
+    # File names are timestamps, so reverse order == newest first.
+    for path in sorted(base_dir.glob("*.jsonl"), reverse=True):
+        header = read_header(path)
+        if header is None or header.get("kind") == "main":
+            return path
+    return None
 
 
 # --- session headers & hierarchy ------------------------------------------
