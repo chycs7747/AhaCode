@@ -14,7 +14,7 @@ from textual.worker import get_current_worker
 from rich.text import Text
 from rich.theme import Theme
 
-from ahacode import agent, client, config, prompts, storage, subagent, tools
+from ahacode import agent, client, config, orchestrator, prompts, storage, subagent, tools
 from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage
 from ahacode.render import diff_stats, edit_diff_lines, tool_summary
 from ahacode.session import ChatSession
@@ -332,6 +332,9 @@ class AhaCodeApp(App):
             if text == "/sessions":
                 self.push_screen(SessionPicker(), self._session_picked)
                 return
+            if text == "/run":  # execute the current plan structurally (a long worker)
+                await self._start_plan_run()
+                return
             await self._say_system(self._handle_command(text))
             return
 
@@ -358,6 +361,35 @@ class AhaCodeApp(App):
         self._status("● waiting…  (esc to stop)")
         self._response_worker = self.stream_response(history, self._turn)
         self._set_send_running(True)  # the Send button becomes Stop
+
+    async def _start_plan_run(self) -> None:
+        """/run — hand the current plan (TodoPanel steps) to the structural runner:
+        each step delegated to a fresh sub-agent, in order. The plan was reviewed by
+        the user first (Claude Code's plan → approve → execute), so this is explicit."""
+        if self.view_only:  # a sub-agent transcript can't drive new work
+            await self._say_system("🔒 보기 전용 세션에서는 계획을 실행할 수 없어요. /new 로 시작하세요.")
+            return
+        steps = [it["content"] for it in self.query_one(TodoPanel).items if it.get("content")]
+        if not steps:
+            await self._say_system("실행할 계획이 없어요 — plan 모드에서 todo_write 로 계획을 먼저 세우세요.")
+            return
+        # The plan's origin is the last thing the user asked — the overall task.
+        task = next(
+            (m["content"] for m in reversed(self.session.messages) if m.get("role") == "user"), ""
+        )
+        if not task:
+            await self._say_system("계획의 원본 작업(직전 사용자 메시지)을 찾지 못했어요.")
+            return
+        container = self.query_one("#chat-container", VerticalScroll)
+        await self._say_system(
+            f"▶ 계획 실행 — {len(steps)}단계를 각각 새 컨텍스트의 서브에이전트에 순차 위임합니다."
+        )
+        self._turn = Vertical(classes="turn")
+        await container.mount(self._turn)
+        container.scroll_end(animate=False)
+        self._status("● running plan…  (esc to stop)")
+        self._response_worker = self.run_plan_response(task, steps, self._turn)
+        self._set_send_running(True)
 
     @staticmethod
     def _format_stats(stats: dict) -> str:
@@ -393,6 +425,7 @@ class AhaCodeApp(App):
                 "  /model <name>    switch to a different model\n"
                 "  /url <base_url>  switch to a different endpoint\n"
                 "  /think <n>       per-turn thinking budget in tokens (off = unbounded)\n"
+                "  /run             execute the current plan — each step a fresh sub-agent\n"
                 "  /new             start a new session\n"
                 "  /sessions        switch between sessions\n"
                 "  /help            this message"
@@ -647,6 +680,107 @@ class AhaCodeApp(App):
             if path == self.session_path:  # not if the user already switched away
                 self.call_from_thread(self._set_header_title, title)
 
+    def _approve_tool(self, call) -> bool:
+        """Approval handshake for one tool call, shared by the agent loop and every
+        sub-agent. Auto-approve short-circuits; otherwise push a modal on the main
+        thread and block THIS worker thread on an Event until the user answers.
+        Parallel sub-agents each need approval at once but only one dialog can be on
+        screen, so they queue on the lock."""
+        if self.auto_approve:  # denylist already hard-blocked the dangerous ones
+            return True
+        with self._approval_lock:
+            # Cross-thread handshake: the loop runs on a worker thread but the modal
+            # lives on the main thread. Push it (non-blocking) via call_from_thread,
+            # then block here until the modal's dismiss callback sets the Event.
+            answered = threading.Event()
+            verdict: dict[str, bool] = {}
+
+            def ask() -> None:
+                def on_dismiss(approved: bool | None) -> None:
+                    verdict["ok"] = bool(approved)
+                    answered.set()
+
+                # Raw arguments → the modal renders a per-tool preview (write → code,
+                # edit → diff) inside a scrollable box.
+                self.push_screen(ApprovalModal(call.name, call.arguments), on_dismiss)
+
+            self.call_from_thread(ask)
+            answered.wait()
+            return verdict.get("ok", False)
+
+    def _make_subagent_ctx(self, parent_path, parent_depth, container, worker, approve):
+        """Build the AgentContext whose run_subagent spawns a fresh child agent into a
+        nested card, run to completion HERE on the worker thread (so the parent pauses
+        until it returns — a sequential delegate → resume). A per-level factory: each
+        child is parented to THIS level (parent_path / parent_depth + 1) and mounts one
+        deeper inside this card's body, so the tree nests at ANY depth; recursion stops
+        itself — a child at the depth limit is given no task tool. Shared by the agent
+        loop's `task` tool and the structural plan runner (orchestrator.run_plan)."""
+        def run_subagent(prompt: str, description: str) -> str:
+            cfg = config.load()
+            child_depth = parent_depth + 1
+            child_path = storage.new_session_path()
+            storage.write_header(child_path, storage.make_header(
+                child_path.stem, parent_id=parent_path.stem, kind="subagent",
+                depth=child_depth, model=cfg.name, title=(description or prompt)[:40],
+            ))
+            card = SubagentCard(description or "task", cfg.name)
+            self.call_from_thread(container.mount, card)
+            child_boxes = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}, "call_args": {}}
+
+            def child_emit(event) -> None:
+                if isinstance(event, Usage):
+                    return  # child token accounting isn't surfaced in this slice
+                self.call_from_thread(self._render_event, event, child_boxes, card.body)
+
+            result = subagent.run(
+                prompt,
+                emit=child_emit,
+                approve=approve,  # the child's own bash/write are confirmed too
+                registry=tools.registry_for(child_depth, cfg.subagent_depth),
+                # a grandchild parents to THIS child, one level deeper, in its card
+                ctx=self._make_subagent_ctx(child_path, child_depth, card.body, worker, approve),
+                is_cancelled=lambda: worker.is_cancelled,
+            )
+            for msg in result.messages:
+                storage.append_message(child_path, msg)
+            # Fold the card now the child is done (its answer stays one click away).
+            tool_count = sum(1 for m in result.messages if m.get("role") == "tool")
+            self.call_from_thread(card.done, tool_count)
+            return result.result
+
+        return subagent.AgentContext(run_subagent=run_subagent)
+
+    @work(thread=True, exclusive=True, exit_on_error=False)
+    def run_plan_response(self, task: str, steps: list[str], turn) -> None:
+        """Structurally execute a plan: delegate each step to a fresh sub-agent, in
+        order, threading each concise result forward (orchestrator.run_plan). The
+        decision to split is harness code, not a model tool call — the fix for the
+        single-session thinking spiral (the model never self-delegates; measured)."""
+        worker = get_current_worker()
+        container = turn
+        approve = self._approve_tool
+        ctx = self._make_subagent_ctx(
+            self.session_path, self.session_depth, container, worker, approve
+        )
+        try:
+            result = orchestrator.run_plan(
+                task, steps, ctx.run_subagent,
+                is_cancelled=lambda: worker.is_cancelled,
+            )
+        except Exception as exc:
+            self.post_message(self.ResponseFailed(f"{type(exc).__name__}: {exc}"[:300]))
+            return
+        if worker.is_cancelled:  # cancelled mid-plan: don't persist a partial outcome
+            return
+        # The plan's outcome becomes an assistant turn in the parent session (a reload
+        # shows it; each sub-agent's own transcript lives in its linked child file).
+        final = result.result or "(plan produced no result)"
+        self.call_from_thread(
+            container.mount, Chatbox(final, role="assistant", markdown=True)
+        )
+        self.post_message(self.ResponseComplete([{"role": "assistant", "content": final}], ""))
+
     # exclusive=True: a new message cancels the previous worker.
     # exit_on_error=False: a failing worker must not take the whole app down.
     @work(thread=True, exclusive=True, exit_on_error=False)
@@ -670,79 +804,10 @@ class AhaCodeApp(App):
             # worker until the UI has rendered — built-in backpressure.
             self.call_from_thread(self._render_event, event, boxes, container)
 
-        def approve(call) -> bool:
-            if self.auto_approve:  # denylist already hard-blocked the dangerous ones
-                return True
-            # Serialize modals: parallel sub-agents may each need approval at once,
-            # but only one dialog can be on screen — the rest queue on this lock.
-            with self._approval_lock:
-                # Cross-thread handshake: the loop runs here (worker thread) but the
-                # modal lives on the main thread. We push it (non-blocking) via
-                # call_from_thread, then block this thread on an Event until the user
-                # answers — the modal's dismiss callback sets the Event.
-                answered = threading.Event()
-                verdict: dict[str, bool] = {}
-
-                def ask() -> None:
-                    def on_dismiss(approved: bool | None) -> None:
-                        verdict["ok"] = bool(approved)
-                        answered.set()
-
-                    # Pass the raw arguments; the modal renders a proper per-tool
-                    # preview (write → code, edit → diff) inside a scrollable box.
-                    self.push_screen(ApprovalModal(call.name, call.arguments), on_dismiss)
-
-                self.call_from_thread(ask)
-                answered.wait()
-                return verdict.get("ok", False)
-
-        def make_ctx(parent_path, parent_depth: int, container) -> subagent.AgentContext:
-            # A per-level factory so the tree nests correctly at ANY depth: each
-            # sub-agent is handed a ctx whose run_subagent parents the NEXT level to
-            # THIS one (parent_path / parent_depth + 1) and mounts it inside THIS
-            # card's body. Recursion stops itself — a child at the depth limit is
-            # given no task tool (registry_for), so it never calls its child_ctx.
-            def run_subagent(prompt: str, description: str) -> str:
-                # A sub-agent is just another agent loop, run to completion HERE on
-                # this worker thread — so the parent naturally pauses until it returns
-                # (Roo's sequential delegate → resume). It gets its own session file
-                # (parent_id set, so the picker nests it) and a nested 🤖 card.
-                cfg = config.load()
-                child_depth = parent_depth + 1
-                child_path = storage.new_session_path()
-                storage.write_header(child_path, storage.make_header(
-                    child_path.stem, parent_id=parent_path.stem, kind="subagent",
-                    depth=child_depth, model=cfg.name, title=(description or prompt)[:40],
-                ))
-                card = SubagentCard(description or "task", cfg.name)
-                self.call_from_thread(container.mount, card)
-                child_boxes = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}, "call_args": {}}
-
-                def child_emit(event) -> None:
-                    if isinstance(event, Usage):
-                        return  # child token accounting isn't surfaced in this slice
-                    self.call_from_thread(self._render_event, event, child_boxes, card.body)
-
-                result = subagent.run(
-                    prompt,
-                    emit=child_emit,
-                    approve=approve,  # the child's own bash/write are confirmed too
-                    registry=tools.registry_for(child_depth, cfg.subagent_depth),
-                    # a grandchild parents to THIS child, one level deeper, in its card
-                    ctx=make_ctx(child_path, child_depth, card.body),
-                    is_cancelled=lambda: worker.is_cancelled,
-                )
-                for msg in result.messages:
-                    storage.append_message(child_path, msg)
-                # Fold the card now the child is done (its answer stays one click away);
-                # the parent's synthesis reads inline. Title shows the tool count.
-                tool_count = sum(1 for m in result.messages if m.get("role") == "tool")
-                self.call_from_thread(card.done, tool_count)
-                return result.result
-
-            return subagent.AgentContext(run_subagent=run_subagent)
-
-        ctx = make_ctx(self.session_path, self.session_depth, container)
+        approve = self._approve_tool
+        ctx = self._make_subagent_ctx(
+            self.session_path, self.session_depth, container, worker, approve
+        )
 
         try:
             new_messages = agent.run(

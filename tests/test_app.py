@@ -1285,3 +1285,80 @@ async def test_think_command_sets_budget(fake_llm):
         await pilot.press("enter")
         await pilot.pause()
         assert "unbounded" in list(app.query(Chatbox))[-1]._content
+
+
+@pytest.mark.asyncio
+async def test_run_without_a_plan_gives_guidance():
+    """/run with no plan yet just tells the user to make one — no worker, no crash."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "실행할 계획이 없어요" in list(app.query(Chatbox))[-1]._content
+
+
+@pytest.mark.asyncio
+async def test_run_executes_each_plan_step_as_a_subagent(monkeypatch):
+    """/run structurally delegates every plan step to a fresh sub-agent, in order,
+    and the last phase's result becomes a persisted assistant turn."""
+    from ahacode.widgets.subagent_card import SubagentCard
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    # Each sub-agent runs one no-tool turn → one stream call → one answer. A counter
+    # gives every sub-agent a distinct result so we can assert the final one.
+    counter = iter(range(100))
+    monkeypatch.setattr(
+        client, "stream_chat", lambda m, tools=None: iter([TextDelta(f"phase {next(counter)}")])
+    )
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve the tree problem")  # the plan's origin task
+        app.query_one(TodoPanel).update_todos([
+            {"content": "design", "status": "pending"},
+            {"content": "implement", "status": "pending"},
+            {"content": "verify", "status": "pending"},
+        ])
+        app.auto_approve = True  # sub-agents may act — skip the modal in the test
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        # one nested card per plan step
+        assert len(app.query(SubagentCard)) == 3
+        # the final phase's result became the persisted assistant turn
+        assert app.session.messages[-1] == {"role": "assistant", "content": "phase 2"}
+
+
+@pytest.mark.asyncio
+async def test_run_threads_prior_results_into_later_steps(monkeypatch):
+    """The 2nd step's sub-agent is prompted with the 1st step's result — the curated,
+    accumulation-free context handoff (proven by inspecting the delegated prompts)."""
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    seen_prompts: list[str] = []
+    step_no = iter(range(100))
+
+    def fake_stream(messages, tools=None):
+        # The sub-agent's task is the user turn of its fresh transcript.
+        seen_prompts.append(next(m["content"] for m in messages if m["role"] == "user"))
+        return iter([TextDelta(f"done{next(step_no)}")])
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("the task")
+        app.query_one(TodoPanel).update_todos([
+            {"content": "first", "status": "pending"},
+            {"content": "second", "status": "pending"},
+        ])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    # step 1 sees the task but no prior-results section; step 2 sees step 1's result.
+    assert "the task" in seen_prompts[0] and "earlier phases" not in seen_prompts[0]
+    assert "done0" in seen_prompts[1]

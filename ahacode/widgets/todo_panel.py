@@ -18,9 +18,11 @@ class TodoPanel(Static):
         # paths) — see Chatbox for why unparsed content avoids a MarkupError crash.
         super().__init__("", markup=False)
         self._content = ""
+        self.items: list[dict] = []  # the raw plan, so /run can execute its steps
         self.display = False  # nothing to show until a plan exists
 
     def update_todos(self, items: list[dict]) -> None:
+        self.items = list(items)
         lines = [
             f"{self._MARKS.get(it.get('status', 'pending'), '☐')} {it['content']}"
             for it in items
