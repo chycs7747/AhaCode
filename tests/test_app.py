@@ -1263,3 +1263,25 @@ async def test_leaving_view_only_restores_driving(fake_llm):
         await pilot.pause()
         assert any(m.get("role") == "user" and m["content"] == "hello"
                    for m in app.session.messages)
+
+
+@pytest.mark.asyncio
+async def test_think_command_sets_budget(fake_llm):
+    """/think <n> persists the per-turn thinking budget; /think off = unbounded."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "/think 2048"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert config.load().thinking_token_budget == 2048
+
+        app.query_one("#prompt", PromptInput).text = "/think off"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert config.load().thinking_token_budget == 0
+
+        # bare /think reports current state (no change)
+        app.query_one("#prompt", PromptInput).text = "/think"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "unbounded" in list(app.query(Chatbox))[-1]._content

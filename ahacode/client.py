@@ -130,13 +130,43 @@ def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterat
         # tool, which would force its hand). Only sent alongside tools — some
         # servers reject tool_choice without a tools list.
         kwargs["tool_choice"] = "auto"
+    # Reasoning controls (both optional, both vendor extensions passed via extra_body):
+    # thinking_token_budget hard-caps reasoning tokens per turn; reasoning_effort is a
+    # named hint. A server without its reasoning-config set refuses the budget — handled
+    # by the fallback below.
+    extra = {}
+    if cfg.reasoning_effort:
+        extra["reasoning_effort"] = cfg.reasoning_effort
+    if cfg.thinking_token_budget:
+        extra["thinking_token_budget"] = cfg.thinking_token_budget
+    if extra:
+        kwargs["extra_body"] = extra
     # Hold a global concurrency permit for the request's lifetime: acquired here,
     # released when this generator is exhausted or closed (the outer `with` exits).
     # All agents funnel through here, so this bounds true gateway concurrency (see
     # _ensure_gate). The inner `with` closes the HTTP connection on every exit path —
     # including when the caller abandons the generator mid-stream (GeneratorExit).
     with _ensure_gate():
+        yield from _stream_with_budget_fallback(client, kwargs)
+
+
+def _stream_with_budget_fallback(client, kwargs: dict) -> Iterator[Event]:
+    """Stream the request. If the server refuses thinking_token_budget because its
+    reasoning-config isn't set up, retry ONCE without the budget so the app still
+    works (uncapped) instead of erroring on every turn. The refusal is a request-time
+    400 (before any event is yielded), so the retry can't double-emit."""
+    try:
         with client.chat.completions.create(**kwargs) as response:
+            yield from _iter_events(response)
+    except Exception as exc:
+        extra = kwargs.get("extra_body") or {}
+        if "thinking_token_budget" not in extra or "reasoning_config" not in str(exc):
+            raise
+        extra = {k: v for k, v in extra.items() if k != "thinking_token_budget"}
+        retry = {**kwargs, "extra_body": extra} if extra else {
+            k: v for k, v in kwargs.items() if k != "extra_body"
+        }
+        with client.chat.completions.create(**retry) as response:
             yield from _iter_events(response)
 
 

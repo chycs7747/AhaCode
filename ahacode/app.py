@@ -392,6 +392,7 @@ class AhaCodeApp(App):
                 "  /model           show the current model and endpoint\n"
                 "  /model <name>    switch to a different model\n"
                 "  /url <base_url>  switch to a different endpoint\n"
+                "  /think <n>       per-turn thinking budget in tokens (off = unbounded)\n"
                 "  /new             start a new session\n"
                 "  /sessions        switch between sessions\n"
                 "  /help            this message"
@@ -412,6 +413,23 @@ class AhaCodeApp(App):
             bar.load_models()  # a new endpoint offers a new model list
             self._set_header_endpoint()
             return f"endpoint switched to: {args[0]}"
+        if cmd == "/think":
+            cfg = config.load()
+            if not args:
+                shown = f"{cfg.thinking_token_budget} tokens/turn" if cfg.thinking_token_budget else "off (unbounded)"
+                return f"thinking budget: {shown}  ·  reasoning_effort: {cfg.reasoning_effort}"
+            val = args[0].lower()
+            if val in ("off", "0", "none"):
+                budget = 0
+            elif val.isdigit():
+                budget = int(val)
+            else:
+                return "usage: /think <tokens>  |  /think off"
+            config.save(replace(cfg, thinking_token_budget=budget))
+            client.reset()
+            if not budget:
+                return "thinking budget: off (unbounded)"
+            return f"thinking budget: {budget} tokens/turn  (needs the server's reasoning-config to take effect)"
         return f"unknown command: {cmd} — try /help"
 
     @on(ModelBar.ModelChosen)

@@ -107,3 +107,87 @@ def test_tool_call_streams_deltas_then_final():
     assert "".join(d.fragment for d in deltas) == '{"path": "a.py", "content": "x=1"}'
     final = [e for e in events if isinstance(e, ToolCall)]
     assert len(final) == 1 and final[0].arguments == {"path": "a.py", "content": "x=1"}
+
+
+# --- stream_chat reasoning params + budget fallback ------------------------
+import contextlib
+
+from ahacode import config
+
+
+class _FakeStream:
+    def __enter__(self):
+        return iter([])  # no chunks -> _iter_events yields nothing
+
+    def __exit__(self, *a):
+        return False
+
+
+def _fake_client(create):
+    class C:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kw):
+                    return create(**kw)
+    return C()
+
+
+def _cfg(**kw):
+    base = dict(base_url="u", name="m", api_key="k", timeout=1.0,
+                thinking_token_budget=4096, reasoning_effort="medium")
+    base.update(kw)
+    return config.ModelConfig(**base)
+
+
+def test_stream_chat_sends_reasoning_extra_body(monkeypatch):
+    """budget + effort ride in extra_body when set."""
+    seen = {}
+    fc = _fake_client(lambda **kw: (seen.update(kw), _FakeStream())[1])
+    monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg()))
+    monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
+    list(client.stream_chat([{"role": "user", "content": "x"}]))
+    assert seen["extra_body"] == {"reasoning_effort": "medium", "thinking_token_budget": 4096}
+
+
+def test_stream_chat_omits_budget_when_zero(monkeypatch):
+    seen = {}
+    fc = _fake_client(lambda **kw: (seen.update(kw), _FakeStream())[1])
+    monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg(thinking_token_budget=0)))
+    monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
+    list(client.stream_chat([{"role": "user", "content": "x"}]))
+    assert seen["extra_body"] == {"reasoning_effort": "medium"}  # no budget key
+
+
+def test_budget_fallback_on_reasoning_config_error(monkeypatch):
+    """A server without its reasoning-config refuses the budget; we retry once
+    without it (keeping effort) so the turn still runs."""
+    calls = []
+
+    def create(**kw):
+        calls.append(kw)
+        if "thinking_token_budget" in (kw.get("extra_body") or {}):
+            raise RuntimeError("thinking_token_budget is set but reasoning_config is not configured")
+        return _FakeStream()
+
+    monkeypatch.setattr(client, "_ensure_client", lambda: (_fake_client(create), _cfg()))
+    monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
+    list(client.stream_chat([{"role": "user", "content": "x"}]))
+    assert len(calls) == 2
+    assert "thinking_token_budget" in calls[0]["extra_body"]      # first tried with budget
+    assert calls[1]["extra_body"] == {"reasoning_effort": "medium"}  # retry dropped only the budget
+
+
+def test_unrelated_error_is_not_retried(monkeypatch):
+    calls = []
+
+    def create(**kw):
+        calls.append(kw)
+        raise RuntimeError("some other 500")
+
+    monkeypatch.setattr(client, "_ensure_client", lambda: (_fake_client(create), _cfg()))
+    monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
+    import pytest
+    with pytest.raises(RuntimeError, match="some other 500"):
+        list(client.stream_chat([{"role": "user", "content": "x"}]))
+    assert len(calls) == 1  # no retry

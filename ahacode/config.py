@@ -14,6 +14,8 @@ DEFAULT_API_KEY = "EMPTY"
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_SUBAGENT_DEPTH = 1  # generations of sub-agents that may nest (0 = none)
 DEFAULT_MAX_PARALLEL_AGENTS = 8  # cap on concurrent gateway requests (measured knee)
+DEFAULT_THINKING_TOKEN_BUDGET = 4096  # per-turn reasoning-token cap; 0 = unbounded
+DEFAULT_REASONING_EFFORT = "medium"   # OpenAI-style hint (low|medium|high|xhigh)
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,12 @@ class ModelConfig:
     # Max concurrent gateway requests across ALL agents (main + sub-agents at every
     # depth). One process-wide cap protecting the single-GPU backend (~8 measured).
     max_parallel_agents: int = DEFAULT_MAX_PARALLEL_AGENTS
+    # Per-turn thinking control. budget hard-caps reasoning tokens (0 = unbounded) —
+    # the server must have its reasoning-config set for the cap to take effect, else
+    # the request is refused and client.py retries without it. reasoning_effort is an
+    # OpenAI-style hint, ignored by servers that don't map it.
+    thinking_token_budget: int = DEFAULT_THINKING_TOKEN_BUDGET
+    reasoning_effort: str = DEFAULT_REASONING_EFFORT
 
 
 DEFAULTS = ModelConfig(
@@ -48,6 +56,8 @@ base_url = "{cfg.base_url}"
 name = "{cfg.name}"
 api_key = "{cfg.api_key}"  # many local servers ignore this, but the SDK requires one
 timeout = {cfg.timeout}    # seconds; caps how long a read may block between chunks
+thinking_token_budget = {cfg.thinking_token_budget}  # per-turn reasoning cap; 0 = unbounded (server reasoning-config required)
+reasoning_effort = "{cfg.reasoning_effort}"          # low|medium|high|xhigh — a hint; effect is server-dependent
 
 [agent]
 # How many generations of sub-agents may nest. 1 = the main agent may spawn
@@ -83,4 +93,6 @@ def load(path: Path | None = None) -> ModelConfig:
         timeout=float(model.get("timeout", DEFAULT_TIMEOUT)),
         subagent_depth=int(agent.get("subagent_depth", DEFAULT_SUBAGENT_DEPTH)),
         max_parallel_agents=int(agent.get("max_parallel_agents", DEFAULT_MAX_PARALLEL_AGENTS)),
+        thinking_token_budget=int(model.get("thinking_token_budget", DEFAULT_THINKING_TOKEN_BUDGET)),
+        reasoning_effort=str(model.get("reasoning_effort", DEFAULT_REASONING_EFFORT)),
     )
