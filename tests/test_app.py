@@ -67,8 +67,7 @@ async def test_deltas_routed_to_right_boxes(fake_llm):
 @pytest.mark.asyncio
 async def test_thinking_block_autocollapses_after_answer(fake_llm):
     """The reasoning block stays open while streaming, then folds once the answer
-    begins — kilocode's auto_collapse_reasoning. Its content is preserved so a
-    click can reopen it."""
+    begins (auto-collapsed). Its content is preserved so a click can reopen it."""
     from ahacode.widgets.thinking import ThinkingBlock
 
     app = AhaCodeApp()
@@ -172,8 +171,8 @@ async def test_tool_result_block_folds_by_size_and_error(fake_llm):
 @pytest.mark.asyncio
 async def test_assistant_answer_renders_as_markdown(monkeypatch):
     """Assistant answers render as Markdown so ```code``` / ```diff fences become
-    highlighted blocks (elia's rich.markdown.Markdown), not literal backticks. The
-    raw markdown is still kept in _content for logic/tests."""
+    highlighted blocks (Rich's Markdown), not literal backticks. The raw markdown
+    is still kept in _content for logic/tests."""
     from rich.markdown import Markdown as RichMarkdown
 
     def with_code(messages, tools=None):
@@ -386,9 +385,10 @@ async def test_second_turn_carries_history(monkeypatch):
         await app.workers.wait_for_complete()
         await pilot.pause()
 
-    assert [m["role"] for m in captured[1]] == ["user", "assistant", "user"]
-    assert captured[1][1]["content"] == "answer"  # turn 1's reply rides in turn 2
-    assert len(app.session.messages) == 4
+    # act mode prepends the system prompt; the [user, assistant, user] history follows.
+    assert [m["role"] for m in captured[1]] == ["system", "user", "assistant", "user"]
+    assert captured[1][2]["content"] == "answer"  # turn 1's reply rides in turn 2
+    assert len(app.session.messages) == 4  # system prompt is not stored in the session
 
 
 @pytest.mark.asyncio
@@ -666,7 +666,8 @@ async def test_plan_mode_restricts_tools_and_injects_system_prompt(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_act_mode_exposes_all_tools(monkeypatch):
-    """The default (act) mode exposes the full tool set and injects no system prompt."""
+    """The default (act) mode exposes the full tool set and grounds the turn with the
+    AhaCode system prompt."""
     captured = {}
 
     def rec(messages, tools=None):
@@ -688,7 +689,12 @@ async def test_act_mode_exposes_all_tools(monkeypatch):
     assert {t["function"]["name"] for t in captured["tools"]} == {
         "read", "write", "edit", "bash", "todo_write", "task"
     }
-    assert captured["messages"][0]["role"] == "user"  # no system prompt in act mode
+    # act mode now grounds the turn with the AhaCode system prompt (env-injected),
+    # followed by the user's message; the system prompt is never stored in the session.
+    assert captured["messages"][0]["role"] == "system"
+    assert captured["messages"][0]["content"].startswith("You are AhaCode")
+    assert captured["messages"][1]["role"] == "user"
+    assert app.session.messages[0]["role"] == "user"
 
 
 @pytest.mark.asyncio
@@ -1197,3 +1203,63 @@ async def test_grandchild_nests_under_child(monkeypatch):
         assert len(cards) == 2
         child_card = next(c for c in cards if "child" in c.title)
         assert len(child_card.query(SubagentCard)) == 1
+
+
+def _seed_main_and_subagent():
+    """Write a drivable main session and a view-only sub-agent child of it.
+    Returns (main_stem, child_stem)."""
+    main = storage.new_session_path()
+    storage.write_header(main, storage.make_header(main.stem, kind="main", model="qwen38"))
+    child = storage.new_session_path()
+    storage.write_header(child, storage.make_header(
+        child.stem, parent_id=main.stem, kind="subagent", depth=1, model="qwen38", title="probe"))
+    storage.append_message(child, {"role": "assistant", "content": "child finding"})
+    return main.stem, child.stem
+
+
+@pytest.mark.asyncio
+async def test_subagent_session_opens_read_only(fake_llm):
+    """Opening a sub-agent (depth>0) session shows it read-only: view_only is set, its
+    history renders (열람), a 🔒 banner appears, and a typed message is refused — not
+    recorded and no LLM turn — the fix for sitting in a depth-gated child and stalling."""
+    _, child_stem = _seed_main_and_subagent()
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await app._switch_session(child_stem)
+        await pilot.pause()
+
+        assert app.view_only is True
+        # 열람 works: the child's transcript is on screen
+        assert any("child finding" in b._content for b in app.query(Chatbox))
+        before = list(app.session.messages)
+
+        # a plain message is refused: nothing appended, and a 🔒 banner explains why
+        app.query_one("#prompt", PromptInput).text = "keep working"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.session.messages == before  # the guard blocked the turn
+        assert any("보기 전용" in b._content for b in app.query(Chatbox))
+
+
+@pytest.mark.asyncio
+async def test_leaving_view_only_restores_driving(fake_llm):
+    """The escape hatch works: even in a view-only session /new is a slash command, so
+    the guard lets it through — it opens a fresh main session that is drivable again."""
+    _, child_stem = _seed_main_and_subagent()
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await app._switch_session(child_stem)
+        await pilot.pause()
+        assert app.view_only is True
+
+        app.query_one("#prompt", PromptInput).text = "/new"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.view_only is False and app.session_depth == 0
+
+        # and a normal message now goes through (recorded as a user turn)
+        app.query_one("#prompt", PromptInput).text = "hello"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert any(m.get("role") == "user" and m["content"] == "hello"
+                   for m in app.session.messages)

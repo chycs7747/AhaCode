@@ -14,7 +14,7 @@ from textual.worker import get_current_worker
 from rich.text import Text
 from rich.theme import Theme
 
-from ahacode import agent, client, config, storage, subagent, tools
+from ahacode import agent, client, config, prompts, storage, subagent, tools
 from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage
 from ahacode.render import diff_stats, edit_diff_lines, tool_summary
 from ahacode.session import ChatSession
@@ -30,18 +30,7 @@ from ahacode.widgets.todo_panel import TodoPanel
 from ahacode.widgets.model_bar import ModelBar
 
 
-# Injected only in plan mode. Without a system-prompt layer yet, this is what
-# makes the mode behave: fewer tools *and* an instruction to plan, not act.
-PLAN_SYSTEM_PROMPT = (
-    "You are in PLAN MODE. Do not change anything or run commands. If needed, "
-    "investigate with the read tool, then call todo_write to lay out a clear, "
-    "step-by-step plan for the user to review. Do not carry out the plan."
-)
-
-TITLE_SYSTEM = (
-    "You write a very short title (2-5 words) for a conversation. "
-    "Reply with ONLY the title — no quotes, no trailing punctuation."
-)
+# System prompts now live in ahacode/prompts.py (assembled per mode/model).
 
 # Eye-friendly Markdown palette. Rich's defaults paint headings magenta and inline
 # code "bold cyan on black" — harsh reds/boxes on a dark terminal. We push softer
@@ -171,6 +160,7 @@ class AhaCodeApp(App):
         self._set_header_title(meta.get("title", ""))
         self._set_header_endpoint()
         await self._render_history()
+        self._reflect_view_only()  # resumed session is a main one, but stay correct
         self.query_one("#prompt", PromptInput).focus()  # not the header buttons
 
     def _set_header_title(self, title: str) -> None:
@@ -267,6 +257,7 @@ class AhaCodeApp(App):
         self._set_header_title("")
         self.query_one(TodoPanel).display = False
         await self._render_history()
+        self._reflect_view_only()  # a fresh main session is drivable again
         self._status("")
         await self._say_system("new session started")
 
@@ -281,6 +272,12 @@ class AhaCodeApp(App):
         self._set_header_title(meta.get("title", ""))
         self.query_one(TodoPanel).display = False
         await self._render_history()
+        self._reflect_view_only()
+        if self.view_only:  # opened a sub-agent transcript — announce it's read-only
+            await self._say_system(
+                f"🔒 보기 전용 — 서브에이전트가 자동 생성한 기록(깊이 {self.session_depth})입니다. "
+                "읽기만 가능해요. /new 로 새 세션을 시작하세요."
+            )
         self._status("")
 
     def _session_picked(self, result: str | None) -> None:
@@ -317,6 +314,15 @@ class AhaCodeApp(App):
             return
         # PromptInput clears itself on submit.
 
+        # A sub-agent session is view-only: refuse new turns, but let slash commands
+        # through so /new and /sessions stay as keyboard escape hatches.
+        if self.view_only and not text.startswith("/"):
+            await self._say_system(
+                "🔒 보기 전용 세션(서브에이전트 기록)이라 대화를 보낼 수 없어요. "
+                "/new (또는 상단 New) 로 새 세션을 시작하세요."
+            )
+            return
+
         if text.startswith("/"):
             # Slash commands configure the app; they never reach the LLM
             # and are not recorded in the session.
@@ -345,8 +351,10 @@ class AhaCodeApp(App):
         # never shares a mutable list with the main thread; bubbles for the reply
         # are mounted lazily as loop events arrive (turn count is not known ahead).
         history = list(self.session.messages)
-        if self.mode == "plan":
-            history = [{"role": "system", "content": PLAN_SYSTEM_PROMPT}, *history]
+        # Every turn is grounded by a system prompt now (act mode had none before):
+        # act gets the full agent prompt (base + live environment), plan the planner.
+        base = prompts.plan_system() if self.mode == "plan" else prompts.act_system()
+        history = [{"role": "system", "content": base}, *history]
         self._status("● waiting…  (esc to stop)")
         self._response_worker = self.stream_response(history, self._turn)
         self._set_send_running(True)  # the Send button becomes Stop
@@ -433,6 +441,25 @@ class AhaCodeApp(App):
         else:
             await self._say_system("auto-approve OFF — tools ask first.")
 
+    @property
+    def view_only(self) -> bool:
+        """Is the open session browsable-but-not-drivable? A sub-agent session
+        (depth > 0) is a machine-authored child transcript, and its depth gates the
+        `task` tool off (see registry_for), so typing into it would dead-end. We let
+        the user OPEN one to read it, but refuse new turns; /new leaves. Derived from
+        session_depth — the same axis as the task gate — so the lock can't drift."""
+        return self.session_depth > 0
+
+    def _reflect_view_only(self) -> None:
+        """Mirror the read-only state in the composer's hint line (the up-front
+        signal, before a blocked keypress teaches it the hard way)."""
+        prompt = self.query_one("#prompt", PromptInput)
+        prompt.border_subtitle = (
+            "🔒 보기 전용 · /new 로 새 세션"
+            if self.view_only
+            else "Enter to send · Shift+Enter for newline"
+        )
+
     def _registry_for_mode(self) -> dict:
         """The tools this session may use this turn. Plan mode stays read-only (no
         side effects — and no `task`, since a sub-agent could act). Act mode gets the
@@ -471,9 +498,8 @@ class AhaCodeApp(App):
     def _fold_thinking(self, boxes: dict) -> None:
         """Collapse this turn's thinking block once the reasoning is done.
 
-        Mirrors kilocode's `auto_collapse_reasoning` (config.ts:109 — "collapse
-        reasoning blocks after the agent finishes writing them"): the block stays
-        open while it streams, then folds when the answer or a tool call begins.
+        The block stays open while it streams, then folds when the answer or a
+        tool call begins (auto-collapsing finished reasoning).
         """
         block = boxes["thinking"]
         if block is not None:
@@ -500,7 +526,7 @@ class AhaCodeApp(App):
             self._fold_thinking(boxes)  # answer starting → auto-collapse the reasoning
             if boxes["answer"] is None:
                 # markdown=True: render the answer as Markdown so ```code``` and
-                # ```diff fences become highlighted blocks (elia's Chatbox model).
+                # ```diff fences become highlighted blocks.
                 boxes["answer"] = Chatbox("", role="assistant", markdown=True)
                 await container.mount(boxes["answer"])
             boxes["answer"].append_chunk(event.text)
@@ -516,7 +542,7 @@ class AhaCodeApp(App):
             self._fold_thinking(boxes)
             boxes["answer"] = None
             if event.name == "write":
-                # write streams its content live into one bubble (kilocode-style)
+                # write streams its content live into one bubble
                 buf = boxes["tool_buf"].get(event.index, "") + event.fragment
                 boxes["tool_buf"][event.index] = buf
                 box = boxes["tool"].get(event.index)
@@ -593,7 +619,7 @@ class AhaCodeApp(App):
         )[:1500]
         try:
             title = client.complete(
-                [{"role": "system", "content": TITLE_SYSTEM}, {"role": "user", "content": convo}]
+                [{"role": "system", "content": prompts.title_system()}, {"role": "user", "content": convo}]
             )
         except Exception:
             return  # a failed title is not worth surfacing; leave it untitled

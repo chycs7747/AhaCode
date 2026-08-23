@@ -33,7 +33,10 @@ class SessionPicker(ModalScreen[str | None]):
         for level, node in _flatten(tree):
             items.append(self._session_item(level, node))
         with Vertical(id="picker-box"):
-            yield Static("Sessions   (↑↓ 이동 · Enter 열기 · Esc 닫기)", id="picker-title")
+            yield Static(
+                "Sessions   (↑↓ 이동 · Enter 열기 · Esc 닫기)   ·   🤖 서브에이전트는 보기 전용",
+                id="picker-title",
+            )
             yield ListView(*items, id="picker-list")
 
     @staticmethod

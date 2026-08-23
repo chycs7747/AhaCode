@@ -2,11 +2,9 @@
 
 A sub-agent is "just another agent loop": the same agent.run drives it, only the
 framing differs — a focused system prompt plus the delegated task as the opening
-user turn. This is the sub-agent-as-a-tool model of Kilo Code (opencode's
-tool/task.ts) and Roo Code's Orchestrator (new_task). Because agent.run is
-synchronous, the parent naturally *pauses* here until the child finishes (Roo's
-sequential delegate → resume), and the Python call depth mirrors the session depth
-in the tree.
+user turn (the sub-agent-as-a-tool model). Because agent.run is synchronous, the
+parent naturally *pauses* here until the child finishes (a sequential delegate →
+resume), and the Python call depth mirrors the session depth in the tree.
 
 Kept pure and UI-free so it is unit-testable with a fake stream: the seams
 (emit / approve / stream / registry) are injected, and the app supplies the real
@@ -20,6 +18,7 @@ from dataclasses import dataclass
 
 from ahacode import agent
 from ahacode.events import Event
+from ahacode.prompts import SUBAGENT_SYSTEM  # re-exported; run() defaults to it
 
 
 @dataclass
@@ -33,18 +32,6 @@ class AgentContext:
     """
 
     run_subagent: Callable[[str, str], str] | None = None
-
-
-# A worker sub-agent's framing. Deliberately short: it inherits the same tools, so
-# it only needs to know its job is one delegated task and to end with a
-# self-contained result. Kept at the very front of the message list so that, when
-# many sub-agents share it, the gateway's prefix cache reuses this prefill (we
-# measured ~67% prefill savings on a shared ~10K-token prefix).
-SUBAGENT_SYSTEM = (
-    "You are a focused sub-agent spawned to complete ONE delegated task. "
-    "Work autonomously with the tools available, then finish with a concise, "
-    "self-contained result the caller can use directly — no filler, no questions."
-)
 
 
 @dataclass
