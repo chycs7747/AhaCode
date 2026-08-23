@@ -1,9 +1,8 @@
 """A pinned, live-updating checklist of the current plan.
 
 When the model calls todo_write, the app feeds the items here (from the tool
-call's arguments) instead of dropping a bubble that scrolls away — the same idea
-as hmm-code's "pin task list to the top". Stateless like the tool: each call
-replaces the whole list.
+call's arguments) instead of dropping a bubble that scrolls away — the plan stays
+pinned to the top. Stateless like the tool: each call replaces the whole list.
 """
 
 from textual.widgets import Static

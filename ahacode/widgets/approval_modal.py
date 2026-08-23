@@ -1,15 +1,14 @@
 """A modal that asks the user to approve a side-effecting tool call before it runs.
 
-Roo Code and Claude Code both gate side-effecting tools behind an explicit
-approve/reject prompt; this is the same idea as a Textual ModalScreen. It returns
+Side-effecting tools are gated behind an explicit approve/reject prompt (as in
+Claude Code); this is a Textual ModalScreen. It returns
 a bool via dismiss() — collected by the (worker-thread) caller through a
 threading.Event — and can be answered by clicking a button or the y/n keys.
 
 The body shows a *formatted preview* of what the tool will do (write → the file
 content as code, edit → a -/+ diff, bash → the command) instead of a raw repr of
-the arguments, and scrolls when that preview is long — the reference pattern
-(hmm-code's renderEditOrWriteBody feeds the same preview to its permission prompt;
-roocode shows it in a scrollable CodeAccordion).
+the arguments, and scrolls when that preview is long (the same formatted preview
+the tool result card shows).
 """
 
 from textual import on

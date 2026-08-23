@@ -1,7 +1,6 @@
 """The agent loop: stream a turn, run any tools the model asked for, feed the
 results back, repeat — until a turn arrives with no tool calls (the final
-answer). This is the classic harness loop shared by Roo Code, Kilo Code
-(opencode runLoop) and Pi (agent-loop.ts): termination is "the assistant
+answer). This is the classic agent harness loop: termination is "the assistant
 produced no tool calls", with a max-turns backstop against runaways.
 
 Kept widget-free and pure so it is testable without a terminal: the UI is

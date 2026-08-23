@@ -94,13 +94,13 @@ def _iter_events(chunks: Iterable) -> Iterator[Event]:
             piece = fn.arguments if (fn and fn.arguments) else ""
             if piece:
                 slot["args"] += piece
-            # Live fragment for the UI (kilocode-style delta); the final parsed
+            # Live fragment for the UI (a streaming delta); the final parsed
             # ToolCall is still emitted after the stream for the loop to execute.
             yield ToolCallDelta(index=frag.index, name=slot["name"], fragment=piece)
 
     # A "length" finish means the model was cut off at the token limit, so any
-    # tool call it was mid-way through emitting is half-built and unsafe to run
-    # (Roo Code / Pi both refuse these). Skip them rather than execute garbage.
+    # tool call it was mid-way through emitting is half-built and unsafe to run.
+    # Skip them rather than execute garbage.
     if finish_reason == "length" and pending:
         yield TextDelta("\n[response truncated at token limit — tool call(s) skipped]")
         return

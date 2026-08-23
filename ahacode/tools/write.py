@@ -1,7 +1,7 @@
 """write: create or overwrite a text file. requires_approval=True — it changes
 the filesystem, so it goes through the same confirmation modal as bash.
 
-A dedicated tool (like Pi's write.ts and Claude Code's Write) instead of asking
+A dedicated tool (like Claude Code's Write) instead of asking
 the model to build files through bash heredocs, which is fragile for multi-line
 code (quoting/escaping/indent mistakes)."""
 

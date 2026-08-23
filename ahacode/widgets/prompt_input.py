@@ -9,10 +9,9 @@ class PromptInput(TextArea):
     """A multi-line prompt box. Enter sends; Shift+Enter / Alt+Enter / Ctrl+J
     insert a newline.
 
-    Textual's Input is single-line, so — like elia
-    (reference/elia/elia_chat/widgets/prompt_input.py) — we subclass TextArea for
-    multi-line editing. elia submits on Ctrl+J; we bind Enter to send so it feels
-    like Claude Code, keeping the other combos for newlines.
+    Textual's Input is single-line, so we subclass TextArea for multi-line editing.
+    We bind Enter to send so it feels like Claude Code, keeping the other combos
+    (Shift+Enter / Alt+Enter / Ctrl+J) for newlines.
 
     Terminal note (a CS gotcha): historically a terminal sends the SAME bytes for
     Enter and Shift+Enter, so it can't tell them apart. Shift+Enter-for-newline

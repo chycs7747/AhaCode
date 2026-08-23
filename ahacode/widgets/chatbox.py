@@ -11,10 +11,9 @@ _CODE_THEME = "nord"
 class Chatbox(Static):
     """A single chat bubble, styled by role (user / assistant / thinking / …).
 
-    Rendering is driven by render() (elia's Chatbox model,
-    reference/elia/elia_chat/widgets/chatbox.py:358): assistant answers render as
-    Rich Markdown so ```code``` fences become highlighted code blocks; everything
-    else renders as plain Rich Text. Returning a Rich renderable (never a raw str)
+    Rendering is driven by render(): assistant answers render as Rich Markdown so
+    ```code``` fences become highlighted code blocks; everything else renders as
+    plain Rich Text. Returning a Rich renderable (never a raw str)
     also sidesteps Textual's console-markup parsing — '[' in tool output or code
     can never be mistaken for a markup tag (the old MarkupError crash).
     """
@@ -36,7 +35,7 @@ class Chatbox(Static):
 
     def append_chunk(self, chunk: str) -> None:
         """Append a streamed delta and re-render. Called from the worker via
-        call_from_thread; Markdown bubbles re-parse live, as in elia."""
+        call_from_thread; Markdown bubbles re-parse live."""
         if not self.display:  # a bubble born hidden reveals itself on the first delta
             self.display = True
         self._content += chunk

@@ -8,10 +8,9 @@ class HeaderBar(Horizontal):
     right ([+ New], [≡ Sessions]).
 
     Real Button widgets (not clickable text) so the hit target is unambiguous —
-    this mirrors Claude Code's header (title + new + history) and elia's clickable
-    header (reference/elia/.../app_header.py), while reusing our existing
-    SessionPicker modal and background auto-title. Button.Pressed bubbles up to the
-    app, which owns session state.
+    this mirrors Claude Code's header (title + new + history), while reusing our
+    existing SessionPicker modal and background auto-title. Button.Pressed bubbles
+    up to the app, which owns session state.
     """
 
     def compose(self) -> ComposeResult:

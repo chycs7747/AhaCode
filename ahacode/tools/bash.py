@@ -1,7 +1,7 @@
 """bash: run a shell command in the project root. requires_approval=True — an
 approved command runs with the user's own privileges.
 
-Danger filtering (adapted from Roo Code's core/auto-approval): a command is split
+Danger filtering: a command is split
 on chain operators (&&, ||, ;, |, &, newlines) and each sub-command is matched
 against a denylist of catastrophic patterns. A match hard-blocks the call before
 it can even be offered for approval. This is defense in depth, NOT a guarantee —

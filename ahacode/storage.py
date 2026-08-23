@@ -82,7 +82,7 @@ def latest_session(base_dir: Path | None = None) -> Path | None:
 # --- session headers & hierarchy ------------------------------------------
 # Each session file's FIRST line is a header carrying its place in the tree:
 # {"type":"header","version":1,"id","parent_id","kind","depth","model","cwd","title"}
-# A child points to its parent by id (pi's parentSessionId model); the tree is
+# A child points to its parent by id; the tree is
 # derived by scanning headers — a parent never stores a child list.
 
 HEADER_VERSION = 1

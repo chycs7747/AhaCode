@@ -1,8 +1,7 @@
 """The tool contract: a name, a JSON-Schema parameter spec, and an execute()
 callable. Concrete tools live in their own modules (read.py, bash.py, ...) and
-are assembled in __init__.py — mirroring Pi's harness/tools/ directory (one file
-per tool + an index) and Roo Code's core/tools/. A tool is a *value* of this
-dataclass, never a subclass, so adding one never touches this file.
+are assembled in __init__.py (one file per tool + an index). A tool is a *value*
+of this dataclass, never a subclass, so adding one never touches this file.
 """
 
 from __future__ import annotations

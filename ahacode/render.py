@@ -2,10 +2,9 @@
 modal (write content / edit diff / bash command). Widget-free so both can import
 it with no cycle.
 
-Mirrors the reference pattern of one per-tool formatted preview reused everywhere:
-hmm-code's renderEditOrWriteBody (reference/hmm-code-vscode-main/webview/tools.ts:128)
-feeds both the tool card and the permission prompt; roocode shows the same content
-in a scrollable CodeAccordion rather than dumping raw arguments.
+One per-tool formatted preview is reused everywhere: the same rendered content
+feeds both the tool card and the permission prompt, rather than dumping raw
+arguments into either.
 """
 
 import difflib

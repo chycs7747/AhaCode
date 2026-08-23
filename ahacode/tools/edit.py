@@ -1,6 +1,6 @@
 """edit: replace a unique snippet in an existing file.
 
-Like Claude Code's Edit / Pi's edit: the old_string must match exactly once, so
+Like Claude Code's Edit: the old_string must match exactly once, so
 the change is unambiguous — 0 matches or >1 matches are errors that push the model
 to supply more context. requires_approval=True (it changes the filesystem)."""
 

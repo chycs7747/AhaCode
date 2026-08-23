@@ -1,10 +1,9 @@
 """Canonical streaming events — the one vocabulary the UI consumes.
 
 Two producers emit these: client.py (what the model streams) and agent.py
-(what the tool loop does). This mirrors the tagged-union event model used by
-Pi (packages/agent/src/types.ts: AgentEvent) and Roo Code (ApiStreamChunk) —
-a set of small typed records distinguished by their class and dispatched via
-isinstance, which is Python's stand-in for matching on a `type` discriminant.
+(what the tool loop does). This is a tagged-union event model — a set of small
+typed records distinguished by their class and dispatched via isinstance, which
+is Python's stand-in for matching on a `type` discriminant.
 """
 
 from dataclasses import dataclass

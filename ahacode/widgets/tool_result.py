@@ -2,10 +2,8 @@ from textual.widgets import Collapsible
 
 from ahacode.widgets.chatbox import Chatbox
 
-# One icon per tool — the Textual analogue of kilocode's getToolInfo() switch
-# (reference/kilocode/packages/kilo-ui/src/components/message-part.tsx:203) and
-# hmm-code's buildToolCallBlock() (reference/hmm-code-vscode-main/webview/tools.ts:43).
-# Unknown tools fall back to a generic wrench.
+# One icon per tool, shown in the result card's header. Unknown tools fall back
+# to a generic wrench.
 _ICONS = {
     "read": "👓",
     "bash": "🖥",
@@ -16,9 +14,8 @@ _ICONS = {
     "todo_write": "🗒",
 }
 
-# Results longer than this fold by default so the chat stays scannable — the
-# "over N lines… click to expand, keeps the chat scrollable" rule from hmm-code
-# (reference/hmm-code-vscode-main/webview/tools.ts:35).
+# Results longer than this fold by default so the chat stays scannable
+# (over N lines → click to expand, keeps the chat scrollable).
 _COLLAPSE_OVER = 12
 
 
@@ -26,12 +23,10 @@ class ToolResultBlock(Collapsible):
     """A tool result as a foldable card: a one-line header (icon · tool · size)
     over the output body.
 
-    Long results and failures start collapsed; short successes stay open. This is
-    the pattern shared by every reference harness — a per-tool header plus a
-    collapsible body: kilocode's Collapsible + getToolInfo, roocode's CodeAccordion
-    (onToggleExpand), and hmm-code's long-output auto-collapse with a
-    failure-collapses-to-a-dot (reference/hmm-code .../CHANGELOG.md:216). Reuses the
-    same Textual Collapsible as ThinkingBlock, so the toggle/▼▶ come for free.
+    Long results and failures start collapsed; short successes stay open — a per-tool
+    header plus a collapsible body, with long output auto-collapsing and a failure
+    folding down to a dot. Reuses the same Textual Collapsible as ThinkingBlock, so
+    the toggle/▼▶ come for free.
     """
 
     def __init__(
