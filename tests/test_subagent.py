@@ -125,57 +125,56 @@ def test_final_text_helper():
 
 
 def test_parallel_tool_calls_overlap():
-    """A turn of parallelizable calls runs them concurrently, and their results are
-    appended in call order (so they line up with the assistant's tool_calls)."""
+    """A turn of parallelizable calls runs them concurrently — proven with a barrier
+    that only releases if all three threads reach it at once — and results append in
+    call order (so they line up with the assistant's tool_calls). Deterministic: no
+    reliance on lucky scheduling."""
     import threading
-    import time as _time
 
-    counter, peak, lock = [0], [0], threading.Lock()
+    barrier = threading.Barrier(3, timeout=3)
+    broke = []
 
-    def slow(args):
-        with lock:
-            counter[0] += 1
-            peak[0] = max(peak[0], counter[0])
-        _time.sleep(0.1)
-        with lock:
-            counter[0] -= 1
+    def at_barrier(args):
+        try:
+            barrier.wait()  # blocks until all three arrive; times out if they don't
+        except threading.BrokenBarrierError:
+            broke.append(1)
         return "ok"
 
-    tool = Tool(name="slow", description="", parameters={"type": "object", "properties": {}},
-                execute=slow, parallelizable=True)
+    tool = Tool(name="p", description="", parameters={"type": "object", "properties": {}},
+                execute=at_barrier, parallelizable=True)
     msgs = agent.run(
         [{"role": "user", "content": "go"}],
         emit=lambda e: None,
         stream=scripted_stream(
-            [ToolCall(id="a", name="slow", arguments={}),
-             ToolCall(id="b", name="slow", arguments={}),
-             ToolCall(id="c", name="slow", arguments={})],
+            [ToolCall(id="a", name="p", arguments={}),
+             ToolCall(id="b", name="p", arguments={}),
+             ToolCall(id="c", name="p", arguments={})],
             [TextDelta("done")],
         ),
-        registry={"slow": tool},
+        registry={"p": tool},
     )
-    assert peak[0] >= 2  # the three calls overlapped
+    assert not broke  # all three met at the barrier -> genuinely concurrent
     assert [m["tool_call_id"] for m in msgs if m.get("role") == "tool"] == ["a", "b", "c"]
 
 
 def test_non_parallelizable_calls_stay_sequential():
-    """When any runnable tool is not parallelizable, the turn runs sequentially."""
+    """When any runnable tool is not parallelizable, the turn runs one at a time —
+    proven by a 2-way barrier that can never assemble (so it breaks)."""
     import threading
-    import time as _time
 
-    counter, peak, lock = [0], [0], threading.Lock()
+    barrier = threading.Barrier(2, timeout=0.5)
+    broke = []
 
-    def slow(args):
-        with lock:
-            counter[0] += 1
-            peak[0] = max(peak[0], counter[0])
-        _time.sleep(0.1)
-        with lock:
-            counter[0] -= 1
+    def at_barrier(args):
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            broke.append(1)
         return "ok"
 
     tool = Tool(name="s", description="", parameters={"type": "object", "properties": {}},
-                execute=slow, parallelizable=False)
+                execute=at_barrier, parallelizable=False)
     agent.run(
         [{"role": "user", "content": "go"}],
         emit=lambda e: None,
@@ -185,4 +184,4 @@ def test_non_parallelizable_calls_stay_sequential():
         ),
         registry={"s": tool},
     )
-    assert peak[0] == 1  # never overlapped
+    assert broke  # they never overlapped, so the barrier timed out and broke

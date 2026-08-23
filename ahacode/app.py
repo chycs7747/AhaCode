@@ -684,6 +684,10 @@ class AhaCodeApp(App):
             )
             for msg in result.messages:
                 storage.append_message(child_path, msg)
+            # Fold the card now the child is done (its answer stays one click away);
+            # the parent's synthesis is what reads inline. Title shows the tool count.
+            tool_count = sum(1 for m in result.messages if m.get("role") == "tool")
+            self.call_from_thread(card.done, tool_count)
             return result.result
 
         ctx = subagent.AgentContext(run_subagent=run_subagent)

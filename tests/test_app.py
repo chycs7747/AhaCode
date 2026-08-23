@@ -1028,8 +1028,10 @@ async def test_task_tool_spawns_subagent(monkeypatch):
         await app.workers.wait_for_complete()
         await pilot.pause()
 
-        # 1) a nested sub-agent card was mounted
+        # 1) a nested sub-agent card was mounted, then folded (✓ chip) on completion
         assert len(app.query(SubagentCard)) == 1
+        card = app.query_one(SubagentCard)
+        assert card.collapsed and "✓" in card.title
 
         # 2) the child ran as its own session file, nested under the parent
         headers = [storage.read_header(p) for p in storage.SESSIONS_DIR.glob("*.jsonl")]
@@ -1058,14 +1060,18 @@ def test_gate_caps_concurrent_requests(monkeypatch):
     config.save(replace(config.DEFAULTS, max_parallel_agents=2))
     client.reset()
 
-    counter, peak, lock = [0], [0], _t.Lock()
+    barrier = _t.Barrier(2, timeout=3)  # exactly 2 must be admitted together to pass
+    counter, peak, lock, broke = [0], [0], _t.Lock(), []
 
     class FakeStream:
         def __enter__(self):
             with lock:
                 counter[0] += 1
                 peak[0] = max(peak[0], counter[0])
-            time.sleep(0.1)
+            try:
+                barrier.wait()
+            except _t.BrokenBarrierError:
+                broke.append(1)
             return iter([])  # no chunks -> _iter_events yields nothing
 
         def __exit__(self, *a):
@@ -1085,11 +1091,12 @@ def test_gate_caps_concurrent_requests(monkeypatch):
     def one(_):
         list(client.stream_chat([{"role": "user", "content": "x"}]))
 
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        list(ex.map(one, range(6)))
+    with ThreadPoolExecutor(max_workers=4) as ex:  # two full batches of 2
+        list(ex.map(one, range(4)))
 
-    assert peak[0] == 2      # gate allowed exactly the cap to run in parallel
-    assert counter[0] == 0   # every permit was released
+    assert not broke        # the gate admitted 2 at once (lower bound)
+    assert peak[0] == 2     # and never more than 2 (upper bound) — the cap holds
+    assert counter[0] == 0  # every permit was released
 
 
 @pytest.mark.asyncio
