@@ -1138,3 +1138,62 @@ async def test_parallel_task_fanout(monkeypatch):
         # both results injected in call order (t1 then t2), matching the tool_calls
         tool_ids = [m["tool_call_id"] for m in app.session.messages if m.get("role") == "tool"]
         assert tool_ids == ["t1", "t2"]
+
+
+@pytest.mark.asyncio
+async def test_grandchild_nests_under_child(monkeypatch):
+    """With subagent_depth=2 a sub-agent can spawn its OWN sub-agent: the grandchild
+    records depth=2 and parents to the CHILD (not the main session), its card nests
+    inside the child's card, and the depth gate still stops a great-grandchild."""
+    from dataclasses import replace
+    from ahacode.events import ToolCall
+    from ahacode.widgets.subagent_card import SubagentCard
+
+    config.save(replace(config.DEFAULTS, subagent_depth=2))
+    client.reset()
+
+    def scripted(messages, tools=None):
+        is_child = bool(messages) and messages[0].get("role") == "system" \
+            and "sub-agent" in messages[0].get("content", "")
+        user = messages[1].get("content", "") if len(messages) > 1 else ""
+        has_result = any(m.get("role") == "tool" for m in messages)
+        if is_child:
+            if "LEAF" in user:            # the grandchild: just answer
+                yield TextDelta("leaf result")
+            elif has_result:              # the child, after its grandchild returned
+                yield TextDelta("child done")
+            else:                         # the child's first turn: spawn a grandchild
+                yield ToolCall(id="g1", name="task",
+                               arguments={"prompt": "LEAF: answer", "description": "grand"})
+            return
+        # the main agent
+        if has_result:
+            yield TextDelta("main done")
+        else:
+            yield ToolCall(id="c1", name="task",
+                           arguments={"prompt": "spawn a grandchild", "description": "child"})
+
+    monkeypatch.setattr(client, "stream_chat", scripted)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "go deep"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        main_id = app.session_path.stem
+        headers = [h for h in (storage.read_header(p) for p in storage.SESSIONS_DIR.glob("*.jsonl")) if h]
+        child = next(h for h in headers if h["depth"] == 1)
+        grand = next(h for h in headers if h["depth"] == 2)
+        # the tree threads correctly: child -> main, grandchild -> child (NOT main)
+        assert child["parent_id"] == main_id
+        assert grand["parent_id"] == child["id"] and grand["parent_id"] != main_id
+        # the depth gate stopped a great-grandchild (depth 2 == limit -> no task tool)
+        assert not any(h["depth"] >= 3 for h in headers)
+        # the cards nest too: the grandchild's card lives inside the child's card
+        cards = app.query(SubagentCard)
+        assert len(cards) == 2
+        child_card = next(c for c in cards if "child" in c.title)
+        assert len(child_card.query(SubagentCard)) == 1

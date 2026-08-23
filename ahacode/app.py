@@ -652,45 +652,53 @@ class AhaCodeApp(App):
                 answered.wait()
                 return verdict.get("ok", False)
 
-        def run_subagent(prompt: str, description: str) -> str:
-            # The `task` tool calls this (through ctx) to delegate a subtask. A
-            # sub-agent is just another agent loop, run to completion HERE on this
-            # worker thread — so the parent naturally pauses until it returns (Roo's
-            # sequential delegate → resume). It gets its own session file (parent_id
-            # set, so the picker nests it) and a nested 🤖 card its events render into.
-            cfg = config.load()
-            child_depth = self.session_depth + 1
-            child_path = storage.new_session_path()
-            storage.write_header(child_path, storage.make_header(
-                child_path.stem, parent_id=self.session_path.stem, kind="subagent",
-                depth=child_depth, model=cfg.name, title=(description or prompt)[:40],
-            ))
-            card = SubagentCard(description or "task", cfg.name)
-            self.call_from_thread(container.mount, card)
-            child_boxes = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}, "call_args": {}}
+        def make_ctx(parent_path, parent_depth: int, container) -> subagent.AgentContext:
+            # A per-level factory so the tree nests correctly at ANY depth: each
+            # sub-agent is handed a ctx whose run_subagent parents the NEXT level to
+            # THIS one (parent_path / parent_depth + 1) and mounts it inside THIS
+            # card's body. Recursion stops itself — a child at the depth limit is
+            # given no task tool (registry_for), so it never calls its child_ctx.
+            def run_subagent(prompt: str, description: str) -> str:
+                # A sub-agent is just another agent loop, run to completion HERE on
+                # this worker thread — so the parent naturally pauses until it returns
+                # (Roo's sequential delegate → resume). It gets its own session file
+                # (parent_id set, so the picker nests it) and a nested 🤖 card.
+                cfg = config.load()
+                child_depth = parent_depth + 1
+                child_path = storage.new_session_path()
+                storage.write_header(child_path, storage.make_header(
+                    child_path.stem, parent_id=parent_path.stem, kind="subagent",
+                    depth=child_depth, model=cfg.name, title=(description or prompt)[:40],
+                ))
+                card = SubagentCard(description or "task", cfg.name)
+                self.call_from_thread(container.mount, card)
+                child_boxes = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}, "call_args": {}}
 
-            def child_emit(event) -> None:
-                if isinstance(event, Usage):
-                    return  # child token accounting isn't surfaced in this slice
-                self.call_from_thread(self._render_event, event, child_boxes, card.body)
+                def child_emit(event) -> None:
+                    if isinstance(event, Usage):
+                        return  # child token accounting isn't surfaced in this slice
+                    self.call_from_thread(self._render_event, event, child_boxes, card.body)
 
-            result = subagent.run(
-                prompt,
-                emit=child_emit,
-                approve=approve,  # the child's own bash/write are confirmed too
-                registry=tools.registry_for(child_depth, cfg.subagent_depth),
-                ctx=ctx,          # lets a grandchild spawn when subagent_depth > 1
-                is_cancelled=lambda: worker.is_cancelled,
-            )
-            for msg in result.messages:
-                storage.append_message(child_path, msg)
-            # Fold the card now the child is done (its answer stays one click away);
-            # the parent's synthesis is what reads inline. Title shows the tool count.
-            tool_count = sum(1 for m in result.messages if m.get("role") == "tool")
-            self.call_from_thread(card.done, tool_count)
-            return result.result
+                result = subagent.run(
+                    prompt,
+                    emit=child_emit,
+                    approve=approve,  # the child's own bash/write are confirmed too
+                    registry=tools.registry_for(child_depth, cfg.subagent_depth),
+                    # a grandchild parents to THIS child, one level deeper, in its card
+                    ctx=make_ctx(child_path, child_depth, card.body),
+                    is_cancelled=lambda: worker.is_cancelled,
+                )
+                for msg in result.messages:
+                    storage.append_message(child_path, msg)
+                # Fold the card now the child is done (its answer stays one click away);
+                # the parent's synthesis reads inline. Title shows the tool count.
+                tool_count = sum(1 for m in result.messages if m.get("role") == "tool")
+                self.call_from_thread(card.done, tool_count)
+                return result.result
 
-        ctx = subagent.AgentContext(run_subagent=run_subagent)
+            return subagent.AgentContext(run_subagent=run_subagent)
+
+        ctx = make_ctx(self.session_path, self.session_depth, container)
 
         try:
             new_messages = agent.run(
