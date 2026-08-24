@@ -275,3 +275,61 @@ async def test_a_subagents_plan_never_pauses_its_parent(monkeypatch):
         assert app._plan_gate_pending is False
         assert len(app.query(SubagentCard)) == 1
         assert app.session.messages[-1]["content"] == "parent done"
+
+
+# --- plan mode: name the command that runs the plan ---------------------------
+# Plan mode has no gate (nothing can run there), so a finished plan ends with
+# whatever the model chose to say — "승인해 주시면 바로 실행합니다" — and nothing on
+# screen said what "승인" actually is.
+
+@pytest.mark.asyncio
+async def test_a_plan_written_in_plan_mode_names_the_run_command(monkeypatch):
+    # two turns: the tool call, then the closing sentence the model writes
+    _stream_turns(monkeypatch, [
+        [_plan("design", "implement", "verify")],
+        [TextDelta("승인해 주시면 바로 실행합니다.")],
+    ])
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#mode-select", Select).value = "plan"
+        await pilot.pause()
+        await _ask(pilot, app, "계획 세워줘")
+        said = " ".join(b._content for b in app.query(Chatbox)
+                        if b.has_class("chatbox--system"))
+        assert "/run" in said
+        assert "3단계" in said          # names how many steps it would run
+
+
+@pytest.mark.asyncio
+async def test_the_run_offer_is_not_repeated_for_the_same_plan(monkeypatch):
+    """Re-stating it after every turn would be noise; the plan has not changed."""
+    _stream_turns(monkeypatch, [
+        [_plan("design", "implement", "verify")],
+        [TextDelta("계획입니다")],
+        [TextDelta("네, 그대로입니다")],
+    ])
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#mode-select", Select).value = "plan"
+        await pilot.pause()
+        await _ask(pilot, app, "계획 세워줘")
+        await _ask(pilot, app, "그대로 가면 되지?")
+        offers = [b for b in app.query(Chatbox)
+                  if b.has_class("chatbox--system") and "/run" in b._content]
+        assert len(offers) == 1
+
+
+@pytest.mark.asyncio
+async def test_act_mode_uses_the_gate_card_instead_of_the_offer(monkeypatch):
+    """In act mode the plan gate already puts the choice on screen with buttons —
+    a text hint underneath would say the same thing twice."""
+    _stream_turns(monkeypatch, [
+        [_plan("design", "implement", "verify")],
+    ])
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await _ask(pilot, app, "리팩터링 해줘")           # act is the default mode
+        assert app._plan_gate_pending is True
+        said = " ".join(b._content for b in app.query(Chatbox)
+                        if b.has_class("chatbox--system"))
+        assert "/run" not in said

@@ -130,6 +130,7 @@ class AhaCodeApp(App):
         self._plan_gate_pending = False
         self._plan_gate: PlanGate | None = None
         self._gated_plan: tuple[str, ...] | None = None  # the plan we already asked about
+        self._offered_plan: tuple[str, ...] | None = None  # the plan we already said /run for
         latest = storage.latest_session()
         if latest:  # resume the most recent session
             self.session_path = latest
@@ -694,6 +695,7 @@ class AhaCodeApp(App):
         self._plan_gate_pending = False
         self._plan_gate = None
         self._gated_plan = None
+        self._offered_plan = None
 
     @on(Button.Pressed, "#plan-gate-run")
     async def _on_plan_gate_run(self, event: Button.Pressed) -> None:
@@ -742,8 +744,32 @@ class AhaCodeApp(App):
             }
         return tools.registry_for(self.session_depth, config.load().subagent_depth)
 
+    def _plan_run_offer(self) -> str | None:
+        """The line that tells the user how to actually execute the plan just written.
+
+        Plan mode has no gate — the gate is an act-mode device, since in plan mode
+        nothing can run anyway — so a finished plan ends with whatever the model chose
+        to say ("승인해 주시면 바로 실행합니다"), and nothing on screen names the
+        command that would do it. The harness knows it; the model only guesses, so the
+        line is written here rather than asked for in the prompt.
+
+        Returns None when there is nothing to offer, or when this exact plan has been
+        offered already — repeating it after every turn would be noise.
+        """
+        steps = [it["content"] for it in self.query_one(TodoPanel).items if it.get("content")]
+        if not steps or self.mode != "plan":
+            return None
+        fingerprint = tuple(steps)
+        if fingerprint == self._offered_plan:
+            return None
+        self._offered_plan = fingerprint
+        return (
+            f"▶ 실행하려면 /run — {len(steps)}단계를 각각 새 컨텍스트의 서브에이전트가 "
+            "순서대로 처리합니다. (act 모드로 자동 전환)"
+        )
+
     @on(ResponseComplete)
-    def response_complete(self, event: ResponseComplete) -> None:
+    async def response_complete(self, event: ResponseComplete) -> None:
         self._set_send_running(False)  # turn done — Stop reverts to Send
         self._prune_empty_turn()
         # Shared state is only ever touched on the main thread. Persist the whole
@@ -758,6 +784,10 @@ class AhaCodeApp(App):
         if not self._has_title and any(m.get("role") == "assistant" for m in self.session.messages):
             self._has_title = True
             self.generate_title(list(self.session.messages), self.session_path)
+        # Right under the answer, where the model just said "승인해 주시면 실행합니다".
+        offer = self._plan_run_offer()
+        if offer:
+            await self._say_system(offer)
 
     @on(PhaseComplete)
     def phase_complete(self, event: PhaseComplete) -> None:
