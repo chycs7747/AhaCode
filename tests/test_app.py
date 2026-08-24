@@ -2,13 +2,15 @@ import json
 import time
 
 import pytest
+from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Checkbox, Select
 
 from ahacode import client, config, storage
 from ahacode.app import AhaCodeApp
-from ahacode.events import TextDelta
+from ahacode.events import TextDelta, ToolCall
 from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.prompt_input import PromptInput
+from ahacode.widgets.todo_panel import TodoPanel
 
 
 @pytest.fixture(autouse=True)
@@ -1729,3 +1731,344 @@ async def test_ctrl_y_with_no_answer_copies_nothing():
         await pilot.press("ctrl+y")
         await pilot.pause()
         assert captured == []
+
+
+# --- /run: incremental commit, cancel-safety, worker isolation ---------------
+# The regression these guard, in one sentence: a /run took minutes, wrote nothing to
+# the parent session until it finished, and shared an exclusive worker group with the
+# chat loop — so asking the parent "다 한거야?" mid-run cancelled the run, discarded
+# every finished phase, and got a truthful "아무것도 안 했다" from a stale context.
+
+@pytest.mark.asyncio
+async def test_each_phase_is_persisted_as_it_finishes(monkeypatch):
+    """Every completed phase becomes an assistant message in the PARENT session, so a
+    mid-run question is answered from a context that knows what the children did."""
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    counter = iter(range(100))
+    monkeypatch.setattr(
+        client, "stream_chat", lambda m, tools=None: iter([TextDelta(f"phase {next(counter)}")])
+    )
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        app.query_one(TodoPanel).update_todos([
+            {"content": "Write solver.py", "status": "pending"},
+            {"content": "Run the examples", "status": "pending"},
+        ])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        contents = [m["content"] for m in app.session.messages if m["role"] == "assistant"]
+        # one message per phase (labelled with its step) + the synthesis, in order
+        assert contents[-3:] == ["## Write solver.py\nphase 0",
+                                 "## Run the examples\nphase 1",
+                                 "phase 2"]
+
+
+@pytest.mark.asyncio
+async def test_a_single_phase_plan_is_not_persisted_twice(monkeypatch):
+    """With one step there is no synthesis: the phase result IS the final answer, and
+    it was already committed by the per-phase path."""
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    monkeypatch.setattr(client, "stream_chat",
+                        lambda m, tools=None: iter([TextDelta("only")]))
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        app.query_one(TodoPanel).update_todos([{"content": "Write solver.py"}])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        answers = [m["content"] for m in app.session.messages if m["role"] == "assistant"]
+        assert answers == ["## Write solver.py\nonly"]
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_plan_keeps_the_phases_that_finished(monkeypatch):
+    """Stopping mid-run must not erase completed work — it used to `return` bare."""
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    calls = iter(range(100))
+
+    def fake_stream(messages, tools=None):
+        n = next(calls)
+        if n == 1:  # phase two is under way -> the user hits stop
+            app._plan_worker.cancel()
+        return iter([TextDelta(f"phase {n}")])
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        app.query_one(TodoPanel).update_todos([
+            {"content": "Write solver.py"},
+            {"content": "Run the examples"},
+            {"content": "Report the timings"},
+        ])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        answers = [m["content"] for m in app.session.messages if m["role"] == "assistant"]
+        # phase one finished before the stop and survives it
+        assert "## Write solver.py\nphase 0" in answers
+        # the run really did stop early: the third step never ran, and with no complete
+        # run there is no synthesis message either
+        assert not any(a.startswith("## Report the timings") for a in answers)
+        assert len(answers) == 2  # two phases committed, nothing else
+
+
+@pytest.mark.asyncio
+async def test_a_chat_turn_does_not_cancel_a_running_plan(monkeypatch):
+    """The exclusive-group collision: both workers defaulted to group 'default', so
+    typing anything killed the run. They must live in separate groups."""
+    from textual.worker import WorkerState
+
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    monkeypatch.setattr(client, "stream_chat",
+                        lambda m, tools=None: iter([TextDelta("x")]))
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        app.query_one(TodoPanel).update_todos([{"content": "Write solver.py"}])
+        app.auto_approve = True
+        turn = Vertical(classes="turn")
+        await app.query_one("#chat-container", VerticalScroll).mount(turn)
+        plan_worker = app.run_plan_response("solve it", ["Write solver.py"], turn)
+        assert plan_worker.group == "plan"
+        # a normal chat turn starts in the default group and must leave the plan alone
+        chat_worker = app.stream_response([{"role": "user", "content": "다 한거야?"}], turn)
+        assert chat_worker.group != plan_worker.group
+        assert plan_worker.state is not WorkerState.CANCELLED
+        await app.workers.wait_for_complete()
+
+
+@pytest.mark.asyncio
+async def test_run_warns_about_steps_that_are_not_executable(monkeypatch):
+    """A step that states an idea has no tool-shaped completion, so its sub-agent files
+    its reasoning as source comments. Warn, but still run — the check is a heuristic."""
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    monkeypatch.setattr(client, "stream_chat",
+                        lambda m, tools=None: iter([TextDelta("done")]))
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        app.query_one(TodoPanel).update_todos([
+            {"content": "Algorithm: subtree sums; answer(k) = min over X"},
+            {"content": "Write solver.py"},
+        ])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        shown = " ".join(box._content for box in app.query(Chatbox)
+                         if box.has_class("chatbox--system"))
+        assert "실행 단계로 보기 어려운" in shown
+        assert "Algorithm:" in shown
+
+
+# --- the pinned plan: ticking, revision, ownership ---------------------------
+
+@pytest.mark.asyncio
+async def test_run_ticks_each_step_as_it_completes(monkeypatch):
+    """/run carries the plan out in code, so no todo_write ever arrives to move a step
+    to done — the panel used to sit at ☐ through an entire successful run."""
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    monkeypatch.setattr(client, "stream_chat",
+                        lambda m, tools=None: iter([TextDelta("did it")]))
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        panel = app.query_one(TodoPanel)
+        panel.update_todos([{"content": "Write solver.py", "status": "pending"},
+                            {"content": "Run the examples", "status": "pending"}])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert [i["status"] for i in panel.items] == ["done", "done"]
+        assert panel._content.startswith("✓ Plan complete")
+        assert panel.has_class("todo-panel--done")
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_run_leaves_the_unfinished_steps_unticked(monkeypatch):
+    """The checklist must tell the truth about a partial run, not show a full ✓."""
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    calls = iter(range(100))
+
+    def fake_stream(messages, tools=None):
+        n = next(calls)
+        if n == 1:
+            app._plan_worker.cancel()
+        return iter([TextDelta(f"phase {n}")])
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        panel = app.query_one(TodoPanel)
+        panel.update_todos([{"content": "Write solver.py"}, {"content": "Run the examples"},
+                            {"content": "Report the timings"}])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert panel.items[-1].get("status") != "done"   # never ran
+        assert not panel.has_class("todo-panel--done")   # so the plan is NOT complete
+
+
+@pytest.mark.asyncio
+async def test_a_revised_plan_replaces_the_pinned_one(monkeypatch):
+    """Discussing the plan and having the model re-send it must rewrite the panel —
+    including dropping a step that was already ticked."""
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    def fake_stream(messages, tools=None):
+        # one revision, then a plain answer so the loop terminates
+        if not any(m.get("role") == "tool" for m in messages):
+            yield ToolCall(id="t1", name="todo_write", arguments={"items": [
+                {"content": "Write solver.py", "status": "done"},
+                {"content": "Benchmark it", "status": "pending"},
+            ]})
+            return
+        yield TextDelta("계획을 고쳤어요")
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        panel = app.query_one(TodoPanel)
+        panel.update_todos([{"content": "Old step", "status": "done"}])
+        app.query_one("#prompt", PromptInput).text = "이 계획 좀 고쳐줘"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert [i["content"] for i in panel.items] == ["Write solver.py", "Benchmark it"]
+        assert "☑ Write solver.py" in panel._content
+        assert "☐ Benchmark it" in panel._content
+        assert "Old step" not in panel._content
+
+
+@pytest.mark.asyncio
+async def test_a_subagents_plan_does_not_overwrite_the_parents(monkeypatch):
+    """A child planning its own sub-task used to wipe the parent's pinned checklist."""
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    def fake_stream(messages, tools=None):
+        # the child (its transcript opens with the sub-agent system prompt) plans
+        if messages and "sub-agent" in messages[0].get("content", ""):
+            yield ToolCall(id="c1", name="todo_write",
+                           arguments={"items": [{"content": "CHILD STEP"}]})
+            yield TextDelta("child done")
+            return
+        yield TextDelta("done")
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        panel = app.query_one(TodoPanel)
+        panel.update_todos([{"content": "Write solver.py"}])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert [i["content"] for i in panel.items] == ["Write solver.py"]
+        assert "CHILD STEP" not in panel._content
+
+
+@pytest.mark.asyncio
+async def test_stop_halts_the_child_too_not_just_the_parent(monkeypatch):
+    """Stop cancels the whole tree, not just the level you can see.
+
+    A sub-agent runs INSIDE the parent's worker (synchronously, same thread) and is
+    handed `is_cancelled=lambda: worker.is_cancelled` for that same worker — so one
+    cancel reaches every descendant. This is unrelated to the plan gate's "a child
+    cannot pause its parent", which is about todo_write opening the approval gate.
+    """
+    child_turns = []
+
+    def fake_stream(messages, tools=None):
+        if messages and "sub-agent" in messages[0].get("content", ""):
+            child_turns.append(1)
+            if len(child_turns) == 1:
+                app._plan_worker.cancel()      # user hits Stop while the child works
+            yield ToolCall(id=f"c{len(child_turns)}", name="read",
+                           arguments={"path": "conftest.py"})
+            return                              # a tool call => the child would loop again
+        yield TextDelta("parent")
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        app.query_one(TodoPanel).update_todos([{"content": "Read the file"}])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        # The child asked for a tool on turn 1 and would normally take a 2nd turn to
+        # use the result. The cancel reached it, so there was no 2nd turn.
+        assert len(child_turns) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_main_session_keeps_its_tools_outside_run(monkeypatch):
+    """/run not calling todo_write is a property of /run, not a lost capability: the
+    main loop is still offered the full registry on an ordinary turn."""
+    seen_tools = []
+
+    def fake_stream(messages, tools=None):
+        seen_tools.append([t["function"]["name"] for t in (tools or [])])
+        yield TextDelta("ok")
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "그냥 질문"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "todo_write" in seen_tools[0] and "bash" in seen_tools[0]
+
+
+@pytest.mark.asyncio
+async def test_the_run_synthesis_turn_is_deliberately_tool_free(monkeypatch):
+    """The reduce step combines phase results into an answer; giving it tools would let
+    the 'main' start working again instead of summarising."""
+    seen_tools = []
+
+    def fake_stream(messages, tools=None):
+        seen_tools.append(tools)
+        yield TextDelta("synth")
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        app.query_one(TodoPanel).update_todos([{"content": "Write a.py"},
+                                               {"content": "Run the examples"}])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        # sub-agents get tools; the final synthesis call gets none
+        assert seen_tools[0] is not None
+        assert seen_tools[-1] is None

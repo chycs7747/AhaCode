@@ -83,6 +83,7 @@ def run_plan(
     *,
     synthesize: SynthesizeFn | None = None,
     is_cancelled: Callable[[], bool] | None = None,
+    on_phase: Callable[[PhaseResult], None] | None = None,
 ) -> PlanResult:
     """Execute `steps` in order, each in its own fresh sub-agent, threading each
     step's concise result forward. Returns every phase's result plus the final one.
@@ -95,6 +96,13 @@ def run_plan(
     If `synthesize` is given (and any phase ran), it is the reduce step: the final
     answer becomes a combined synthesis of the phase results rather than just the last
     phase's output. Without it, `result` stays the last phase's result (map-only).
+
+    `on_phase(result)` fires the moment a phase finishes, before the next one starts.
+    It exists because a run is LONG: the caller has to be able to commit each phase as
+    it lands, rather than holding everything until the end. That single seam fixes two
+    bugs at once — the parent session no longer answers "나 아무것도 안 했는데" from a
+    context that is minutes stale, and a cancelled run keeps the phases that had
+    already completed instead of discarding the lot.
     """
     is_cancelled = is_cancelled or (lambda: False)
     out = PlanResult()
@@ -103,8 +111,14 @@ def run_plan(
             break
         prompt = _phase_prompt(task, step, out.phases)
         result = elide(delegate(prompt, step), MAX_RESULT_CHARS)
-        out.phases.append(PhaseResult(description=step, result=result))
+        phase = PhaseResult(description=step, result=result)
+        out.phases.append(phase)
         out.result = result
+        if on_phase:
+            # Deliberately NOT guarded by is_cancelled: this phase really did run, so
+            # its result is real work and must be committed even if the user stops the
+            # run a moment later.
+            on_phase(phase)
     if synthesize and out.phases and not is_cancelled():
         out.result = synthesize(task, out.phases)
     return out

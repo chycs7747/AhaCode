@@ -17,6 +17,7 @@ from rich.theme import Theme
 from ahacode import (
     agent, client, config, orchestrator, permissions, prompts, storage, subagent, tools,
 )
+from ahacode.tools import plan as plan_tool  # non_actionable(): plan-step sanity check
 from ahacode.tools import spill
 from ahacode.events import (
     Notice, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage,
@@ -159,6 +160,24 @@ class AhaCodeApp(App):
         messages: list[dict]
         stats: str = ""
         prompt_tokens: int | None = None  # the server's count for this turn's request
+
+    @dataclass
+    class PhaseComplete(Message):
+        """One phase of a /run plan finished — persist it NOW, not at the end.
+
+        A plan run takes minutes. Holding every result until the last phase left the
+        parent session's history empty the whole time, so a mid-run question ("다
+        한거야?") was answered from a context that genuinely knew nothing about the
+        files the sub-agents had already written. Committing per phase also means a
+        stop mid-run keeps the work that finished.
+
+        Carries the session path it belongs to: the user may switch sessions while the
+        run continues, and the result must still land in the file that owns it.
+        """
+
+        path: object
+        description: str
+        result: str
 
     @dataclass
     class ResponseFailed(Message):
@@ -460,6 +479,18 @@ class AhaCodeApp(App):
             self.mode = "act"  # set first: the Select's handler no-ops when it matches
             self.query_one("#mode-select", Select).value = "act"
             await self._say_system("계획 실행이라 act 모드로 전환했어요.")
+        # Warn, never block: a step that is a topic rather than a task has no tool-shaped
+        # way to finish, so its sub-agent turns `write` into a scratchpad. The check is a
+        # heuristic (see tools.plan.non_actionable), so it informs the user and runs
+        # anyway — a false positive must not cost them a run.
+        vague = [st for st in steps if plan_tool.non_actionable(st)]
+        if vague:
+            listed = "\n".join(f"  · {st[:70]}" for st in vague)
+            await self._say_system(
+                f"⚠ 실행 단계로 보기 어려운 항목 {len(vague)}개 — 서브에이전트가 도구로 끝낼 수 "
+                f"없어 파일에 사고 과정을 쏟을 수 있어요.\n{listed}\n"
+                "  (동사 + 산출물 형태로 고치면 좋아요. 이대로 계속 진행합니다.)"
+            )
         await self._say_system(
             f"▶ 계획 실행 — {len(steps)}단계를 각각 새 컨텍스트의 서브에이전트에 순차 위임합니다."
         )
@@ -467,7 +498,7 @@ class AhaCodeApp(App):
         await container.mount(self._turn)
         container.scroll_end(animate=False)
         self._status("● running plan…  (esc to stop)")
-        self._response_worker = self.run_plan_response(task, steps, self._turn)
+        self._plan_worker = self.run_plan_response(task, steps, self._turn)
         self._set_send_running(True)
 
     @staticmethod
@@ -705,6 +736,24 @@ class AhaCodeApp(App):
             self._has_title = True
             self.generate_title(list(self.session.messages), self.session_path)
 
+    @on(PhaseComplete)
+    def phase_complete(self, event: PhaseComplete) -> None:
+        """Append a finished phase to the session that owns it (main thread only).
+
+        The file is the source of truth and is always written; the in-memory list is
+        only touched when that session is still the open one, so a mid-run session
+        switch cannot splice one plan's results into another conversation.
+        """
+        msg = {"role": "assistant", "content": f"## {event.description}\n{event.result}"}
+        storage.append_message(event.path, msg)
+        if event.path == self.session_path:
+            self.session.messages.append(msg)
+            # Tick the checklist. /run carries the plan out in CODE (orchestrator), so
+            # no todo_write ever arrives to move a step to done — without this the panel
+            # sat at ☐ through a whole successful run. Only for the session that owns
+            # the plan: another session's panel shows another plan.
+            self.query_one(TodoPanel).complete_step(event.description)
+
     @on(ResponseFailed)
     async def response_failed(self, event: ResponseFailed) -> None:
         self._set_send_running(False)
@@ -793,7 +842,12 @@ class AhaCodeApp(App):
             boxes.setdefault("call_args", {})[event.id] = event.arguments
             if event.name == "todo_write":  # goes to the pinned panel, not a bubble
                 items = event.arguments.get("items", [])
-                self.query_one(TodoPanel).update_todos(items)
+                # Only THIS session's own loop owns the pinned plan. A sub-agent runs
+                # with its own boxes (no "gate" key) and planning its private sub-task
+                # used to overwrite the parent's checklist wholesale. Same ownership
+                # test the plan gate uses, for the same reason.
+                if boxes.get("gate"):
+                    self.query_one(TodoPanel).update_todos(items)
                 boxes["tool"].clear()
                 boxes["tool_buf"].clear()
                 self._status("● planning…  (esc to stop)")
@@ -851,10 +905,19 @@ class AhaCodeApp(App):
         self.notify("답변을 클립보드에 복사했어요.", timeout=2)
 
     def action_stop(self) -> None:
-        """Cancel the in-flight response (cooperative — the loop checks is_cancelled)."""
-        worker = getattr(self, "_response_worker", None)
-        if worker is not None and worker.is_running:
-            worker.cancel()
+        """Cancel whatever is in flight (cooperative — the loops check is_cancelled).
+
+        Two workers can now run at once (a chat turn and a plan run live in different
+        exclusive groups), and "stop" means stop what is running — so both are checked.
+        A stopped plan keeps the phases it already committed; see PhaseComplete.
+        """
+        stopped = False
+        for attr in ("_response_worker", "_plan_worker"):
+            worker = getattr(self, attr, None)
+            if worker is not None and worker.is_running:
+                worker.cancel()
+                stopped = True
+        if stopped:
             self._status("■ stopped")
             self._set_send_running(False)
 
@@ -956,7 +1019,12 @@ class AhaCodeApp(App):
 
         return subagent.AgentContext(run_subagent=run_subagent)
 
-    @work(thread=True, exclusive=True, exit_on_error=False)
+    # group="plan": Textual's @work defaults every exclusive worker to the group
+    # "default", so a plan run and a chat turn were mutually exclusive — typing
+    # anything into the parent while /run was executing CANCELLED the run, and the
+    # cancel path then discarded every completed phase. A plan gets its own group so
+    # the two coexist; `escape` still stops both (action_stop cancels each).
+    @work(thread=True, exclusive=True, group="plan", exit_on_error=False)
     def run_plan_response(self, task: str, steps: list[str], turn) -> None:
         """Structurally execute a plan: delegate each step to a fresh sub-agent, in
         order, threading each concise result forward (orchestrator.run_plan). The
@@ -992,16 +1060,35 @@ class AhaCodeApp(App):
                 self.call_from_thread(self._render_event, event, synth_boxes, container)
             return text
 
+        # Commit each phase to the parent session the moment it lands, addressed to the
+        # session that started the run (the user may switch sessions meanwhile). This is
+        # what lets a mid-run question be answered from a current context instead of one
+        # frozen at "the plan was just written".
+        plan_path = self.session_path
+
+        def on_phase(phase) -> None:
+            self.post_message(
+                self.PhaseComplete(plan_path, phase.description, phase.result)
+            )
+
         try:
             result = orchestrator.run_plan(
                 task, steps, ctx.run_subagent,
                 synthesize=synthesize if len(steps) >= 2 else None,
                 is_cancelled=lambda: worker.is_cancelled,
+                on_phase=on_phase,
             )
         except Exception as exc:
             self.post_message(self.ResponseFailed(f"{type(exc).__name__}: {exc}"[:300]))
             return
-        if worker.is_cancelled:  # cancelled mid-plan: don't persist a partial outcome
+        if worker.is_cancelled:
+            # Stopped mid-plan. The phases that finished are already persisted (on_phase
+            # committed each one), so there is nothing to discard — only the run to close
+            # out. Previously this returned bare, throwing away every completed phase.
+            done = len(result.phases)
+            self.post_message(self.ResponseComplete(
+                [], f"■ 계획 중지 — 완료된 {done}/{len(steps)}단계는 저장됨"
+            ))
             return
         # The plan's outcome becomes an assistant turn in the parent session (a reload
         # shows it; each sub-agent's own transcript lives in its linked child file). With
@@ -1012,7 +1099,13 @@ class AhaCodeApp(App):
             self.call_from_thread(
                 container.mount, Chatbox(final, role="assistant", markdown=True)
             )
-        self.post_message(self.ResponseComplete([{"role": "assistant", "content": final}], ""))
+        # A single phase IS its own result and on_phase already persisted it — appending
+        # `final` again would double it in the history. Only the synthesis (≥2 steps) is
+        # a new message.
+        new_messages = (
+            [{"role": "assistant", "content": final}] if len(steps) >= 2 else []
+        )
+        self.post_message(self.ResponseComplete(new_messages, ""))
 
     # exclusive=True: a new message cancels the previous worker.
     # exit_on_error=False: a failing worker must not take the whole app down.

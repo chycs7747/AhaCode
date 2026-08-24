@@ -120,3 +120,63 @@ def test_a_verbose_phase_result_is_capped_at_the_source():
     assert len(seen[1]) < cap + 1_000
     # and so does what the synthesis is handed
     assert all(len(p.result) < cap + 200 for p in got[0])
+
+
+# --- incremental commit ----------------------------------------------------
+# on_phase is the seam that lets the caller persist each phase as it lands. Before it,
+# a long run held everything until the end: the parent session stayed empty (so it
+# answered from a stale context) and a cancellation threw the finished work away.
+
+def test_on_phase_fires_as_each_phase_lands():
+    seen = []
+    result = orchestrator.run_plan(
+        "task", ["one", "two", "three"],
+        delegate=lambda prompt, step: f"did {step}",
+        on_phase=lambda phase: seen.append((phase.description, phase.result)),
+    )
+    assert seen == [("one", "did one"), ("two", "did two"), ("three", "did three")]
+    assert [p.description for p in result.phases] == ["one", "two", "three"]
+
+
+def test_on_phase_fires_before_the_next_phase_starts():
+    """Ordering matters: the commit must happen between phases, not batched at the end,
+    or a cancellation mid-run still loses the phase that just finished."""
+    events = []
+    def delegate(prompt, step):
+        events.append(f"run:{step}")
+        return step
+    orchestrator.run_plan("t", ["a", "b"], delegate=delegate,
+                          on_phase=lambda p: events.append(f"commit:{p.description}"))
+    assert events == ["run:a", "commit:a", "run:b", "commit:b"]
+
+
+def test_a_cancelled_run_keeps_the_phases_that_finished():
+    """The regression: `if worker.is_cancelled: return` discarded a whole run, so
+    asking the parent a question mid-run erased every completed phase."""
+    committed = []
+    stop = {"now": False}
+    def delegate(prompt, step):
+        if step == "two":
+            stop["now"] = True  # user hits stop while phase two is running
+        return f"did {step}"
+    result = orchestrator.run_plan(
+        "task", ["one", "two", "three"],
+        delegate=delegate,
+        is_cancelled=lambda: stop["now"],
+        on_phase=lambda p: committed.append(p.description),
+    )
+    # phase two ran to completion, so it is kept; phase three never started
+    assert committed == ["one", "two"]
+    assert [p.description for p in result.phases] == ["one", "two"]
+
+
+def test_cancelled_run_skips_the_synthesis():
+    """A partial run must not be summarised as if it were the finished answer."""
+    called = []
+    result = orchestrator.run_plan(
+        "task", ["one", "two"],
+        delegate=lambda prompt, step: "x",
+        is_cancelled=lambda: True,
+        synthesize=lambda t, phases: called.append(t) or "SYNTH",
+    )
+    assert called == [] and result.result != "SYNTH"

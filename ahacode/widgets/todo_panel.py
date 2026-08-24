@@ -3,15 +3,19 @@
 When the model calls todo_write, the app feeds the items here (from the tool
 call's arguments) instead of dropping a bubble that scrolls away — the plan stays
 pinned to the top. Stateless like the tool: each call replaces the whole list.
+
+The status vocabulary (glyphs, key names, which one is terminal) is NOT defined
+here — it belongs to the plan itself and lives in ahacode.tools.plan, so the tool,
+its JSON schema, and this view can never disagree about what a status is.
 """
 
 from textual.widgets import Static
 
+from ahacode.tools.plan import DONE, mark
+
 
 class TodoPanel(Static):
     """Docked-top plan checklist; hidden until the first todo_write."""
-
-    _MARKS = {"done": "☑", "in_progress": "▶", "pending": "☐"}
 
     def __init__(self) -> None:
         # markup=False: todo text comes from the model and may contain '[' (code,
@@ -35,12 +39,42 @@ class TodoPanel(Static):
         self.set_class(False, "todo-panel--done")
 
     def update_todos(self, items: list[dict]) -> None:
+        """Replace the whole plan — the model re-sends the full list every time.
+
+        This is also the path a plan REVISED with the user takes: they discuss, the
+        model calls todo_write again with the amended list, and the pinned panel is
+        rewritten from it. Statuses therefore always come from the model's list, which
+        is why complete_step() below writes into `items` rather than a side table.
+        """
         self.items = list(items)
-        lines = [
-            f"{self._MARKS.get(it.get('status', 'pending'), '☐')} {it['content']}"
-            for it in items
-        ]
-        done = bool(items) and all(it.get("status") == "done" for it in items)
+        self._redraw()
+
+    def complete_step(self, description: str) -> bool:
+        """Tick the first not-yet-done step whose text matches `description`.
+
+        Used by /run, where the steps are carried out by code (orchestrator.run_plan)
+        rather than by the model calling todo_write again — without this the checklist
+        sat at ☐ through an entire successful run. Matching on the step TEXT, not an
+        index, is what keeps it correct when the plan was edited mid-discussion: an
+        index would tick whatever now sits in that slot. Returns whether a step matched.
+        """
+        for item in self.items:
+            if item.get("content") == description and item.get("status") != DONE:
+                item["status"] = DONE
+                self._redraw()
+                return True
+        return False
+
+    def _redraw(self) -> None:
+        """Draw the checklist from `items` — the one place that reads the statuses.
+
+        NOT named `_render`: Textual's Widget._render() is the internal hook that
+        returns this widget's visual, and shadowing it makes the widget render as
+        None (it crashes during layout, not at import — so the name looks fine until
+        the app draws).
+        """
+        lines = [f"{mark(it.get('status'))} {it['content']}" for it in self.items]
+        done = bool(self.items) and all(it.get("status") == DONE for it in self.items)
         header = "✓ Plan complete" if done else "Plan"
         self._content = "\n".join([header, *lines])
         self.update(self._content)
