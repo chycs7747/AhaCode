@@ -86,15 +86,26 @@ foldable cards you approve before they run.
 - **Thinking controls** — a per-turn reasoning budget (`/think`), and reasoning
   switched off on turns that only need to act on a tool result, which is what
   stops a multi-turn loop from spiralling.
-- **Context compaction** — when a request approaches the model's window, the
-  oldest stretch of the conversation is replaced by one summary and the newest
-  turns are kept verbatim, with a note in the chat so nothing disappears
-  silently. Two details make it safe: the trigger is the server's *own*
-  `usage.prompt_tokens` rather than a guessed token count, and the cut can only
-  land on a user turn — anywhere else would separate a `tool` message from the
-  `assistant` tool_calls entry that introduced it, which an OpenAI-compatible
-  server rejects outright. Your session file keeps the full, uncondensed
-  transcript either way; only the request in flight is shortened.
+- **Context management, cheapest first** — when a request approaches the model's
+  window, old *tool output* is blanked first: it costs no model call, and because
+  only the content goes (the message stays) it can never separate a `tool` message
+  from the `assistant` tool_calls entry that introduced it. Only if that is not
+  enough is the oldest stretch replaced by a summary — which can only cut on a
+  user turn, since anywhere else breaks that same pairing and an
+  OpenAI-compatible server rejects the whole request. Either way you get a note in
+  the chat, and the trigger is the server's *own* `usage.prompt_tokens`, not a
+  guessed token count. Your session file keeps the full transcript; only the
+  request in flight is shortened.
+
+  The two-layer order matters for sub-agents in particular: their history is
+  `[system, task, assistant, tool, …]` with exactly one user message — the task,
+  which must survive — so there is no legal cut point and summarizing alone could
+  never compact them at all.
+- **Big output spills to a file** — `bash` is the one tool whose output size
+  nobody can predict, so anything past a few KB is written whole to
+  `sessions/<id>-out/` and only a header plus a both-ends preview comes back.
+  Nothing is lost and the way back already exists: the spilled file is an
+  ordinary text file, so `read` pages through it and `grep` searches it.
 
 ### Sessions & config
 
@@ -219,7 +230,7 @@ ahacode/
 │
 ├── agent.py          # the agent loop: stream a turn → run its tools → feed the
 │                     # results back → until a turn has no tool calls
-├── context.py        # condense the history before it outgrows the window
+├── context.py        # prune, then condense, before the history outgrows the window
 ├── subagent.py       # one delegated task as a fresh child loop (sub-agent-as-a-tool)
 ├── orchestrator.py   # /run: a plan's steps executed as sub-agents, in order
 ├── prompts.py        # system prompts, assembled per mode/model
@@ -227,6 +238,7 @@ ahacode/
 ├── tools/
 │   ├── base.py       #   the Tool contract (name · JSON Schema · execute)
 │   ├── walk.py       #   shared traversal + skip rules for the search tools
+│   ├── spill.py      #   oversized tool output -> a file the tools can read back
 │   ├── read.py glob.py grep.py write.py edit.py bash.py plan.py task.py
 │   └── __init__.py   #   the registry, and the depth gate that hands out `task`
 │

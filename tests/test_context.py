@@ -70,10 +70,10 @@ def test_split_prefers_the_newest_legal_boundary():
 def test_below_the_threshold_nothing_happens():
     messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
     called = []
-    n = context.maybe_compact(
+    done = context.maybe_compact(
         messages, 100, summarize=lambda m: called.append(m) or "s", cfg=_cfg(context_window=1000)
     )
-    assert n == 0 and called == []
+    assert not done and called == []
 
 
 def test_server_reported_tokens_drive_the_trigger():
@@ -82,17 +82,17 @@ def test_server_reported_tokens_drive_the_trigger():
     messages = [{"role": "user", "content": "u0"}, {"role": "assistant", "content": "a0"}]
     messages += [{"role": "user", "content": "u1"}, {"role": "assistant", "content": "a1"}]
     # tiny text, but the server says the prompt was huge
-    n = context.maybe_compact(
+    done = context.maybe_compact(
         messages, 9_000, summarize=lambda m: "summary",
         cfg=_cfg(context_window=10_000, compact_threshold=0.8, keep_recent_messages=2),
     )
-    assert n == 1  # u0+a0 replaced by one summary
+    assert done.summarized == 1  # u0+a0 replaced by one summary
 
 
 def test_context_window_zero_disables_compaction():
     messages = [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}] * 5
-    assert context.maybe_compact(messages, 10**9, summarize=lambda m: "s",
-                                 cfg=_cfg(context_window=0)) == 0
+    assert not context.maybe_compact(messages, 10**9, summarize=lambda m: "s",
+                                     cfg=_cfg(context_window=0))
 
 
 def test_estimate_is_used_before_any_usage_arrives():
@@ -102,9 +102,9 @@ def test_estimate_is_used_before_any_usage_arrives():
             {"role": "user", "content": "x" * 3000},
             {"role": "assistant", "content": "y" * 3000},
         ]
-    n = context.maybe_compact(messages, None, summarize=lambda m: "summary",
-                              cfg=_cfg(context_window=4000, keep_recent_messages=4))
-    assert n > 0
+    done = context.maybe_compact(messages, None, summarize=lambda m: "summary",
+                                 cfg=_cfg(context_window=4000, keep_recent_messages=4))
+    assert done.summarized > 0
 
 
 # --- the replacement ------------------------------------------------------
@@ -117,12 +117,12 @@ def test_summary_replaces_the_old_stretch_and_keeps_the_system_prompt():
             {"role": "assistant", "content": f"a{i}"},
         ]
     before = len(messages)
-    removed = context.maybe_compact(
+    done = context.maybe_compact(
         messages, 10**6, summarize=lambda m: "they agreed to use utf-8",
         cfg=_cfg(context_window=1000, keep_recent_messages=4),
     )
-    assert removed > 0
-    assert len(messages) == before - removed
+    assert done.summarized > 0
+    assert len(messages) == before - done.summarized
     assert messages[0] == {"role": "system", "content": "sys"}  # system survives
     assert context.SUMMARY_PREFIX in messages[1]["content"]
     assert "utf-8" in messages[1]["content"]
@@ -136,8 +136,8 @@ def test_a_failed_summary_deletes_nothing():
         messages += [{"role": "user", "content": f"u{i}"},
                      {"role": "assistant", "content": f"a{i}"}]
     before = list(messages)
-    assert context.maybe_compact(messages, 10**6, summarize=lambda m: "   ",
-                                 cfg=_cfg(context_window=1000)) == 0
+    assert not context.maybe_compact(messages, 10**6, summarize=lambda m: "   ",
+                                     cfg=_cfg(context_window=1000))
     assert messages == before
 
 
@@ -208,3 +208,95 @@ def test_subagent_transcript_is_complete_after_compaction(monkeypatch):
 def _fake_read():
     from ahacode.tools.base import Tool
     return Tool(name="read", description="", parameters={}, execute=lambda a: "contents")
+
+
+# --- prune: the cheap pass, and the only one a sub-agent can use ------------
+
+def _subagent_history(tool_chars: int, turns: int = 8):
+    """What a sub-agent's history actually looks like: exactly ONE user message
+    (its task), then assistant/tool pairs."""
+    msgs = [{"role": "system", "content": "s"},
+            {"role": "user", "content": "THE DELEGATED TASK"}]
+    for i in range(turns):
+        msgs += [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": str(i), "type": "function",
+                 "function": {"name": "bash", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": str(i), "content": "x" * tool_chars},
+        ]
+    return msgs
+
+
+def test_a_subagent_cannot_be_summarized_at_all():
+    """Documents WHY prune exists: the only legal cut is a user message, and a
+    sub-agent has exactly one — its task, which must survive. So find_split has
+    nowhere to go and summarizing can never help there."""
+    msgs = _subagent_history(100)
+    assert context.find_split(msgs, keep_recent=2) == 0
+
+
+def test_prune_frees_a_subagent_that_summarizing_could_not():
+    msgs = _subagent_history(20_000)
+    done = context.maybe_compact(msgs, 10**6, summarize=lambda m: "never called",
+                                 cfg=_cfg(context_window=1000))
+    assert done.pruned_chars > 0
+    assert done.summarized == 0            # the expensive path was not reached
+    assert msgs[1]["content"] == "THE DELEGATED TASK"   # the task always survives
+
+
+def test_prune_never_breaks_the_assistant_tool_pairing():
+    """Only the CONTENT goes; the message stays. That is what makes it safe
+    without any boundary — the server's pairing check sees no change."""
+    msgs = _subagent_history(20_000)
+    before = [m["role"] for m in msgs]
+    ids_before = [m.get("tool_call_id") for m in msgs if m["role"] == "tool"]
+    context.prune_tool_output(msgs, _cfg())
+    assert [m["role"] for m in msgs] == before
+    assert [m.get("tool_call_id") for m in msgs if m["role"] == "tool"] == ids_before
+
+
+def test_prune_protects_the_newest_tool_output():
+    msgs = _subagent_history(20_000)
+    context.prune_tool_output(msgs, _cfg())
+    kept = [m["content"] for m in msgs if m["role"] == "tool"
+            and m["content"] != context.PRUNED_STUB]
+    assert kept, "the recent results must survive"
+    # everything kept is at the END of the history
+    tools = [m for m in msgs if m["role"] == "tool"]
+    stubs = [i for i, m in enumerate(tools) if m["content"] == context.PRUNED_STUB]
+    fresh = [i for i, m in enumerate(tools) if m["content"] != context.PRUNED_STUB]
+    assert max(stubs) < min(fresh)
+
+
+def test_prune_does_nothing_below_the_floor():
+    """Blanking a few hundred chars is churn, not relief."""
+    msgs = _subagent_history(50)
+    assert context.prune_tool_output(msgs, _cfg()) == 0
+    assert all(m["content"] != context.PRUNED_STUB for m in msgs if m["role"] == "tool")
+
+
+def test_prune_is_idempotent():
+    msgs = _subagent_history(20_000)
+    first = context.prune_tool_output(msgs, _cfg())
+    assert first > 0
+    assert context.prune_tool_output(msgs, _cfg()) == 0   # nothing left to take
+
+
+def test_prune_runs_before_summarizing_when_both_are_possible():
+    """Cheapest first: a history with a user boundary AND big tool output should
+    spend no model call while pruning still frees enough."""
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u0"}]
+    for i in range(6):
+        msgs += [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": str(i), "type": "function",
+                 "function": {"name": "bash", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": str(i), "content": "x" * 20_000},
+            {"role": "user", "content": f"u{i+1}"},
+        ]
+    called = []
+    done = context.maybe_compact(msgs, 10**6,
+                                 summarize=lambda m: called.append(1) or "s",
+                                 cfg=_cfg(context_window=1000))
+    assert done.pruned_chars > 0
+    assert called == []   # no request was made

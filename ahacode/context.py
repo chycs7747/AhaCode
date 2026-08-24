@@ -13,6 +13,7 @@ part that is easy to get wrong) is unit-testable with plain dicts.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from ahacode import client, config, prompts
 from ahacode.text import elide
@@ -21,6 +22,28 @@ from ahacode.text import elide
 SummarizeFn = Callable[[list[dict]], str]
 
 SUMMARY_PREFIX = "# Condensed summary of the earlier conversation\n\n"
+
+# What replaces a pruned tool result. The MESSAGE stays — only its content goes —
+# which is the whole point: an assistant/tool pairing can never be broken by this.
+PRUNED_STUB = "[older tool output dropped to free context — re-run the tool if needed]"
+
+# Pruning protects the newest tool output and only touches what is older, because
+# the recent results are the ones the next turn is actually working from.
+PRUNE_PROTECT_CHARS = 40_000
+# Below this there is nothing worth reclaiming; leave the transcript alone.
+PRUNE_MIN_GAIN_CHARS = 8_000
+
+
+@dataclass
+class Compaction:
+    """What a compaction pass actually did. Two mechanisms, reported apart because
+    they cost very differently: pruning is free, summarizing is a model call."""
+
+    summarized: int = 0     # messages replaced by one summary
+    pruned_chars: int = 0   # characters of old tool output blanked out
+
+    def __bool__(self) -> bool:
+        return bool(self.summarized or self.pruned_chars)
 
 # Caps for the text handed to the summarizer — the stretch being condensed is by
 # definition large, so summarizing it verbatim would hit the same wall it is meant
@@ -94,35 +117,88 @@ def llm_summarize(messages: list[dict]) -> str:
     ])
 
 
+def prune_tool_output(messages: list[dict], cfg: config.ModelConfig | None = None) -> int:
+    """Blank the content of the OLDEST tool results, newest-first. Returns chars freed.
+
+    This is the cheap half of context management, and it reaches a case summarizing
+    cannot. Summarizing has to cut somewhere, and the only safe cut is a `user`
+    message — but a sub-agent's history is [system, task, assistant, tool, assistant,
+    tool, ...] with exactly one user message, which is its task and must survive. So
+    find_split always returns 0 there and a sub-agent could never be compacted at all,
+    however much tool output it piled up.
+
+    Pruning has no such problem: the tool MESSAGE stays and only its content is
+    replaced, so the assistant/tool pairing the server checks is untouched, and no
+    boundary is needed. It also costs no model call.
+
+    All-or-nothing below a floor: blanking a few hundred characters is churn, not
+    relief.
+    """
+    cfg = cfg or config.load()
+    kept = 0
+    victims: list[dict] = []
+    for msg in reversed(messages):
+        if msg.get("role") != "tool":
+            continue
+        content = msg.get("content") or ""
+        if content == PRUNED_STUB:  # already pruned — idempotent
+            continue
+        if kept + len(content) <= PRUNE_PROTECT_CHARS:
+            kept += len(content)   # recent enough to keep verbatim
+            continue
+        victims.append(msg)
+    gain = sum(len(m.get("content") or "") for m in victims)
+    if gain < PRUNE_MIN_GAIN_CHARS:
+        return 0
+    for msg in victims:
+        msg["content"] = PRUNED_STUB
+    return gain
+
+
 def maybe_compact(
     messages: list[dict],
     prompt_tokens: int | None = None,
     *,
     summarize: SummarizeFn | None = None,
     cfg: config.ModelConfig | None = None,
-) -> int:
-    """Condense `messages` IN PLACE when it is close to the window. Returns how many
-    messages the summary replaced (0 = nothing done).
+) -> Compaction:
+    """Shrink `messages` IN PLACE when it is close to the window.
+
+    Two mechanisms, cheapest first:
+
+    1. Prune — blank the oldest tool results. No model call, cannot break the
+       assistant/tool pairing, and needs no cut point, so it works on a sub-agent's
+       history where no legal one exists. If it frees enough, we stop here.
+    2. Summarize — replace the oldest stretch with one condensed message. Costs a
+       request, and only possible where there is a `user` boundary to cut on.
 
     `prompt_tokens` is the server's own count for the previous request — the most
     accurate signal available, and free (it already arrives in the stream's usage
     trailer). Only the first turn of a fresh process falls back to the estimate.
     """
     cfg = cfg or config.load()
+    done = Compaction()
     if not cfg.context_window:  # 0 disables the whole mechanism
-        return 0
+        return done
     used = prompt_tokens or estimate_tokens(messages)
     if used < cfg.context_window * cfg.compact_threshold:
-        return 0
+        return done
+
+    # Cheap first: old tool output is usually where the bulk actually is, and
+    # dropping it costs nothing.
+    done.pruned_chars = prune_tool_output(messages, cfg)
+    if done.pruned_chars:
+        return done
 
     split = find_split(messages, cfg.keep_recent_messages)
     if split <= 0:
-        return 0
+        return done
     head = 1 if messages[0].get("role") == "system" else 0
     older = messages[head:split]
     summary = (summarize or llm_summarize)(older)
     if not summary.strip():
-        return 0  # a failed summary must not silently delete the history
+        return done  # a failed summary must not silently delete the history
 
     messages[head:split] = [{"role": "user", "content": SUMMARY_PREFIX + summary}]
-    return len(older) - 1  # the summary itself takes one slot back
+    done.summarized = len(older) - 1  # the summary itself takes one slot back
+    return done

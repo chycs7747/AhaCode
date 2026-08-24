@@ -23,6 +23,14 @@ EmitFn = Callable[[Event], None]
 ApproveFn = Callable[[ToolCall], bool]
 
 
+def _compaction_note(done: context.Compaction) -> str:
+    """What to tell the user about a compaction. Losing history silently is the bad
+    failure mode — they should know why the agent may have forgotten something."""
+    if done.pruned_chars:
+        return f"🗜 컨텍스트 확보를 위해 오래된 도구 출력 {done.pruned_chars:,}자를 비웠어요."
+    return f"🗜 컨텍스트 한계에 가까워 이전 메시지 {done.summarized}개를 요약으로 압축했어요."
+
+
 def _assistant_message(text: str, tool_calls: list[ToolCall]) -> dict:
     """Build the OpenAI `assistant` history entry for a turn.
 
@@ -143,10 +151,10 @@ def run(
 
         # Condense BEFORE sending, so this turn's request fits. `appended` is
         # untouched by this, so a compacted run still persists its real messages.
-        removed = context.maybe_compact(messages, prompt_tokens, summarize=summarize)
-        if removed:
+        done = context.maybe_compact(messages, prompt_tokens, summarize=summarize)
+        if done:
             prompt_tokens = None  # the old count no longer describes this prompt
-            emit(Notice(f"🗜 컨텍스트 한계에 가까워 이전 메시지 {removed}개를 요약으로 압축했어요."))
+            emit(Notice(_compaction_note(done)))
 
         # --- one LLM turn: stream deltas live, collect the tool calls ---
         text = ""
