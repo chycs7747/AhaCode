@@ -8,6 +8,7 @@ _ICONS = {
     "read": "👓",
     "bash": "🖥",
     "grep": "🔍",
+    "glob": "🗂",
     "list": "📂",
     "write": "📝",
     "edit": "✏",

@@ -662,7 +662,10 @@ async def test_plan_mode_restricts_tools_and_injects_system_prompt(monkeypatch):
         await app.workers.wait_for_complete()
         await pilot.pause()
 
-    assert {t["function"]["name"] for t in captured["tools"]} == {"read", "todo_write"}  # no bash
+    # read-only: the search tools are in (planning means investigating), bash is not
+    assert {t["function"]["name"] for t in captured["tools"]} == {
+        "read", "glob", "grep", "todo_write"
+    }
     assert captured["messages"][0]["role"] == "system"
     assert "PLAN MODE" in captured["messages"][0]["content"]
     assert app.session.messages[0]["role"] == "user"  # system prompt is not stored
@@ -691,7 +694,7 @@ async def test_act_mode_exposes_all_tools(monkeypatch):
     # act mode at depth 0 also offers `task` (the main agent may spawn sub-agents;
     # subagent_depth defaults to 1, so depth 0 < 1 exposes it).
     assert {t["function"]["name"] for t in captured["tools"]} == {
-        "read", "write", "edit", "bash", "todo_write", "task"
+        "read", "glob", "grep", "write", "edit", "bash", "todo_write", "task"
     }
     # act mode now grounds the turn with the AhaCode system prompt (env-injected),
     # followed by the user's message; the system prompt is never stored in the session.

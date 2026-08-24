@@ -546,11 +546,18 @@ class AhaCodeApp(App):
 
     def _registry_for_mode(self) -> dict:
         """The tools this session may use this turn. Plan mode stays read-only (no
-        side effects — and no `task`, since a sub-agent could act). Act mode gets the
-        base tools plus `task`, but only while depth < subagent_depth so a sub-agent
-        at the limit cannot recurse (see tools.registry_for)."""
+        side effects — and no `task`, since a sub-agent could act), but it does get
+        the search tools: planning means investigating first, and without them the
+        model would have to already know every path. Act mode gets the base tools
+        plus `task`, but only while depth < subagent_depth so a sub-agent at the
+        limit cannot recurse (see tools.registry_for)."""
         if self.mode == "plan":
-            return {"read": tools.READ, "todo_write": tools.TODO_WRITE}
+            return {
+                "read": tools.READ,
+                "glob": tools.GLOB,
+                "grep": tools.GREP,
+                "todo_write": tools.TODO_WRITE,
+            }
         return tools.registry_for(self.session_depth, config.load().subagent_depth)
 
     @on(ResponseComplete)
