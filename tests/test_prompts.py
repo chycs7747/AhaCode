@@ -61,8 +61,41 @@ def test_subagent_role_addendum_layers_in(monkeypatch):
     monkeypatch.setitem(prompts.ROLE_ADDENDA, "debug", "DEBUG_ADDENDUM")
     with_role = prompts.subagent_system("debug")
     assert prompts.SUBAGENT_SYSTEM in with_role and "DEBUG_ADDENDUM" in with_role
-    # no role -> just the base, unchanged
-    assert prompts.subagent_system() == prompts.SUBAGENT_SYSTEM
+    # no role -> framing + the shared coding rules, no addendum
+    assert prompts.subagent_system() == f"{prompts.SUBAGENT_SYSTEM}\n\n{prompts.CODING_RULES}"
+
+
+def test_subagent_inherits_the_coding_rules():
+    """A child holds the same write/edit/bash tools as the parent, so it must carry the
+    same discipline — the 3-line framing alone let a phase file its reasoning as
+    comments. One shared constant, so act and sub-agent can never drift apart."""
+    sub = prompts.subagent_system()
+    assert prompts.CODING_RULES in sub
+    assert prompts.CODING_RULES in prompts.act_system()
+    assert "scratchpad" in sub  # the specific rule that was missing
+
+
+def test_subagent_run_resolves_the_assembled_prompt(monkeypatch):
+    """subagent.run must call subagent_system() rather than freeze the bare constant as
+    a default argument — otherwise the assembly (and ROLE_ADDENDA) never reaches a child."""
+    monkeypatch.setitem(prompts.ROLE_ADDENDA, "", "")  # keep the dict pristine
+    seen = {}
+
+    def fake_stream(messages, specs):
+        seen["system"] = messages[0]["content"]
+        return iter(())
+
+    subagent.run("do a thing", emit=lambda e: None, stream=fake_stream, registry={})
+    assert prompts.CODING_RULES in seen["system"]
+
+
+def test_plan_system_demands_executable_steps():
+    """Each step is later handed to a fresh sub-agent that can only finish it with a
+    tool, so a step with no artifact has no legal way to complete."""
+    out = prompts.plan_system()
+    assert "EXECUTABLE" in out
+    for marker in ("imperative verb", "artifact"):
+        assert marker in out
 
 
 def test_plan_and_title_are_stable():

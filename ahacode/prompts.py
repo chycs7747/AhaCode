@@ -23,26 +23,51 @@ from ahacode import config, storage
 
 # The base act-mode prompt: staged sections + terse bullets. "coding agent … also
 # answer questions" keeps general Q&A un-muzzled (validated on qwen).
-ACT_SYSTEM = """You are AhaCode, a TUI coding agent working in this project. Most tasks are software work with the available tools; you also answer questions directly.
+ACT_INTRO = """You are AhaCode, a TUI coding agent working in this project. Most tasks are software work with the available tools; you also answer questions directly.
 
 # Output
 - Terminal Markdown. Reply in the user's language. Code references as `path:line`.
 - Length follows the task — one line for a lookup; a full explanation when the question is conceptual or the user asks for depth.
-- No preamble or postamble.
+- No preamble or postamble."""
 
-# Editing code
+# The discipline layer. Split out of ACT_INTRO because a SUB-AGENT needs it just as
+# much: sub-agents hold the same write/edit/bash tools, and a child running with only
+# the 3-line SUBAGENT_SYSTEM had no rule against turning a source file into a
+# scratchpad (measured: one delegated phase produced 467 lines of which 366 were
+# comments carrying the derivation — "Wait, no…", "Let me reconsider…"). Shared by
+# act_system() and subagent_system() so the rules can never drift apart.
+CODING_RULES = """# Editing code
 - Read first; mimic the file's language, libraries, and style. Don't assume a library exists.
 - Make the smallest correct edit. Verify with the project's own tests; report failures plainly.
+- A file you write is the deliverable, not a scratchpad. Think before you write; comment only
+  what the code cannot say. Never leave a chain of reasoning ("wait", "actually", "let me
+  re-think") in comments — if you need to work something out, do it before the tool call.
 
 # Never (IMPORTANT)
 - Print, log, or commit secrets; `config.toml` and `sessions/` are private.
 - Do anything irreversible (`git push`, force-push, deleting data) without an explicit go-ahead."""
 
+# The full act-mode base, unchanged in content — kept as one constant so existing
+# callers and tests that read ACT_SYSTEM keep working.
+ACT_SYSTEM = f"{ACT_INTRO}\n\n{CODING_RULES}"
+
 # Plan mode: read-only, produce a plan rather than act.
+#
+# The "every step is executable" rule is load-bearing, not style. Each step of a plan
+# is later handed to a FRESH sub-agent by orchestrator.run_plan, and a sub-agent can
+# only finish a step by using a tool. Hand it a step with no artifact ("Algorithm:
+# find root, compute subtree sums …") and it reaches for the only tool that accepts
+# free text — `write` — and files its derivation as source comments. Design belongs
+# in THIS turn's reasoning, where a thinking channel exists; the plan carries only
+# what a tool can carry out.
 PLAN_SYSTEM = (
     "You are in PLAN MODE. Do not change anything or run commands. If needed, "
     "investigate with the read tool, then call todo_write to lay out a clear, "
-    "step-by-step plan for the user to review. Do not carry out the plan."
+    "step-by-step plan for the user to review. Do not carry out the plan.\n"
+    "Every step must be EXECUTABLE: an imperative verb plus a concrete artifact or "
+    "checkable outcome (\"Write x.py with solution()\", \"Run the 4 examples and "
+    "confirm 40/14/27/9\"). A step that only states a fact, a formula, or an idea "
+    "is not a step — do that thinking now, and let the plan carry only the doing."
 )
 
 # A worker sub-agent's framing. Deliberately short: it inherits the same tools, so
@@ -147,11 +172,20 @@ def plan_system(model: str | None = None) -> str:
 
 
 def subagent_system(role: str | None = None) -> str:
-    """A worker sub-agent's framing, plus an optional role addendum (debug/explore…).
-    ROLE_ADDENDA is empty today; a role slots in with no change to subagent.run,
-    which already accepts a `system=` argument."""
+    """A worker sub-agent's framing + the shared CODING_RULES, plus an optional role
+    addendum (debug/explore…). ROLE_ADDENDA is empty today; a role slots in with no
+    change to subagent.run, which already accepts a `system=` argument.
+
+    CODING_RULES is layered in because a child holds the same write/edit/bash tools as
+    the parent but used to run without a single rule about how to use them. Prefix
+    caching is unaffected: this whole string is still a CONSTANT prefix shared by every
+    sub-agent (only the task turn after it differs), so the measured ~67% prefill reuse
+    still applies — it is a longer constant, not a per-child one."""
+    parts = [SUBAGENT_SYSTEM, CODING_RULES]
     addendum = ROLE_ADDENDA.get(role or "")
-    return f"{SUBAGENT_SYSTEM}\n\n{addendum}" if addendum else SUBAGENT_SYSTEM
+    if addendum:
+        parts.append(addendum)
+    return "\n\n".join(parts)
 
 
 def title_system() -> str:

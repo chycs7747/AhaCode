@@ -16,9 +16,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ahacode import agent
+from ahacode import agent, prompts
 from ahacode.events import Event
-from ahacode.prompts import SUBAGENT_SYSTEM  # re-exported; run() defaults to it
+from ahacode.prompts import SUBAGENT_SYSTEM  # re-exported for callers/tests
 
 
 @dataclass
@@ -58,7 +58,7 @@ def run(
     ctx: object | None = None,
     is_cancelled: Callable[[], bool] | None = None,
     max_turns: int = 10,
-    system: str = SUBAGENT_SYSTEM,
+    system: str | None = None,
     summarize=None,
 ) -> SubagentResult:
     """Drive a child agent loop for one delegated task and return its result.
@@ -68,8 +68,12 @@ def run(
     forwarded for the depth>1 case where a child may itself spawn; at the default
     depth limit the child simply has no task tool and never touches it.
     """
+    # Resolved at CALL time, not bound as a default: a default argument freezes the
+    # bare SUBAGENT_SYSTEM constant at import, which silently bypassed the assembly in
+    # prompts.subagent_system() — so every child ran without the shared CODING_RULES
+    # (and the ROLE_ADDENDA seam was dead on arrival). The function is the seam.
     seed = [
-        {"role": "system", "content": system},
+        {"role": "system", "content": system or prompts.subagent_system()},
         {"role": "user", "content": task_prompt},
     ]
     # agent.run mutates its list — and may CONDENSE it if the child's own context
