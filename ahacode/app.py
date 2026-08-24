@@ -97,6 +97,8 @@ class AhaCodeApp(App):
     BINDINGS = [
         Binding("ctrl+d", "quit", "Quit", priority=True),
         Binding("escape", "stop", "Stop", show=False),
+        # priority=True: the focused prompt (a TextArea) would otherwise swallow it.
+        Binding("ctrl+y", "copy_answer", "Copy answer", priority=True),
     ]
 
     def __init__(self) -> None:
@@ -668,6 +670,22 @@ class AhaCodeApp(App):
         # chunk, making it impossible to scroll away mid-answer.
         if self._follow_output:
             self.query_one("#chat-container", VerticalScroll).scroll_end(animate=False)
+
+    def action_copy_answer(self) -> None:
+        """Copy the last assistant answer to the system clipboard (OSC 52 — works over
+        SSH). The TUI captures the mouse, so terminal drag-select is unreliable; this
+        gives a one-key copy of the reply. The full transcript also lives in the
+        session JSONL for anything more."""
+        text = next(
+            (m["content"] for m in reversed(self.session.messages)
+             if m.get("role") == "assistant" and m.get("content")),
+            "",
+        )
+        if not text:
+            self.notify("복사할 답변이 아직 없어요.", severity="warning", timeout=2)
+            return
+        self.copy_to_clipboard(text)
+        self.notify("답변을 클립보드에 복사했어요.", timeout=2)
 
     def action_stop(self) -> None:
         """Cancel the in-flight response (cooperative — the loop checks is_cancelled)."""

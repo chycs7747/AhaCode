@@ -1422,3 +1422,34 @@ async def test_manual_scroll_up_during_stream_sticks():
         sc.scroll_end(animate=False)              # user returns to the bottom
         await pilot.pause()
         assert app._follow_output is True         # following re-engages
+
+
+@pytest.mark.asyncio
+async def test_ctrl_y_copies_last_answer_to_clipboard():
+    """ctrl+y copies the last assistant answer via copy_to_clipboard (OSC 52)."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.messages = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "the latest answer"},
+        ]
+        captured = []
+        app.copy_to_clipboard = captured.append  # capture instead of writing OSC 52
+        await pilot.press("ctrl+y")
+        await pilot.pause()
+        assert captured == ["the latest answer"]  # the LAST answer, not the first
+
+
+@pytest.mark.asyncio
+async def test_ctrl_y_with_no_answer_copies_nothing():
+    """With no assistant answer yet, ctrl+y warns and copies nothing (no crash)."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.messages = [{"role": "user", "content": "just asked"}]
+        captured = []
+        app.copy_to_clipboard = captured.append
+        await pilot.press("ctrl+y")
+        await pilot.pause()
+        assert captured == []
