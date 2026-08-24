@@ -32,10 +32,19 @@ def is_skipped_dir(name: str) -> bool:
 def iter_files(root: Path, pattern: str = "**/*") -> Iterator[Path]:
     """Yield files under `root` matching a glob pattern, skipping the noise dirs.
 
+    A `root` that is itself a file yields that one file, so a tool can be pointed
+    straight at a single path.
+
     The skip list applies to directories *discovered* while walking, never to
     `root` itself — so an explicit search inside e.g. reference/ still works, while
     a project-wide search never wanders in.
     """
+    # A file as the root yields just that file: Path.glob on a non-directory quietly
+    # returns nothing, which would make `grep(path=<a file>)` silently find zero
+    # matches. Spilled tool output is exactly that case.
+    if root.is_file():
+        yield root
+        return
     for path in root.glob(pattern):
         if any(is_skipped_dir(part) for part in path.relative_to(root).parts[:-1]):
             continue

@@ -17,6 +17,7 @@ from rich.theme import Theme
 from ahacode import (
     agent, client, config, orchestrator, permissions, prompts, storage, subagent, tools,
 )
+from ahacode.tools import spill
 from ahacode.events import (
     Notice, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage,
 )
@@ -142,6 +143,7 @@ class AhaCodeApp(App):
             )
         # Skip auto-titling if this (resumed) session already has a title.
         self._has_title = bool((storage.read_session_meta(self.session_path) or {}).get("title"))
+        spill.set_session(self.session_path)
         # Depth in the session tree (0 = a main session); gates whether this session
         # is offered the `task` tool — a sub-agent at the limit cannot recurse.
         self.session_depth = int((storage.read_header(self.session_path) or {}).get("depth", 0))
@@ -305,6 +307,7 @@ class AhaCodeApp(App):
         self.session_depth = 0
         self._has_title = False
         self._reset_plan_gate()
+        spill.set_session(self.session_path)
         self._set_header_title("")
         await self._render_history()  # clears the pinned plan with the rest of the view
         self._reflect_view_only()  # a fresh main session is drivable again
@@ -320,6 +323,7 @@ class AhaCodeApp(App):
         self.session_depth = int(meta.get("depth", 0))
         self._has_title = bool(meta.get("title"))
         self._reset_plan_gate()
+        spill.set_session(self.session_path)
         self._set_header_title(meta.get("title", ""))
         await self._render_history()  # replays this session's plan into the panel
         self._reflect_view_only()

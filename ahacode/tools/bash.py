@@ -13,15 +13,23 @@ from __future__ import annotations
 import re
 import subprocess
 
+from ahacode.text import elide, line_count
+from ahacode.tools import spill
 from ahacode.tools.base import PROJECT_ROOT, Tool
 
 _TIMEOUT = 30  # seconds; a hung command must not freeze the agent
-# Output cap, matching read/grep: one `cat` of a large file would otherwise put
-# the whole thing in the context in a single shot. Both ends are kept — a build
-# log's error is usually at the end, a listing's header at the start.
+# bash is the one tool whose output size nobody can predict — read pages with
+# offset/limit and grep caps its matches, but a command returns whatever it returns.
+# Past this, the full output is written to a file and only a preview comes back, so
+# the context stays small WITHOUT losing anything: the model reads or greps the file
+# for the part it actually needs.
+_SPILL_OVER_CHARS = 4_000
+_PREVIEW_CHARS = 2_000
+# If the spill file cannot be written we fall back to plain truncation, keeping both
+# ends — a build log's verdict is at the end, a listing's header at the start.
 _MAX_OUTPUT_CHARS = 30_000
 
-# Roo splits a command into sub-commands before checking each one, so that
+# A command is split into sub-commands before each one is checked, so that
 # `ls && rm -rf /` cannot slip a dangerous half past the check.
 _CHAIN = re.compile(r"&&|\|\||[;|&\n]")
 
@@ -51,8 +59,8 @@ def _check_dangerous(args: dict) -> str | None:
 
     Checked against the whole command *and* each chained sub-command: the whole
     line catches patterns that span operators (a fork bomb uses ; | &), while the
-    per-sub-command pass mirrors Roo's parseCommand so a dangerous half of
-    `ls && rm -rf /` cannot hide behind a harmless first command.
+    per-sub-command pass means a dangerous half of `ls && rm -rf /` cannot hide
+    behind a harmless first command.
     """
     command = args.get("command", "")
     for segment in (command, *split_chain(command)):
@@ -74,13 +82,25 @@ def _bash(args: dict) -> str:
         timeout=_TIMEOUT,
     )
     out = proc.stdout + proc.stderr
-    if len(out) > _MAX_OUTPUT_CHARS:
-        half = _MAX_OUTPUT_CHARS // 2
-        elided = len(out) - _MAX_OUTPUT_CHARS
-        out = f"{out[:half]}\n... [{elided} chars elided] ...\n{out[-half:]}"
+    if len(out) > _SPILL_OVER_CHARS:
+        out = _spilled(out)
     if proc.returncode != 0:
         out += f"\n(exit code {proc.returncode})"
     return out.strip() or "(no output)"
+
+
+def _spilled(out: str) -> str:
+    """Save the full output and return the header + preview that stands in for it."""
+    path = spill.write(out, prefix="bash")
+    if path is None:  # no place to write it — degrade to the old truncation
+        return elide(out, _MAX_OUTPUT_CHARS)
+    where = spill.relative(path)
+    header = (
+        f"[output was {len(out):,} chars / {line_count(out):,} lines — saved in full to {where}\n"
+        f" read it with read(path=\"{where}\", offset=…, limit=…), "
+        f"or search it with grep(pattern=…, path=\"{where}\")]\n"
+    )
+    return header + elide(out, _PREVIEW_CHARS)
 
 
 BASH = Tool(

@@ -26,18 +26,47 @@ def test_bash_reports_nonzero_exit():
     assert "exit code 3" in out
 
 
-def test_bash_output_is_capped_keeping_both_ends():
-    """One `cat` of a big file must not put the whole thing in the context. Both ends
-    survive — a build log's error is at the end, a listing's header at the start."""
+def test_bash_spills_big_output_instead_of_discarding_it(tmp_path, monkeypatch):
+    """Truncation throws the middle away for good. Spilling keeps everything: a
+    header points at the file, the preview keeps both ends, and nothing is lost."""
     from ahacode.tools import bash as bash_mod
+    from ahacode.tools import spill
 
+    monkeypatch.setattr(spill, "_session_dir", tmp_path / "s-out")
     out = bash_mod.BASH.execute(
         {"command": "python3 -c \"print('HEAD'); print('x'*80000); print('TAIL')\""}
     )
-    assert out.startswith("HEAD")
-    assert out.endswith("TAIL")
+    assert out.startswith("[output was 80,0")     # the header stands in for the bulk
+    assert "HEAD" in out and "TAIL" in out         # both ends survive in the preview
+    assert len(out) < bash_mod._PREVIEW_CHARS + 600
+
+    spilled = list((tmp_path / "s-out").glob("bash-*.txt"))
+    assert len(spilled) == 1
+    full = spilled[0].read_text(encoding="utf-8")
+    assert full.startswith("HEAD") and full.rstrip().endswith("TAIL")
+    assert len(full) > 80_000                      # nothing was thrown away
+
+
+def test_small_bash_output_is_untouched(tmp_path, monkeypatch):
+    from ahacode.tools import bash as bash_mod
+    from ahacode.tools import spill
+
+    monkeypatch.setattr(spill, "_session_dir", tmp_path / "s-out")
+    assert bash_mod.BASH.execute({"command": "echo hello"}) == "hello"
+    assert not (tmp_path / "s-out").exists()       # no file for output that fits
+
+
+def test_bash_falls_back_to_truncation_when_it_cannot_spill(tmp_path, monkeypatch):
+    """A spill that fails must not break the tool — it degrades to the old behaviour."""
+    from ahacode.tools import bash as bash_mod
+    from ahacode.tools import spill
+
+    monkeypatch.setattr(spill, "write", lambda text, prefix="out": None)
+    out = bash_mod.BASH.execute(
+        {"command": "python3 -c \"print('HEAD'); print('x'*80000); print('TAIL')\""}
+    )
+    assert out.startswith("HEAD") and out.endswith("TAIL")
     assert "elided" in out
-    assert len(out) < bash_mod._MAX_OUTPUT_CHARS + 200
 
 
 def test_registry_and_approval_flags():
