@@ -85,9 +85,21 @@ class TodoPanel(Static):
         self.set_collapsed(not self.collapsed)
 
     def _summary(self) -> str:
-        """The folded line: enough to know where the plan stands without unfolding."""
+        """The folded line: enough to know where the plan stands, and what to do next.
+
+        The folded state is almost always reached by stopping a run, and at that moment
+        the user's question is "how do I carry on?" — for which the only answer is /run.
+        Nothing else on screen says so, and a plain "이어서 해" goes to the main agent
+        instead (it is just a chat message), which quietly abandons the per-step fresh
+        contexts the run existed to provide. So the hint lives here.
+        """
         finished = sum(1 for it in self.items if it.get("status") == DONE)
-        return f"▸ Plan · {finished}/{len(self.items)} done  (클릭하면 펼침)"
+        # "이어서" only when there is something to carry on FROM.
+        run_hint = "/run 이어서" if finished else "/run 실행"
+        # Kept short on purpose: Korean glyphs are two cells wide, and a folded line
+        # that wraps to two rows is not folded. Measured to hold one row down to a
+        # 44-column terminal.
+        return f"▸ Plan {finished}/{len(self.items)} · 클릭 펼치기 · {run_hint}"
 
     def _redraw(self) -> None:
         """Draw the checklist from `items` — the one place that reads the statuses.

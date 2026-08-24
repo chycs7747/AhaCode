@@ -549,6 +549,7 @@ class AhaCodeApp(App):
                 "  /allow           list the rules that skip the approval prompt\n"
                 "  /allow <rule>    add one, e.g. /allow bash:uv run pytest*\n"
                 "  /run             execute the current plan — each step a fresh sub-agent\n"
+                "                   (stopped mid-run? /run again resumes from where it stopped)\n"
                 "  /new             start a new session\n"
                 "  /sessions        switch between sessions\n"
                 "  /help            this message"
@@ -1122,6 +1123,19 @@ class AhaCodeApp(App):
             # however the run was cancelled, and a stopped run should always hand the
             # screen back. set_collapsed is idempotent, so the two paths cannot fight.
             self.call_from_thread(self.query_one(TodoPanel).set_collapsed, True)
+            # Say how to carry on, in the transcript rather than the status bar — the
+            # status line is overwritten by the next thing that happens, and this is
+            # precisely the moment the user asks "이어서 어떻게 하지?". Without it the
+            # natural move is to type "이어서 해", which is an ordinary message and so
+            # goes to the MAIN agent — abandoning the per-step fresh contexts the run
+            # exists to provide.
+            if done < len(steps):
+                self.call_from_thread(
+                    self._say_system,
+                    f"■ 계획 중지 — {done}/{len(steps)}단계 완료, 결과는 저장됐어요.\n"
+                    f"  이어서 하려면 /run — 끝난 단계는 건너뛰고 {done + 1}단계부터 갑니다.\n"
+                    "  (그냥 메시지를 보내면 계획 실행이 아니라 메인 에이전트가 답합니다.)",
+                )
             self.post_message(self.ResponseComplete(
                 [], f"■ 계획 중지 — 완료된 {done}/{len(steps)}단계는 저장됨"
             ))

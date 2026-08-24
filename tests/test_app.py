@@ -2102,7 +2102,7 @@ async def test_stop_folds_the_pinned_plan_without_losing_it(monkeypatch):
         await pilot.pause()
         assert panel.collapsed
         # the phase that was in flight when Stop landed still finished, so 2 of 3
-        assert panel._content.startswith("▸ Plan · 2/3 done")
+        assert panel._content.startswith("▸ Plan 2/3")
         assert len(panel.items) == 3          # the plan itself is intact
         panel.on_click()                       # click to unfold
         assert not panel.collapsed and "☑ Write solver.py" in panel._content
@@ -2278,3 +2278,85 @@ async def test_a_stopped_run_stops_asking_for_approval(monkeypatch):
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._stopping is False
+
+
+# --- discoverability of resume ----------------------------------------------
+# /run is the ONLY way back into a stopped plan: any other text is an ordinary
+# message and reaches the main agent instead, which quietly abandons the per-step
+# fresh contexts the run exists to provide. Nothing on screen used to say so.
+
+@pytest.mark.asyncio
+async def test_a_stopped_run_says_how_to_carry_on(monkeypatch):
+    calls = iter(range(100))
+
+    def fake_stream(messages, tools=None):
+        n = next(calls)
+        if n == 0:
+            app._plan_worker.cancel()
+        return iter([TextDelta(f"phase {n}")])
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        app.query_one(TodoPanel).update_todos([{"content": "Write solver.py"},
+                                               {"content": "Run the examples"},
+                                               {"content": "Report the timings"}])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        said = " ".join(b._content for b in app.query(Chatbox)
+                        if b.has_class("chatbox--system"))
+        assert "이어서 하려면 /run" in said
+        assert "2단계부터" in said          # names the step it will resume at
+        assert "메인 에이전트" in said       # and warns what a plain message does
+
+
+@pytest.mark.asyncio
+async def test_a_finished_run_does_not_offer_to_resume(monkeypatch):
+    """Nothing to carry on from — the guidance would be noise."""
+    monkeypatch.setattr(client, "stream_chat",
+                        lambda m, tools=None: iter([TextDelta("done")]))
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        app.query_one(TodoPanel).update_todos([{"content": "Write solver.py"},
+                                               {"content": "Run the examples"}])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        said = " ".join(b._content for b in app.query(Chatbox)
+                        if b.has_class("chatbox--system"))
+        assert "이어서 하려면" not in said
+
+
+def test_the_folded_plan_line_shows_how_to_resume():
+    panel = TodoPanel()
+    panel.update_todos([{"content": "a", "status": "done"}, {"content": "b"},
+                        {"content": "c"}, {"content": "d"}])
+    panel.set_collapsed(True)
+    assert panel._content == "▸ Plan 1/4 · 클릭 펼치기 · /run 이어서"
+    # nothing done yet -> "실행", not "이어서"
+    fresh = TodoPanel()
+    fresh.update_todos([{"content": "a"}, {"content": "b"}])
+    fresh.set_collapsed(True)
+    assert fresh._content.endswith("/run 실행")
+
+
+def test_the_folded_plan_line_stays_one_row_on_a_narrow_terminal():
+    """Korean glyphs are two cells wide; a folded line that wraps is not folded.
+    Guards the length rather than the rendering, so it needs no running app."""
+    panel = TodoPanel()
+    panel.update_todos([{"content": "a", "status": "done"}] + [{"content": c} for c in "bcd"])
+    panel.set_collapsed(True)
+    cells = sum(2 if ord(ch) > 0x2500 and not ch.isascii() else 1 for ch in panel._content)
+    assert cells <= 40, f"{cells} cells — wraps below a 44-column terminal"
+
+
+def test_help_mentions_that_run_resumes():
+    app = AhaCodeApp()
+    assert "resumes from where it stopped" in app._handle_command("/help")
