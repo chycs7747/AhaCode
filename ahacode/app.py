@@ -669,6 +669,17 @@ class AhaCodeApp(App):
         self._gated_plan = fingerprint
         self._plan_gate = PlanGate(steps)
         await container.mount(self._plan_gate)
+        # Scroll the card's buttons into view, overriding the follow-output flag: the
+        # loop is now BLOCKED on one of them, so they are not optional content. The
+        # card is taller than the chat area on a short terminal, and mounting alone
+        # left it off-screen — the user saw a paused run with nothing to press.
+        # Scroll the card's buttons into view, overriding the follow-output flag: the
+        # loop is now BLOCKED on one of them, so they are not optional content. NOTE
+        # `container` here is the turn rail, a plain Vertical — scrolling THAT does
+        # nothing. The scroller is #chat-container, one level up.
+        self._follow_output = True
+        scroller = self.query_one("#chat-container", VerticalScroll)
+        scroller.scroll_end(animate=False, immediate=True)
         self._status("⏸ 계획 승인 대기")
 
     def _settle_plan_gate(self, choice: str) -> None:

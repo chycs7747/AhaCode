@@ -39,10 +39,24 @@ def _stream_turns(monkeypatch, turns):
     monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter(next(it)))
 
 
+# Pilot.click's default offset is the widget's TOP-LEFT cell — on a bordered Button
+# that is the border corner, and when the card sits flush against the top of the chat
+# viewport the scroll container claims that exact cell, so the click misses. Aim one
+# cell inside instead; a human clicks the middle of the button anyway.
+_INSIDE = (2, 1)
+
+
 async def _ask(pilot, app, text):
+    """Send a message and let the screen settle before the test clicks anything.
+
+    Two pauses, not one: opening the gate mounts the card AND reveals the pinned plan
+    panel, so the layout reflows twice. Clicking on the first frame's coordinates
+    misses the button — which is a test-timing artefact, not something a human hits.
+    """
     app.query_one("#prompt", PromptInput).text = text
     await pilot.press("enter")
     await app.workers.wait_for_complete()
+    await pilot.pause()
     await pilot.pause()
 
 
@@ -146,7 +160,7 @@ async def test_run_button_delegates_each_step_and_switches_to_act(monkeypatch):
         await _ask(pilot, app, "리팩터링 해줘")
         assert app._plan_gate_pending is True
 
-        await pilot.click("#plan-gate-run")
+        await pilot.click("#plan-gate-run", offset=_INSIDE)
         await app.workers.wait_for_complete()
         await pilot.pause()
 
@@ -175,7 +189,7 @@ async def test_continue_button_resumes_the_same_loop(monkeypatch):
     app = AhaCodeApp()
     async with app.run_test() as pilot:
         await _ask(pilot, app, "리팩터링 해줘")
-        await pilot.click("#plan-gate-continue")
+        await pilot.click("#plan-gate-continue", offset=_INSIDE)
         await app.workers.wait_for_complete()
         await pilot.pause()
 
@@ -215,7 +229,7 @@ async def test_same_plan_is_not_asked_about_twice(monkeypatch):
     app = AhaCodeApp()
     async with app.run_test() as pilot:
         await _ask(pilot, app, "해줘")
-        await pilot.click("#plan-gate-continue")
+        await pilot.click("#plan-gate-continue", offset=_INSIDE)
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert len(app.query(PlanGate)) == 1           # still just the settled one

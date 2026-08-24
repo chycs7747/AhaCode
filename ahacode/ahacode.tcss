@@ -73,9 +73,14 @@ Chatbox {
     border-left: thick $warning;
 }
 
+/* The composer footer is 2 rows taller than its controls so the 3-row controls sit
+   INSIDE it with a row of breathing space above and below, rather than filling it
+   edge to edge. A filled button (Send/Stop) reads as touching the panel edges when
+   it does; the outlined dropdowns hid it better, which is why only the button
+   looked wrong. Padding, not per-control margins, so every control lines up. */
 ModelBar {
-    height: 3;
-    padding: 0 1;
+    height: 5;
+    padding: 1 1;
 }
 
 ModelBar #status {
@@ -185,9 +190,14 @@ ModelBar #auto-approve.-on > .toggle--label {
    HeaderBar docked top and #bottom docked bottom, a non-docked TodoPanel sits at the
    top of the remaining middle region — just under the header, above the chat — and
    collapses to nothing when hidden (display:none), giving the chat the full height. */
+/* padding: top right bottom left. The bottom already reads as spaced because the
+   border draws its own row there; the top had nothing, so the plan sat directly
+   against the header's coloured band. One row of top padding balances it — it takes
+   the app background rather than the header's panel colour, so it reads as a gap
+   rather than as more header. */
 TodoPanel {
     height: auto;
-    padding: 0 2;
+    padding: 1 2 0 2;
     border-bottom: solid $secondary;
     color: $text-muted;
 }
@@ -291,16 +301,22 @@ ToolResultBlock .chatbox--tool-error {
 
 /* Top bar: session title (left) + New / Sessions buttons (right). Docked top; the
    TodoPanel is NOT docked (see its rule) so it flows just below without overlap. */
+/* 3 rows, with the single row of content inset by one row of padding above and
+   below. Equal space on both sides WITHOUT the bar growing: the buttons here are
+   flat (border: none, 1 row) rather than the composer's bordered 3-row Send, which
+   is what pays for the padding. Rows are the scarce resource — a 5-row header left
+   only 4 rows of chat on an 80x24 terminal, too few for the plan-gate card, so its
+   buttons could not be scrolled into view at all. */
 HeaderBar {
     dock: top;
     height: 3;
     background: $panel;
-    padding: 0 1;
+    padding: 1 1;
 }
 
 #session-title {
     width: 1fr;
-    height: 3;
+    height: 1;
     content-align: left middle;   /* vertically centre the title in the bar */
     text-style: bold;
     color: $text;
@@ -308,16 +324,19 @@ HeaderBar {
 
 HeaderBar #endpoint {
     width: auto;
-    height: 3;
+    height: 1;
     content-align: right middle;
     color: $text-muted;
     margin-right: 2;
 }
 
+/* Flat: no border box, so the button is the 1 row of its label. margin-left is
+   wider than the bordered case because there is no border to separate them. */
 .header-btn {
-    height: 3;
+    height: 1;
     min-width: 0;
-    margin-left: 1;
+    border: none;
+    margin-left: 2;
 }
 
 /* Composer Send button, right end of the ModelBar. */
