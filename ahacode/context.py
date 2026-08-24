@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from ahacode import client, config, prompts
+from ahacode.text import elide
 
 # (older messages) -> a condensed summary of them. Injected so tests stay offline.
 SummarizeFn = Callable[[list[dict]], str]
@@ -75,9 +76,7 @@ def render_transcript(messages: list[dict]) -> str:
         for call in msg.get("tool_calls") or []:
             fn = call.get("function", {})
             body += f"\n[called {fn.get('name')} {fn.get('arguments', '')}]"
-        if len(body) > _MAX_MESSAGE_CHARS:
-            half = _MAX_MESSAGE_CHARS // 2
-            body = f"{body[:half]}\n…[{len(body) - _MAX_MESSAGE_CHARS} chars elided]…\n{body[-half:]}"
+        body = elide(body, _MAX_MESSAGE_CHARS)
         line = f"{msg.get('role')}: {body}"
         if total + len(line) > _MAX_TRANSCRIPT_CHARS:
             parts.append("…[earlier messages omitted]…")

@@ -23,6 +23,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from ahacode.text import elide
+
 # (prompt, description) -> the sub-agent's final result. Matches
 # AgentContext.run_subagent exactly, so the app reuses that closure verbatim.
 DelegateFn = Callable[[str, str], str]
@@ -32,6 +34,15 @@ DelegateFn = Callable[[str, str], str]
 # its context stays small. Injected so the core stays pure/testable; the app's version
 # streams it into the main turn (references do this by re-invoking the parent LLM).
 SynthesizeFn = Callable[[str, "list[PhaseResult]"], str]
+
+
+# A phase result is read TWICE — threaded into every later phase's prompt, and
+# again by the synthesis at the end — so an unbounded one is paid for many times
+# over: N phases carry N(N-1)/2 copies between them. Capping it at the source is
+# the only single place that bounds both readers. Same guard rail the tools already
+# have (read 2000 lines, grep 100 matches, bash its output): as far as the context
+# is concerned a phase result is just another piece of tool output.
+MAX_RESULT_CHARS = 4_000
 
 
 @dataclass
@@ -50,7 +61,10 @@ def _phase_prompt(task: str, step: str, prior: list[PhaseResult]) -> str:
     """Curated context for one phase: the overall task, THIS step, and the concise
     results of the phases before it — nothing else. Forwarding the results (not the
     reasoning) keeps each fresh context small while still letting a later step (e.g.
-    "fix if a test fails") see what earlier steps produced."""
+    "fix if a test fails") see what earlier steps produced.
+
+    The results arrive already capped (MAX_RESULT_CHARS), so this prompt cannot grow
+    without bound however verbose a phase turns out to be."""
     parts = [f"# Overall task\n{task}", f"# Your phase\n{step}"]
     if prior:
         so_far = "\n\n".join(f"## {p.description}\n{p.result}" for p in prior)
@@ -88,7 +102,7 @@ def run_plan(
         if is_cancelled():
             break
         prompt = _phase_prompt(task, step, out.phases)
-        result = delegate(prompt, step)
+        result = elide(delegate(prompt, step), MAX_RESULT_CHARS)
         out.phases.append(PhaseResult(description=step, result=result))
         out.result = result
     if synthesize and out.phases and not is_cancelled():

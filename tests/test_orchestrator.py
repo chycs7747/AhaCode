@@ -92,3 +92,31 @@ def test_phase_prompt_shape():
     assert "# Your phase\nimplement it" in p
     assert "## design\nuse a heap" in p
     assert "concise, self-contained result" in p
+
+
+def test_a_verbose_phase_result_is_capped_at_the_source():
+    """A phase result is read twice — threaded into later phases AND by the
+    synthesis — so an unbounded one is paid for many times over. Capping where it
+    is produced bounds both readers with one change."""
+    cap = orchestrator.MAX_RESULT_CHARS
+
+    huge = "START" + "x" * 50_000 + "END"
+    seen: list[str] = []
+
+    def delegate(prompt, description):
+        seen.append(prompt)
+        return huge
+
+    got = []
+    out = orchestrator.run_plan(
+        "task", ["one", "two"], delegate,
+        synthesize=lambda t, phases: got.append(phases) or "final",
+    )
+
+    assert len(out.phases[0].result) < cap + 200
+    assert "START" in out.phases[0].result and "END" in out.phases[0].result
+    assert "elided" in out.phases[0].result
+    # the second phase's prompt carries the capped result, not the raw 50k
+    assert len(seen[1]) < cap + 1_000
+    # and so does what the synthesis is handed
+    assert all(len(p.result) < cap + 200 for p in got[0])
