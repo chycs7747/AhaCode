@@ -16,6 +16,10 @@ DEFAULT_SUBAGENT_DEPTH = 1  # generations of sub-agents that may nest (0 = none)
 DEFAULT_MAX_PARALLEL_AGENTS = 8  # cap on concurrent gateway requests (measured knee)
 DEFAULT_THINKING_TOKEN_BUDGET = 4096  # per-turn reasoning-token cap; 0 = unbounded
 DEFAULT_REASONING_EFFORT = "medium"   # OpenAI-style hint (low|medium|high|xhigh)
+# After a tool result, the next turn's job is to act on it, not re-deliberate — so
+# skip <think> on those turns. Kills the per-turn re-thinking that otherwise stacks
+# across a multi-turn loop into a spiral (thinking budget only caps ONE turn).
+DEFAULT_NO_THINK_AFTER_TOOLS = True
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,9 @@ class ModelConfig:
     # OpenAI-style hint, ignored by servers that don't map it.
     thinking_token_budget: int = DEFAULT_THINKING_TOKEN_BUDGET
     reasoning_effort: str = DEFAULT_REASONING_EFFORT
+    # When True, turns whose last message is a tool result are sent with thinking
+    # disabled (enable_thinking=False), so the model executes instead of re-thinking.
+    no_think_after_tools: bool = DEFAULT_NO_THINK_AFTER_TOOLS
 
 
 DEFAULTS = ModelConfig(
@@ -58,6 +65,7 @@ api_key = "{cfg.api_key}"  # many local servers ignore this, but the SDK require
 timeout = {cfg.timeout}    # seconds; caps how long a read may block between chunks
 thinking_token_budget = {cfg.thinking_token_budget}  # per-turn reasoning cap; 0 = unbounded (server reasoning-config required)
 reasoning_effort = "{cfg.reasoning_effort}"          # low|medium|high|xhigh — a hint; effect is server-dependent
+no_think_after_tools = {str(cfg.no_think_after_tools).lower()}  # skip <think> on turns that just got a tool result (stops the multi-turn spiral)
 
 [agent]
 # How many generations of sub-agents may nest. 1 = the main agent may spawn
@@ -95,4 +103,5 @@ def load(path: Path | None = None) -> ModelConfig:
         max_parallel_agents=int(agent.get("max_parallel_agents", DEFAULT_MAX_PARALLEL_AGENTS)),
         thinking_token_budget=int(model.get("thinking_token_budget", DEFAULT_THINKING_TOKEN_BUDGET)),
         reasoning_effort=str(model.get("reasoning_effort", DEFAULT_REASONING_EFFORT)),
+        no_think_after_tools=bool(model.get("no_think_after_tools", DEFAULT_NO_THINK_AFTER_TOOLS)),
     )

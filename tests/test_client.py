@@ -178,6 +178,32 @@ def test_budget_fallback_on_reasoning_config_error(monkeypatch):
     assert calls[1]["extra_body"] == {"reasoning_effort": "medium"}  # retry dropped only the budget
 
 
+def test_no_think_after_tool_result(monkeypatch):
+    """When the last message is a tool result, thinking is disabled for that turn —
+    enable_thinking=False rides in extra_body and the budget/effort are dropped."""
+    seen = {}
+    fc = _fake_client(lambda **kw: (seen.update(kw), _FakeStream())[1])
+    monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg()))
+    monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
+    list(client.stream_chat([
+        {"role": "user", "content": "solve it"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ran"},
+    ]))
+    assert seen["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert "thinking_token_budget" not in seen["extra_body"]  # meaningless with thinking off
+
+
+def test_no_think_off_keeps_thinking_on_tool_turn(monkeypatch):
+    """With the flag off, a tool-result turn is a normal thinking turn (budget sent)."""
+    seen = {}
+    fc = _fake_client(lambda **kw: (seen.update(kw), _FakeStream())[1])
+    monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg(no_think_after_tools=False)))
+    monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
+    list(client.stream_chat([{"role": "tool", "tool_call_id": "c1", "content": "ran"}]))
+    assert seen["extra_body"] == {"reasoning_effort": "medium", "thinking_token_budget": 4096}
+
+
 def test_unrelated_error_is_not_retried(monkeypatch):
     calls = []
 

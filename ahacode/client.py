@@ -130,15 +130,28 @@ def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterat
         # tool, which would force its hand). Only sent alongside tools — some
         # servers reject tool_choice without a tools list.
         kwargs["tool_choice"] = "auto"
-    # Reasoning controls (both optional, both vendor extensions passed via extra_body):
-    # thinking_token_budget hard-caps reasoning tokens per turn; reasoning_effort is a
-    # named hint. A server without its reasoning-config set refuses the budget — handled
-    # by the fallback below.
+    # Reasoning controls (vendor extensions passed via extra_body). Two mutually
+    # exclusive modes for this request:
+    #  - no-think turn: the last message is a tool result, so this turn just acts on
+    #    it. Disable thinking entirely (enable_thinking=False) — no budget/effort, they
+    #    are meaningless with thinking off. This stops the per-turn re-deliberation that
+    #    stacks into a multi-turn spiral (the budget only caps ONE turn).
+    #  - normal turn: thinking on, capped by thinking_token_budget; reasoning_effort is
+    #    a named hint. A server without its reasoning-config refuses the budget — handled
+    #    by the fallback below.
     extra = {}
-    if cfg.reasoning_effort:
-        extra["reasoning_effort"] = cfg.reasoning_effort
-    if cfg.thinking_token_budget:
-        extra["thinking_token_budget"] = cfg.thinking_token_budget
+    no_think = (
+        cfg.no_think_after_tools
+        and bool(messages)
+        and messages[-1].get("role") == "tool"
+    )
+    if no_think:
+        extra["chat_template_kwargs"] = {"enable_thinking": False}
+    else:
+        if cfg.reasoning_effort:
+            extra["reasoning_effort"] = cfg.reasoning_effort
+        if cfg.thinking_token_budget:
+            extra["thinking_token_budget"] = cfg.thinking_token_budget
     if extra:
         kwargs["extra_body"] = extra
     # Hold a global concurrency permit for the request's lifetime: acquired here,

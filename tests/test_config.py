@@ -53,3 +53,15 @@ def test_thinking_budget_zero_is_unbounded(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text("[model]\nthinking_token_budget = 0\n", encoding="utf-8")
     assert config.load(path).thinking_token_budget == 0
+
+
+def test_no_think_after_tools_default_and_roundtrip(tmp_path):
+    """Defaults on (True), survives save/load, and can be turned off."""
+    from dataclasses import replace
+
+    path = tmp_path / "config.toml"
+    cfg = config.load(path)
+    assert cfg.no_think_after_tools is config.DEFAULT_NO_THINK_AFTER_TOOLS is True
+
+    config.save(replace(cfg, no_think_after_tools=False), path)
+    assert config.load(path).no_think_after_tools is False
