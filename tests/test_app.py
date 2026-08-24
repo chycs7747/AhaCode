@@ -2186,3 +2186,95 @@ async def test_a_resumed_run_does_not_duplicate_the_phases_it_skipped(monkeypatc
                     if m.get("role") == "assistant" and m["content"].startswith("## ")]
         assert sorted(h.split("\n")[0] for h in headings) == \
             ["## Run the examples", "## Write solver.py"]  # one each, not two
+
+
+# --- Stop while a tool is waiting for approval -------------------------------
+# The regression: an approval modal shadows the app's escape=stop binding AND covers
+# the Stop button, so while a tool (very often a sub-agent's) waited to be approved
+# the run could not be stopped at all — escape denied one call and the loop asked for
+# the next one.
+
+async def _wait_for_modal(pilot, app, present=True, tries=40):
+    from ahacode.widgets.approval_modal import ApprovalModal
+    for _ in range(tries):
+        await pilot.pause()
+        if isinstance(app.screen, ApprovalModal) is present:
+            return True
+    return False
+
+
+@pytest.mark.asyncio
+async def test_escape_on_the_approval_modal_denies_but_does_not_stop(monkeypatch):
+    """Documents the deliberate split: escape closes the dialog, it does not end the
+    run. If this ever changes, the `s` binding below is what users were told to use."""
+    from textual.worker import WorkerState
+
+    def fake_stream(messages, tools=None):
+        if not any(m.get("role") == "tool" for m in messages):
+            yield ToolCall(id="t1", name="write",
+                           arguments={"path": "x.txt", "content": "hi"})
+            return
+        yield TextDelta("carried on")
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "write a file"
+        await pilot.press("enter")
+        assert await _wait_for_modal(pilot, app, True)
+        worker = app._response_worker
+        await pilot.press("escape")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert worker.state is not WorkerState.CANCELLED   # the run continued
+        assert any("carried on" in (m.get("content") or "")
+                   for m in app.session.messages if m["role"] == "assistant")
+
+
+@pytest.mark.asyncio
+async def test_s_on_the_approval_modal_stops_the_whole_run(monkeypatch):
+    """The way out that did not exist: one keypress ends the run from inside the modal."""
+    from textual.worker import WorkerState
+
+    turns = {"n": 0}
+
+    def fake_stream(messages, tools=None):
+        turns["n"] += 1
+        yield ToolCall(id=f"t{turns['n']}", name="write",
+                       arguments={"path": f"x{turns['n']}.txt", "content": "hi"})
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "write files forever"
+        await pilot.press("enter")
+        assert await _wait_for_modal(pilot, app, True)
+        worker = app._response_worker
+        await pilot.press("s")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert worker.state is WorkerState.CANCELLED
+        assert turns["n"] == 1          # no further turn was taken
+        assert app._stopping
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_run_stops_asking_for_approval(monkeypatch):
+    """Sub-agents queue on the approval lock; after a stop none of them may put another
+    dialog on screen. Saying stop once has to be enough."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app._stopping = True
+        call = ToolCall(id="t1", name="write", arguments={"path": "x.txt", "content": "hi"})
+        # would block on a modal if it asked; returns straight away instead
+        from ahacode.widgets.approval_modal import ApprovalModal
+        assert app._approve_tool(call) is False       # returned without blocking
+        assert not isinstance(app.screen, ApprovalModal)  # and put nothing on screen
+        # a new turn clears the stop
+        app.query_one("#prompt", PromptInput).text = "hello"
+        monkeypatch.setattr(client, "stream_chat",
+                            lambda m, tools=None: iter([TextDelta("hi")]))
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._stopping is False

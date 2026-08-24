@@ -447,6 +447,7 @@ class AhaCodeApp(App):
         base = prompts.plan_system() if self.mode == "plan" else prompts.act_system()
         history = [{"role": "system", "content": base}, *self.session.messages]
         self._status("● waiting…  (esc to stop)")
+        self._stopping = False  # a new turn clears a previous stop
         self._response_worker = self.stream_response(history, self._turn)
         self._set_send_running(True)  # the Send button becomes Stop
 
@@ -507,6 +508,7 @@ class AhaCodeApp(App):
         await container.mount(self._turn)
         container.scroll_end(animate=False)
         self._status("● running plan…  (esc to stop)")
+        self._stopping = False  # a new run clears a previous stop
         self._plan_worker = self.run_plan_response(task, steps, self._turn, prior)
         self._set_send_running(True)
 
@@ -921,6 +923,10 @@ class AhaCodeApp(App):
         exclusive groups), and "stop" means stop what is running — so both are checked.
         A stopped plan keeps the phases it already committed; see PhaseComplete.
         """
+        # Raised before anything else: sub-agents queue on the approval lock, so a stop
+        # must be visible to the ones still waiting or each pops its own modal after
+        # the user has already said stop.
+        self._stopping = True
         stopped = False
         for attr in ("_response_worker", "_plan_worker"):
             worker = getattr(self, attr, None)
@@ -934,7 +940,10 @@ class AhaCodeApp(App):
             # chat area back to read what happened, and the plan is the widest thing
             # on screen. Folding is presentation only — the steps survive, so /run
             # picks up where it stopped. Click the panel to unfold.
-            self.query_one(TodoPanel).set_collapsed(True)
+            # Defensive: this can be called from the approval modal, where the main
+            # screen's widgets are not the ones being queried.
+            for panel in self.query(TodoPanel):
+                panel.set_collapsed(True)
 
     @work(thread=True, exit_on_error=False)
     def generate_title(self, messages: list[dict], path) -> None:
@@ -971,7 +980,14 @@ class AhaCodeApp(App):
             return True
         if self.auto_approve:  # denylist already hard-blocked the dangerous ones
             return True
+        if getattr(self, "_stopping", False):
+            # The user has already stopped the run. Whatever is still queued behind the
+            # approval lock must not put another dialog on screen — answering "stop"
+            # once has to be enough, however many sub-agents were mid-flight.
+            return False
         with self._approval_lock:
+            if getattr(self, "_stopping", False):  # stopped while we waited our turn
+                return False
             # Cross-thread handshake: the loop runs on a worker thread but the modal
             # lives on the main thread. Push it (non-blocking) via call_from_thread,
             # then block here until the modal's dismiss callback sets the Event.
