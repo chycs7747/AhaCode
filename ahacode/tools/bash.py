@@ -38,8 +38,11 @@ _DENYLIST: list[tuple[re.Pattern, str]] = [
 ]
 
 
-def _split_chain(command: str) -> list[str]:
-    """Break a command line into its chained sub-commands (Roo parseCommand idea)."""
+def split_chain(command: str) -> list[str]:
+    """Break a command line into its chained sub-commands.
+
+    Public because the allow-rules use it too: an allowlist that matched the whole
+    line would let a dangerous half ride in behind an allowed first command."""
     return [part.strip() for part in _CHAIN.split(command) if part.strip()]
 
 
@@ -52,7 +55,7 @@ def _check_dangerous(args: dict) -> str | None:
     `ls && rm -rf /` cannot hide behind a harmless first command.
     """
     command = args.get("command", "")
-    for segment in (command, *_split_chain(command)):
+    for segment in (command, *split_chain(command)):
         for pattern, reason in _DENYLIST:
             if pattern.search(segment):
                 return reason

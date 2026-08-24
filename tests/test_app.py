@@ -983,6 +983,125 @@ async def test_context_compaction_tells_the_user(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_allow_rule_runs_bash_without_a_modal(monkeypatch):
+    """A pre-approved command never reaches the approval screen."""
+    from dataclasses import replace
+
+    from ahacode.events import ToolCall
+
+    monkeypatch.setattr(
+        config, "load",
+        lambda *a, **k: replace(config.DEFAULTS, allow_rules=("bash:echo *",)),
+    )
+    turns = iter([
+        [ToolCall(id="1", name="bash", arguments={"command": "echo hi"})],
+        [TextDelta("done")],
+    ])
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter(next(turns)))
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "run it"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.screen is app.screen_stack[0]      # no modal was ever pushed
+        assert any("hi" in (m.get("content") or "") for m in app.session.messages)
+
+
+@pytest.mark.asyncio
+async def test_a_command_outside_the_rules_still_asks(monkeypatch):
+    from dataclasses import replace
+
+    from ahacode.events import ToolCall
+    from ahacode.widgets.approval_modal import ApprovalModal
+
+    monkeypatch.setattr(
+        config, "load",
+        lambda *a, **k: replace(config.DEFAULTS, allow_rules=("bash:echo *",)),
+    )
+    turns = iter([
+        [ToolCall(id="1", name="bash", arguments={"command": "rm build.log"})],
+        [TextDelta("done")],
+    ])
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter(next(turns)))
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "run it"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ApprovalModal)
+        await pilot.press("n")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_parallel_subagents_need_no_modals_when_pre_approved(monkeypatch):
+    """The reason the rules exist: only one modal can be on screen, so N parallel
+    verifiers each needing approval would queue behind each other. Pre-approved,
+    they run with zero dialogs."""
+    from dataclasses import replace
+
+    from ahacode.events import ToolCall
+
+    monkeypatch.setattr(
+        config, "load",
+        lambda *a, **k: replace(config.DEFAULTS, allow_rules=("task", "bash:pytest*")),
+    )
+    fan_out = [
+        ToolCall(id=f"t{i}", name="task",
+                 arguments={"description": f"verify {i}", "prompt": f"check {i}"})
+        for i in range(3)
+    ]
+    turns = iter([
+        fan_out,
+        *[[ToolCall(id="b", name="bash", arguments={"command": "pytest -q"})] for _ in range(3)],
+        *[[TextDelta(f"verified {i}")] for i in range(3)],
+        [TextDelta("all verified")],
+    ])
+    lock = __import__("threading").Lock()
+
+    def stream(messages, tools=None):
+        with lock:
+            events = next(turns)
+        yield from events
+
+    monkeypatch.setattr(client, "stream_chat", stream)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "검증해줘"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.screen is app.screen_stack[0]   # not a single dialog
+        assert app.auto_approve is False           # and auto-approve was never needed
+
+
+@pytest.mark.asyncio
+async def test_allow_command_lists_and_adds(monkeypatch):
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "/allow"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "no allow rules" in list(app.query(Chatbox))[-1]._content
+
+        app.query_one("#prompt", PromptInput).text = "/allow bash:git status*"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "bash:git status*" in list(app.query(Chatbox))[-1]._content
+        assert config.load().allow_rules == ("bash:git status*",)  # persisted
+
+        app.query_one("#prompt", PromptInput).text = "/allow"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "bash:git status*" in list(app.query(Chatbox))[-1]._content
+
+
+@pytest.mark.asyncio
 async def test_bash_approval_via_button_click(monkeypatch):
     """The Run button (not just the y key) approves and runs the command."""
     from ahacode.events import ToolCall

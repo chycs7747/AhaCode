@@ -14,7 +14,9 @@ from textual.worker import get_current_worker
 from rich.text import Text
 from rich.theme import Theme
 
-from ahacode import agent, client, config, orchestrator, prompts, storage, subagent, tools
+from ahacode import (
+    agent, client, config, orchestrator, permissions, prompts, storage, subagent, tools,
+)
 from ahacode.events import (
     Notice, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage,
 )
@@ -498,6 +500,8 @@ class AhaCodeApp(App):
                 "  /model <name>    switch to a different model\n"
                 "  /url <base_url>  switch to a different endpoint\n"
                 "  /think <n>       per-turn thinking budget in tokens (off = unbounded)\n"
+                "  /allow           list the rules that skip the approval prompt\n"
+                "  /allow <rule>    add one, e.g. /allow bash:uv run pytest*\n"
                 "  /run             execute the current plan — each step a fresh sub-agent\n"
                 "  /new             start a new session\n"
                 "  /sessions        switch between sessions\n"
@@ -519,6 +523,25 @@ class AhaCodeApp(App):
             bar.load_models()  # a new endpoint offers a new model list
             self._set_header_endpoint()
             return f"endpoint switched to: {args[0]}"
+        if cmd == "/allow":
+            cfg = config.load()
+            if not args:
+                if not cfg.allow_rules:
+                    return (
+                        "no allow rules — every side-effecting tool asks first.\n"
+                        "add one with e.g.  /allow bash:uv run pytest*"
+                    )
+                return "allow rules:\n" + "\n".join(f"  {r}" for r in cfg.allow_rules)
+            # Re-split on the raw text, not `parts`: a rule keeps its spaces
+            # ("bash:git status*" is one rule, not two words).
+            rule = text.split(maxsplit=1)[1].strip()
+            if ":" not in rule and rule not in tools.REGISTRY:
+                return f"unknown tool: {rule} — use  tool:pattern  (e.g. bash:ls*)"
+            if rule in cfg.allow_rules:
+                return f"already allowed: {rule}"
+            config.save(replace(cfg, allow_rules=(*cfg.allow_rules, rule)))
+            client.reset()
+            return f"allowed without asking: {rule}\n(the denylist still blocks dangerous commands)"
         if cmd == "/think":
             cfg = config.load()
             if not args:
@@ -857,6 +880,13 @@ class AhaCodeApp(App):
         thread and block THIS worker thread on an Event until the user answers.
         Parallel sub-agents each need approval at once but only one dialog can be on
         screen, so they queue on the lock."""
+        # Rule-based pre-approval comes FIRST. A call the user already authorised by
+        # rule never reaches the modal, which is what keeps a parallel fan-out from
+        # serialising behind a queue of dialogs (only one can be on screen). This
+        # cannot widen anything: _gate_tool ran the dangerous-command denylist before
+        # calling us, so a rule can only skip the *question*, never the safety gate.
+        if permissions.allowed(call.name, call.arguments):
+            return True
         if self.auto_approve:  # denylist already hard-blocked the dangerous ones
             return True
         with self._approval_lock:

@@ -28,6 +28,9 @@ DEFAULT_KEEP_RECENT_MESSAGES = 6  # newest messages always kept verbatim
 # Plan gate: in act mode, a fresh plan of at least this many steps pauses the loop
 # and asks before any of it runs. 0 disables the gate.
 DEFAULT_PLAN_GATE_MIN_STEPS = 3
+# Tool calls matching one of these run without the approval modal. Empty by
+# default: pre-approval is the user's call, never a shipped assumption.
+DEFAULT_ALLOW_RULES: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,9 @@ class ModelConfig:
     # In act mode, a fresh plan (todo_write) with at least this many steps pauses
     # the agent loop and asks the user before anything runs. 0 = never ask.
     plan_gate_min_steps: int = DEFAULT_PLAN_GATE_MIN_STEPS
+    # Pre-approval rules, "tool:pattern" (see permissions.py). A tuple, not a
+    # list, because this dataclass is frozen and must stay hashable.
+    allow_rules: tuple[str, ...] = DEFAULT_ALLOW_RULES
 
 
 DEFAULTS = ModelConfig(
@@ -70,6 +76,7 @@ DEFAULTS = ModelConfig(
 
 
 def _render(cfg: ModelConfig) -> str:
+    allow = list(cfg.allow_rules)  # rendered as a TOML array
     return f"""\
 # AhaCode configuration
 # Any OpenAI-compatible endpoint works (vLLM, Ollama, gateways, ...).
@@ -99,6 +106,15 @@ keep_recent_messages = {cfg.keep_recent_messages}
 # In act mode, pause and ask before running a fresh plan of this many steps or
 # more (the model lays it out with todo_write). 0 never asks.
 plan_gate_min_steps = {cfg.plan_gate_min_steps}
+
+[permissions]
+# Tool calls matching a rule run WITHOUT asking — "tool:pattern", where pattern is
+# fnmatch (* = anything) against the command (bash), the pattern (grep/glob), or the
+# path. A bare "tool" allows that tool outright.
+#   allow = ["bash:uv run pytest*", "bash:git status", "bash:ls*", "edit:ahacode/*"]
+# For bash EVERY chained sub-command must match, so "git status*" cannot smuggle in
+# "&& rm -rf ~". The dangerous-command denylist still runs first and always wins.
+allow = {allow!r}
 """
 
 
@@ -118,6 +134,7 @@ def load(path: Path | None = None) -> ModelConfig:
         data = tomllib.load(f)
     model = data.get("model", {})
     agent = data.get("agent", {})
+    perms = data.get("permissions", {})
     # Missing keys fall back to defaults, so partial configs stay valid.
     return ModelConfig(
         base_url=model.get("base_url", DEFAULT_BASE_URL),
@@ -133,4 +150,5 @@ def load(path: Path | None = None) -> ModelConfig:
         compact_threshold=float(agent.get("compact_threshold", DEFAULT_COMPACT_THRESHOLD)),
         keep_recent_messages=int(agent.get("keep_recent_messages", DEFAULT_KEEP_RECENT_MESSAGES)),
         plan_gate_min_steps=int(agent.get("plan_gate_min_steps", DEFAULT_PLAN_GATE_MIN_STEPS)),
+        allow_rules=tuple(str(r) for r in perms.get("allow", DEFAULT_ALLOW_RULES)),
     )

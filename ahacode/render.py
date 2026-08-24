@@ -10,6 +10,7 @@ arguments into either.
 import difflib
 from pathlib import Path
 
+from ahacode import permissions
 from rich.console import Group, RenderableType
 from rich.syntax import Syntax
 from rich.text import Text
@@ -60,14 +61,12 @@ def diff_rows(old: str, new: str) -> list[tuple[str, str]]:
 def tool_summary(name: str, args: dict) -> str:
     """One-line summary of a tool call's INPUT for the result card's title —
     bash → the command, read/write/list → the path, grep/glob → the pattern. This
-    is what turns a card into a Claude Code-style IN (title) / OUT (body) block."""
-    if name == "bash":
-        raw = args.get("command", "")
-    elif name in ("grep", "glob"):
-        raw = args.get("pattern", "")
-    else:
-        raw = args.get("path", "")
-    raw = raw.strip()
+    is what turns a card into an IN (title) / OUT (body) block.
+
+    The subject comes from permissions.subject, the same string an allow rule is
+    matched against — so a rule the user writes reads like the line they saw here.
+    """
+    raw = permissions.subject(name, args)
     first = raw.splitlines()[0] if raw else ""
     return first if len(first) <= 60 else first[:57] + "…"
 
