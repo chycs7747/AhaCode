@@ -106,6 +106,10 @@ class AhaCodeApp(App):
         self.mode = "act"  # "act" (full tools) or "plan" (read-only + todo_write)
         self._last_status = ""
         self.auto_approve = False  # session-only: skip the approval modal when on
+        # Auto-scroll follows the stream only while the view is pinned to the bottom.
+        # A watcher on the chat scroller flips this off the moment the user scrolls up
+        # (so a manual scroll during streaming sticks) and back on when they return.
+        self._follow_output = True
         self._approval_lock = threading.Lock()  # one approval modal at a time (parallel children queue)
         latest = storage.latest_session()
         if latest:  # resume the most recent session
@@ -161,7 +165,19 @@ class AhaCodeApp(App):
         self._set_header_endpoint()
         await self._render_history()
         self._reflect_view_only()  # resumed session is a main one, but stay correct
+        # Follow the stream only while pinned to the bottom: watch the scroller's
+        # scroll_y and re-derive the flag. Our own scroll_end lands exactly at the
+        # bottom (flag stays on); a user scroll-up drops below it (flag off, sticky).
+        self._chat_scroller = self.query_one("#chat-container", VerticalScroll)
+        self.watch(self._chat_scroller, "scroll_y", self._update_follow, init=False)
         self.query_one("#prompt", PromptInput).focus()  # not the header buttons
+
+    def _update_follow(self, scroll_y: float) -> None:
+        """Pin/unpin auto-scroll from the live scroll position: 'at the bottom' (within
+        a small tolerance for rounding) follows the stream; anything above stays put.
+        Fires on every scroll change, so it holds a cached scroller ref (no per-call
+        DOM query) — our own scroll_end re-confirms the flag, a user scroll-up clears it."""
+        self._follow_output = scroll_y >= self._chat_scroller.max_scroll_y - 2
 
     def _set_header_title(self, title: str) -> None:
         """Reflect the current session's title in the top bar."""
@@ -341,6 +357,7 @@ class AhaCodeApp(App):
         self.session.add_user(text)
         storage.append_message(self.session_path, {"role": "user", "content": text})
 
+        self._follow_output = True  # a new turn re-pins to the bottom to show the reply
         container = self.query_one("#chat-container", VerticalScroll)
         await container.mount(Chatbox(text, role="user"))
         # The assistant's whole reply (thinking → tools → answer) is mounted into one
@@ -644,13 +661,13 @@ class AhaCodeApp(App):
             await container.mount(
                 ToolResultBlock(event.name, event.output, event.is_error, summary=summary)
             )
-        # Smart auto-scroll on the chat scroller (container is the turn, not the
-        # scroller): follow only while the user is near the bottom.
-        scroller = self.query_one("#chat-container", VerticalScroll)
-        if scroller.scroll_y in range(
-            scroller.max_scroll_y - 3, scroller.max_scroll_y + 1
-        ):
-            scroller.scroll_end(animate=False)
+        # Smart auto-scroll: follow the stream ONLY while _follow_output is set. The
+        # flag is driven by a watcher on the scroller's scroll_y (see _update_follow),
+        # so a manual scroll-up during streaming turns following OFF and STAYS off —
+        # the old per-event "near the bottom?" snap re-pinned to the bottom on every
+        # chunk, making it impossible to scroll away mid-answer.
+        if self._follow_output:
+            self.query_one("#chat-container", VerticalScroll).scroll_end(animate=False)
 
     def action_stop(self) -> None:
         """Cancel the in-flight response (cooperative — the loop checks is_cancelled)."""

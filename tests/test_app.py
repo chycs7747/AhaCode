@@ -294,8 +294,11 @@ async def test_send_button_becomes_stop_while_streaming(monkeypatch):
     async with app.run_test() as pilot:
         app.query_one("#prompt", PromptInput).text = "go"
         await pilot.press("enter")
-        await pilot.pause(0.1)  # streaming now
         btn = app.query_one("#send-btn", Button)
+        for _ in range(50):  # poll instead of a fixed sleep (robust under load)
+            if "Stop" in str(btn.label):
+                break
+            await pilot.pause(0.02)
         assert "Stop" in str(btn.label)
         await pilot.click("#send-btn")  # the button doubles as Stop
         await app.workers.wait_for_complete()
@@ -711,7 +714,11 @@ async def test_escape_stops_the_current_turn(monkeypatch):
     async with app.run_test() as pilot:
         app.query_one("#prompt", PromptInput).text = "go"
         await pilot.press("enter")
-        await pilot.pause(0.1)       # let the stream start
+        for _ in range(50):  # wait until the worker is actually running (robust under load)
+            w = getattr(app, "_response_worker", None)
+            if w is not None and w.is_running:
+                break
+            await pilot.pause(0.02)
         await pilot.press("escape")  # stop it
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -1377,3 +1384,41 @@ async def test_todo_panel_does_not_cover_the_header():
         await pilot.pause()
         header, panel = app.query_one(HeaderBar), app.query_one(TodoPanel)
         assert panel.region.y >= header.region.y + header.region.height  # stacked, not on top
+
+
+@pytest.mark.asyncio
+async def test_manual_scroll_up_during_stream_sticks():
+    """Scrolling up mid-stream turns following OFF and keeps it off, so new chunks
+    don't yank the view back to the bottom (the reported bug)."""
+    from textual.containers import Vertical, VerticalScroll
+    from ahacode.events import ThinkingDelta
+
+    app = AhaCodeApp()
+    # Window must be tall enough that the docked header + composer leave the chat a
+    # real, scrollable height (a tiny window collapses it to 0 and nothing scrolls).
+    async with app.run_test(size=(100, 30)) as pilot:
+        for i in range(50):                       # enough content to scroll
+            await app._say_system(f"filler {i}")
+        await pilot.pause()                       # let the layout settle before scrolling
+        sc = app.query_one("#chat-container", VerticalScroll)
+        sc.scroll_end(animate=False)              # pin to the bottom
+        await pilot.pause()
+        assert sc.max_scroll_y > 0
+        assert app._follow_output is True         # at the bottom → following
+
+        sc.scroll_y = 0                           # user scrolls up
+        await pilot.pause()
+        assert sc.scroll_y == 0
+        assert app._follow_output is False        # watcher disengaged following
+
+        turn = Vertical(classes="turn")           # more streamed content arrives
+        await sc.mount(turn)
+        boxes = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}, "call_args": {}}
+        for _ in range(5):
+            await app._render_event(ThinkingDelta("more "), boxes, turn)
+        await pilot.pause()
+        assert sc.scroll_y == 0                    # stayed put — not yanked to the bottom
+
+        sc.scroll_end(animate=False)              # user returns to the bottom
+        await pilot.pause()
+        assert app._follow_output is True         # following re-engages
