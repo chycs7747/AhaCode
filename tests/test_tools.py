@@ -1,4 +1,6 @@
-from ahacode import tools
+import time
+
+from ahacode import config, tools
 
 
 def test_read_returns_file_contents(tmp_path):
@@ -67,6 +69,78 @@ def test_bash_falls_back_to_truncation_when_it_cannot_spill(tmp_path, monkeypatc
     )
     assert out.startswith("HEAD") and out.endswith("TAIL")
     assert "elided" in out
+
+
+def test_timeout_keeps_the_partial_output(tmp_path, monkeypatch):
+    """A killed command still printed something. Discarding it leaves the model with
+    nothing — not even how far the command got. (The partial output arrives as BYTES
+    off TimeoutExpired even with text=True, so it has to be decoded by hand.)"""
+    from ahacode.tools import bash as bash_mod
+
+    out = bash_mod.BASH.execute({
+        "command": "for i in 1 2 3 4 5; do echo line $i; sleep 1; done",
+        "timeout": 2,
+    })
+    assert "line 1" in out
+    assert "timed out after 2s" in out
+    assert "timeout=4" in out  # tells the model how to retry
+
+
+def test_timeout_kills_the_whole_process_tree():
+    """A timeout must not leave the command's children running.
+
+    subprocess.run's own timeout kills only the shell, so anything it launched is
+    orphaned and keeps burning CPU — a few timed-out `uv run pytest` calls once left
+    ~140 stray processes behind. The command gets its own process group and the
+    GROUP is killed.
+    """
+    import os
+
+    if not os.path.isdir("/proc"):
+        pytest.skip("needs /proc to see the process table")
+
+    from ahacode.tools import bash as bash_mod
+
+    def sleep_pids():
+        found = set()
+        for d in os.listdir("/proc"):
+            if not d.isdigit():
+                continue
+            try:
+                if open(f"/proc/{d}/comm").read().strip() == "sleep":
+                    found.add(int(d))
+            except OSError:
+                pass
+        return found
+
+    before = sleep_pids()
+    bash_mod.BASH.execute({"command": "sleep 60 & sleep 60 & sleep 60", "timeout": 1})
+    time.sleep(1.5)
+    leaked = sleep_pids() - before
+    for pid in leaked:            # never leave strays behind, even on failure
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+    assert leaked == set(), f"{len(leaked)} orphaned processes survived the timeout"
+
+
+def test_timeout_comes_from_config_and_a_call_may_raise_it(monkeypatch):
+    from dataclasses import replace
+
+    from ahacode.tools import bash as bash_mod
+
+    monkeypatch.setattr(config, "load", lambda *a, **k: replace(config.DEFAULTS, bash_timeout=45))
+    assert bash_mod._resolve_timeout(None) == 45          # the configured default
+    assert bash_mod._resolve_timeout(90) == 90            # a call may ask for more
+    assert bash_mod._resolve_timeout("nonsense") == 45    # junk falls back
+    assert bash_mod._resolve_timeout(10_000) == bash_mod.MAX_TIMEOUT  # but is capped
+
+
+def test_default_timeout_clears_this_project_s_own_test_suite():
+    """The system prompt tells the model to verify with the project's tests, and this
+    suite takes ~60s — 30s could never finish it."""
+    assert config.DEFAULTS.bash_timeout >= 120
 
 
 def test_registry_and_approval_flags():

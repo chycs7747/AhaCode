@@ -10,14 +10,21 @@ a denylist can be worded around; the real safeguard is the human approval modal.
 
 from __future__ import annotations
 
+import os
 import re
+import signal
 import subprocess
 
+from ahacode import config
 from ahacode.text import elide, line_count
 from ahacode.tools import spill
 from ahacode.tools.base import PROJECT_ROOT, Tool
 
-_TIMEOUT = 30  # seconds; a hung command must not freeze the agent
+# A hung command must not freeze the agent, but the cap has to clear the commands
+# an agent actually runs: this project's own test suite takes 55-75s, and it is the
+# first thing the prompt tells the model to do. The default lives in config; a call
+# may ask for more when it knows it is starting something slow.
+MAX_TIMEOUT = 600  # ceiling on what a single call may request
 # bash is the one tool whose output size nobody can predict — read pages with
 # offset/limit and grep caps its matches, but a command returns whatever it returns.
 # Past this, the full output is written to a file and only a preview comes back, so
@@ -70,22 +77,69 @@ def _check_dangerous(args: dict) -> str | None:
     return None
 
 
+def _resolve_timeout(requested) -> int:
+    """Seconds this call may run: what it asked for, clamped, else the configured default."""
+    if requested is None:
+        return config.load().bash_timeout
+    try:
+        return max(1, min(int(requested), MAX_TIMEOUT))
+    except (TypeError, ValueError):
+        return config.load().bash_timeout
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill the command AND everything it started.
+
+    subprocess.run's own timeout handling kills only the direct child — the shell —
+    so whatever that shell launched is orphaned and keeps running. Not theoretical:
+    a few timed-out `uv run pytest` calls once left ~140 stray processes behind and
+    took the load average to 198. start_new_session puts the command in its own
+    process group; killing the GROUP is what actually stops the tree.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except OSError:  # already gone, or not permitted — settle for the direct child
+        proc.kill()
+
+
 def _bash(args: dict) -> str:
-    # shell=True: the model writes ordinary shell (pipes, globs). text=True
-    # decodes bytes to str; stderr folds into stdout so the model sees errors too.
-    proc = subprocess.run(
+    seconds = _resolve_timeout(args.get("timeout"))
+    # shell=True: the model writes ordinary shell (pipes, globs). stderr folds into
+    # stdout so the model sees errors too. Popen rather than run() so a timeout can
+    # kill the whole process group (see _kill_tree).
+    proc = subprocess.Popen(
         args["command"],
         shell=True,
         cwd=PROJECT_ROOT,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
-        timeout=_TIMEOUT,
+        start_new_session=True,
     )
-    out = proc.stdout + proc.stderr
+    try:
+        out, _ = proc.communicate(timeout=seconds)
+        return _finish(out, proc.returncode)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        # Keep what it managed to produce. Discarding it tells the model nothing about
+        # how far the command got — which is the one thing that makes a timeout
+        # actionable (a suite that printed 200 passing lines before being killed is
+        # very different from one that printed nothing).
+        out, _ = proc.communicate()
+        out += (
+            f"\n[timed out after {seconds}s and was killed — the output above is "
+            f"partial. Re-run with a longer timeout, e.g. "
+            f"timeout={min(seconds * 2, MAX_TIMEOUT)}]"
+        )
+        return _finish(out, None)
+
+
+def _finish(out: str, returncode: int | None) -> str:
+    """Spill if oversized, note a failing exit code, and hand back the text."""
     if len(out) > _SPILL_OVER_CHARS:
         out = _spilled(out)
-    if proc.returncode != 0:
-        out += f"\n(exit code {proc.returncode})"
+    if returncode:
+        out += f"\n(exit code {returncode})"
     return out.strip() or "(no output)"
 
 
@@ -110,6 +164,13 @@ BASH = Tool(
         "type": "object",
         "properties": {
             "command": {"type": "string", "description": "The shell command to run"},
+            "timeout": {
+                "type": "integer",
+                "description": (
+                    "Seconds to allow before the command is killed. Raise it for a "
+                    f"test suite or a build; the maximum is {MAX_TIMEOUT}."
+                ),
+            },
         },
         "required": ["command"],
     },

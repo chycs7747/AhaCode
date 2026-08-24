@@ -31,6 +31,9 @@ DEFAULT_PLAN_GATE_MIN_STEPS = 3
 # Tool calls matching one of these run without the approval modal. Empty by
 # default: pre-approval is the user's call, never a shipped assumption.
 DEFAULT_ALLOW_RULES: tuple[str, ...] = ()
+# How long a bash command may run. 30s could not finish this project's own test
+# suite (~60s), and running the project's tests is the main thing bash is for.
+DEFAULT_BASH_TIMEOUT = 120
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,9 @@ class ModelConfig:
     # Pre-approval rules, "tool:pattern" (see permissions.py). A tuple, not a
     # list, because this dataclass is frozen and must stay hashable.
     allow_rules: tuple[str, ...] = DEFAULT_ALLOW_RULES
+    # Seconds a bash command may run before it is killed. A single call can ask
+    # for more (up to bash.MAX_TIMEOUT) when it knows it will be slow.
+    bash_timeout: int = DEFAULT_BASH_TIMEOUT
 
 
 DEFAULTS = ModelConfig(
@@ -106,6 +112,8 @@ keep_recent_messages = {cfg.keep_recent_messages}
 # In act mode, pause and ask before running a fresh plan of this many steps or
 # more (the model lays it out with todo_write). 0 never asks.
 plan_gate_min_steps = {cfg.plan_gate_min_steps}
+# Seconds a bash command may run before it is killed (a call may ask for more).
+bash_timeout = {cfg.bash_timeout}
 
 [permissions]
 # Tool calls matching a rule run WITHOUT asking — "tool:pattern", where pattern is
@@ -151,4 +159,5 @@ def load(path: Path | None = None) -> ModelConfig:
         keep_recent_messages=int(agent.get("keep_recent_messages", DEFAULT_KEEP_RECENT_MESSAGES)),
         plan_gate_min_steps=int(agent.get("plan_gate_min_steps", DEFAULT_PLAN_GATE_MIN_STEPS)),
         allow_rules=tuple(str(r) for r in perms.get("allow", DEFAULT_ALLOW_RULES)),
+        bash_timeout=int(agent.get("bash_timeout", DEFAULT_BASH_TIMEOUT)),
     )
