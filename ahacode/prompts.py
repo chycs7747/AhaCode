@@ -55,6 +55,15 @@ SUBAGENT_SYSTEM = (
     "self-contained result the caller can use directly — no filler, no questions."
 )
 
+# Injected as a user turn when the agent loop hits its turn cap. The wrap-up turn is
+# sent with NO tools (so the model physically cannot call one and must answer), and
+# this primes a useful close instead of a bare truncation.
+MAX_TURNS_PROMPT = (
+    "You've reached the step limit for this task and tools are no longer available. "
+    "Give your best final answer now, as text only: briefly summarize what you "
+    "accomplished, what remains unfinished, and the recommended next step."
+)
+
 TITLE_SYSTEM = (
     "You write a very short title (2-5 words) for a conversation. "
     "Reply with ONLY the title — no quotes, no trailing punctuation."
@@ -124,3 +133,8 @@ def subagent_system(role: str | None = None) -> str:
 
 def title_system() -> str:
     return TITLE_SYSTEM
+
+
+def max_turns_prompt() -> str:
+    """The user turn injected to force a tool-free wrap-up when the loop hits its cap."""
+    return MAX_TURNS_PROMPT

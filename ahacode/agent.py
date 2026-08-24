@@ -14,7 +14,7 @@ import json
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 
-from ahacode import client, tools
+from ahacode import client, prompts, tools
 from ahacode.events import Event, TextDelta, ToolCall, ToolResult
 
 # Type aliases spelling out the seams the app (and tests) plug into.
@@ -154,7 +154,20 @@ def run(
             emit(result)
             messages.append(_tool_message(call.id, result.output))
 
-    else:  # loop fell through without returning -> hit the backstop
-        emit(TextDelta("\n[reached max tool turns — stopping]"))
+    else:  # loop fell through without returning -> hit the turn cap
+        # Force ONE tool-free wrap-up turn instead of truncating mid-work: withhold the
+        # tools entirely (stream(..., None)) so the model CANNOT call another tool and
+        # MUST answer, primed to summarize done/remaining/next. Beats a bare stop — the
+        # user gets a usable close, and a runaway loop still can't keep calling tools.
+        if not is_cancelled():
+            messages.append({"role": "user", "content": prompts.max_turns_prompt()})
+            text = ""
+            for event in stream(messages, None):  # tools off for this turn
+                if is_cancelled():
+                    return messages[start:]
+                if isinstance(event, TextDelta):
+                    text += event.text
+                emit(event)
+            messages.append(_assistant_message(text, []))
 
     return messages[start:]

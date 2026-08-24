@@ -79,16 +79,26 @@ def test_unknown_tool_is_error():
     assert result.is_error and "unknown tool" in result.output
 
 
-def test_max_turns_backstop():
+def test_max_turns_backstop_forces_tool_free_summary():
+    """Hitting the turn cap forces ONE final tool-free turn: tools are withheld
+    (specs is None) and the model is made to produce a text wrap-up, instead of a
+    bare truncation."""
     emitted = []
+    specs_seen = []
 
-    def stream(messages, specs):  # always asks for a tool -> never terminates
-        return iter([ToolCall(id="1", name="read", arguments={"path": "x"})])
+    def stream(messages, specs):
+        specs_seen.append(specs)
+        if specs is None:                     # the forced wrap-up turn — tools withheld
+            return iter([TextDelta("summary: did X; Y remains; next do Z")])
+        return iter([ToolCall(id="1", name="read", arguments={"path": "x"})])  # never terminates
 
-    agent.run([{"role": "user", "content": "x"}], emit=emitted.append,
-              stream=stream, registry=registry(), max_turns=3)
-    assert sum(isinstance(e, ToolCall) for e in emitted) == 3  # capped
-    assert any(isinstance(e, TextDelta) and "max tool turns" in e.text for e in emitted)
+    msgs = agent.run([{"role": "user", "content": "x"}], emit=emitted.append,
+                     stream=stream, registry=registry(), max_turns=3)
+    assert sum(isinstance(e, ToolCall) for e in emitted) == 3   # capped at max_turns
+    assert specs_seen[-1] is None                                # wrap-up sent no tools
+    # a wrap-up user prompt was injected, and the final message is the text summary
+    assert msgs[-2]["role"] == "user"
+    assert msgs[-1] == {"role": "assistant", "content": "summary: did X; Y remains; next do Z"}
 
 
 def test_plain_answer_no_tools():
