@@ -64,6 +64,16 @@ MAX_TURNS_PROMPT = (
     "accomplished, what remains unfinished, and the recommended next step."
 )
 
+# The reduce step for /run: combine the phases' concise results into one answer.
+# Given only the results (not each phase's reasoning), the context stays small.
+SYNTHESIS_SYSTEM = (
+    "You are AhaCode finishing a task that was carried out in phases. You are given "
+    "the original task and the concise result of each completed phase. Combine them "
+    "into one clear, complete final answer for the user, in their language. Do NOT "
+    "redo the work or invent new steps — synthesize what the phases produced. "
+    "Be concise."
+)
+
 TITLE_SYSTEM = (
     "You write a very short title (2-5 words) for a conversation. "
     "Reply with ONLY the title — no quotes, no trailing punctuation."
@@ -138,3 +148,8 @@ def title_system() -> str:
 def max_turns_prompt() -> str:
     """The user turn injected to force a tool-free wrap-up when the loop hits its cap."""
     return MAX_TURNS_PROMPT
+
+
+def synthesis_system() -> str:
+    """System prompt for /run's reduce step (combine phase results into a final answer)."""
+    return SYNTHESIS_SYSTEM

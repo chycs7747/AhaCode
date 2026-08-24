@@ -1307,13 +1307,13 @@ async def test_run_without_a_plan_gives_guidance():
 
 @pytest.mark.asyncio
 async def test_run_executes_each_plan_step_as_a_subagent(monkeypatch):
-    """/run structurally delegates every plan step to a fresh sub-agent, in order,
-    and the last phase's result becomes a persisted assistant turn."""
+    """/run delegates every plan step to a fresh sub-agent (one nested card each),
+    then the MAIN session synthesizes their results into the persisted final answer."""
     from ahacode.widgets.subagent_card import SubagentCard
     from ahacode.widgets.todo_panel import TodoPanel
 
-    # Each sub-agent runs one no-tool turn → one stream call → one answer. A counter
-    # gives every sub-agent a distinct result so we can assert the final one.
+    # Each stream_chat call returns a distinct answer: 3 sub-agents (phase 0..2) then
+    # the synthesis reduce (phase 3) — so the final answer is the synthesis, not a phase.
     counter = iter(range(100))
     monkeypatch.setattr(
         client, "stream_chat", lambda m, tools=None: iter([TextDelta(f"phase {next(counter)}")])
@@ -1332,10 +1332,10 @@ async def test_run_executes_each_plan_step_as_a_subagent(monkeypatch):
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
-        # one nested card per plan step
+        # one nested card per plan step (synthesis renders into the turn, not a card)
         assert len(app.query(SubagentCard)) == 3
-        # the final phase's result became the persisted assistant turn
-        assert app.session.messages[-1] == {"role": "assistant", "content": "phase 2"}
+        # the SYNTHESIS output (the 4th stream call) became the persisted final answer
+        assert app.session.messages[-1] == {"role": "assistant", "content": "phase 3"}
 
 
 @pytest.mark.asyncio

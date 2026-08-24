@@ -27,6 +27,12 @@ from dataclasses import dataclass, field
 # AgentContext.run_subagent exactly, so the app reuses that closure verbatim.
 DelegateFn = Callable[[str, str], str]
 
+# (task, phases) -> the final answer. The reduce step: one LLM pass over the concise
+# phase results (NOT their reasoning), so the "main" produces a combined answer while
+# its context stays small. Injected so the core stays pure/testable; the app's version
+# streams it into the main turn (references do this by re-invoking the parent LLM).
+SynthesizeFn = Callable[[str, "list[PhaseResult]"], str]
+
 
 @dataclass
 class PhaseResult:
@@ -61,6 +67,7 @@ def run_plan(
     steps: list[str],
     delegate: DelegateFn,
     *,
+    synthesize: SynthesizeFn | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> PlanResult:
     """Execute `steps` in order, each in its own fresh sub-agent, threading each
@@ -70,6 +77,10 @@ def run_plan(
     a todo_write list); `delegate(prompt, description)` runs one fresh sub-agent and
     returns its result — the structural replacement for the model choosing to call
     `task` itself.
+
+    If `synthesize` is given (and any phase ran), it is the reduce step: the final
+    answer becomes a combined synthesis of the phase results rather than just the last
+    phase's output. Without it, `result` stays the last phase's result (map-only).
     """
     is_cancelled = is_cancelled or (lambda: False)
     out = PlanResult()
@@ -80,4 +91,6 @@ def run_plan(
         result = delegate(prompt, step)
         out.phases.append(PhaseResult(description=step, result=result))
         out.result = result
+    if synthesize and out.phases and not is_cancelled():
+        out.result = synthesize(task, out.phases)
     return out

@@ -43,6 +43,30 @@ def test_empty_plan_yields_empty_result():
     assert res.phases == [] and res.result == ""
 
 
+def test_synthesize_reduces_phase_results_to_final():
+    """With a synthesizer, the final result is a combined synthesis of ALL phases,
+    not just the last phase's output (the reduce step)."""
+    got = {}
+
+    def synth(task, phases):
+        got["task"] = task
+        got["results"] = [p.result for p in phases]
+        return "COMBINED ANSWER"
+
+    res = orchestrator.run_plan(
+        "big task", ["a", "b"], lambda p, d: f"result-{d}", synthesize=synth
+    )
+    assert res.result == "COMBINED ANSWER"          # reduced, not "result-b"
+    assert got["task"] == "big task"
+    assert got["results"] == ["result-a", "result-b"]  # synthesizer saw every phase
+    assert [p.description for p in res.phases] == ["a", "b"]  # phases still recorded
+
+
+def test_no_synthesize_keeps_last_phase_result():
+    res = orchestrator.run_plan("t", ["a", "b"], lambda p, d: f"r-{d}")
+    assert res.result == "r-b"  # map-only: last phase's result
+
+
 def test_cancellation_stops_between_phases():
     """is_cancelled is checked before each phase, so a mid-plan cancel runs no
     further sub-agents (the harness stays cooperative, like the agent loop)."""

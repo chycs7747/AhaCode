@@ -798,9 +798,34 @@ class AhaCodeApp(App):
         ctx = self._make_subagent_ctx(
             self.session_path, self.session_depth, container, worker, approve
         )
+        # The reduce step: after the phases run, the MAIN session combines their concise
+        # results into one final answer, streamed into this turn (not a sub-agent card),
+        # so it reads as "the main organizing the results". Its context is only the task
+        # + the short results, so it stays small (no spiral). Only worth it for a real
+        # multi-step plan — a single phase is already its own answer.
+        synth_boxes = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}, "call_args": {}}
+
+        def synthesize(task_text: str, phases) -> str:
+            results = "\n\n".join(f"## {p.description}\n{p.result}" for p in phases)
+            messages = [
+                {"role": "system", "content": prompts.synthesis_system()},
+                {"role": "user", "content": f"# Task\n{task_text}\n\n# Phase results\n{results}"},
+            ]
+            text = ""
+            for event in client.stream_chat(messages):  # text-only reduce, no tools
+                if worker.is_cancelled:
+                    break
+                if isinstance(event, Usage):
+                    continue
+                if isinstance(event, TextDelta):
+                    text += event.text
+                self.call_from_thread(self._render_event, event, synth_boxes, container)
+            return text
+
         try:
             result = orchestrator.run_plan(
                 task, steps, ctx.run_subagent,
+                synthesize=synthesize if len(steps) >= 2 else None,
                 is_cancelled=lambda: worker.is_cancelled,
             )
         except Exception as exc:
@@ -809,11 +834,14 @@ class AhaCodeApp(App):
         if worker.is_cancelled:  # cancelled mid-plan: don't persist a partial outcome
             return
         # The plan's outcome becomes an assistant turn in the parent session (a reload
-        # shows it; each sub-agent's own transcript lives in its linked child file).
+        # shows it; each sub-agent's own transcript lives in its linked child file). With
+        # ≥2 steps the synthesis already streamed into the turn; a single phase did not,
+        # so mount its result as the answer bubble.
         final = result.result or "(plan produced no result)"
-        self.call_from_thread(
-            container.mount, Chatbox(final, role="assistant", markdown=True)
-        )
+        if len(steps) < 2:
+            self.call_from_thread(
+                container.mount, Chatbox(final, role="assistant", markdown=True)
+            )
         self.post_message(self.ResponseComplete([{"role": "assistant", "content": final}], ""))
 
     # exclusive=True: a new message cancels the previous worker.
