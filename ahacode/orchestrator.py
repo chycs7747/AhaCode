@@ -57,6 +57,41 @@ class PlanResult:
     result: str = ""  # the final answer — the last phase's result
 
 
+# How a finished phase is written into the parent transcript, and therefore how it is
+# recognised again when resuming. One constant so the writer (app.PhaseComplete) and
+# the reader (completed_phases) cannot drift apart.
+PHASE_HEADING = "## {description}\n"
+
+
+def phase_message(phase: "PhaseResult") -> str:
+    """Render a phase result as the parent's assistant message."""
+    return PHASE_HEADING.format(description=phase.description) + phase.result
+
+
+def completed_phases(messages: list[dict], steps: list[str]) -> list[PhaseResult]:
+    """Recover, from the parent transcript, the phases of `steps` already carried out.
+
+    Resume needs the earlier RESULTS, not just the knowledge that a step is done: a
+    later phase is prompted with what the ones before it produced, so a resumed run
+    that forgot them would hand step 4 an empty history and it would redo step 3's
+    work. The transcript is the source of truth (it survives a restart, unlike any
+    in-memory record), and phases are matched by the exact step text.
+
+    Returns them in PLAN order, not transcript order — the plan is what defines the
+    sequence. A step run more than once keeps its latest result.
+    """
+    latest: dict[str, str] = {}
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content") or ""
+        for step in steps:
+            head = PHASE_HEADING.format(description=step)
+            if content.startswith(head):
+                latest[step] = content[len(head):]
+    return [PhaseResult(description=s, result=latest[s]) for s in steps if s in latest]
+
+
 def _phase_prompt(task: str, step: str, prior: list[PhaseResult]) -> str:
     """Curated context for one phase: the overall task, THIS step, and the concise
     results of the phases before it — nothing else. Forwarding the results (not the
@@ -84,6 +119,7 @@ def run_plan(
     synthesize: SynthesizeFn | None = None,
     is_cancelled: Callable[[], bool] | None = None,
     on_phase: Callable[[PhaseResult], None] | None = None,
+    prior: list[PhaseResult] | None = None,
 ) -> PlanResult:
     """Execute `steps` in order, each in its own fresh sub-agent, threading each
     step's concise result forward. Returns every phase's result plus the final one.
@@ -103,10 +139,25 @@ def run_plan(
     bugs at once — the parent session no longer answers "나 아무것도 안 했는데" from a
     context that is minutes stale, and a cancelled run keeps the phases that had
     already completed instead of discarding the lot.
+
+    `prior` RESUMES a run that was stopped: pass the phases already carried out (see
+    completed_phases) together with the WHOLE plan, and the finished steps are skipped
+    while their results are still threaded into the ones that follow. Resuming is
+    therefore just running the plan again — the caller does not compute a remainder,
+    which is what keeps a plan edited between the two runs from silently shifting.
     """
     is_cancelled = is_cancelled or (lambda: False)
     out = PlanResult()
+    out.phases = list(prior or [])
+    if out.phases:
+        out.result = out.phases[-1].result
+    # Consumed as a LIST, not a set: a plan may legitimately repeat a step ("Run the
+    # tests" twice), and one recovered result must satisfy exactly one occurrence.
+    already = [p.description for p in out.phases]
     for step in steps:
+        if step in already:
+            already.remove(step)
+            continue
         if is_cancelled():
             break
         prompt = _phase_prompt(task, step, out.phases)

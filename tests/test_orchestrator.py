@@ -180,3 +180,82 @@ def test_cancelled_run_skips_the_synthesis():
         synthesize=lambda t, phases: called.append(t) or "SYNTH",
     )
     assert called == [] and result.result != "SYNTH"
+
+
+# --- resume ----------------------------------------------------------------
+
+def test_completed_phases_recovers_results_from_the_transcript():
+    """Resume needs the earlier RESULTS, not just which steps are done: later phases
+    are prompted with what came before."""
+    messages = [
+        {"role": "user", "content": "solve it"},
+        {"role": "assistant", "content": "## Write solver.py\nwrote it, 40 lines"},
+        {"role": "assistant", "content": "## Run the examples\nall 4 pass"},
+    ]
+    steps = ["Write solver.py", "Run the examples", "Report the timings"]
+    got = orchestrator.completed_phases(messages, steps)
+    assert [(p.description, p.result) for p in got] == [
+        ("Write solver.py", "wrote it, 40 lines"),
+        ("Run the examples", "all 4 pass"),
+    ]
+
+
+def test_completed_phases_ignores_unrelated_and_keeps_the_latest():
+    messages = [
+        {"role": "assistant", "content": "## Write solver.py\nfirst try"},
+        {"role": "user", "content": "## Write solver.py\nnot from the assistant"},
+        {"role": "assistant", "content": "just a normal answer"},
+        {"role": "assistant", "content": "## Write solver.py\nsecond try"},
+    ]
+    got = orchestrator.completed_phases(messages, ["Write solver.py"])
+    assert [p.result for p in got] == ["second try"]
+
+
+def test_completed_phases_returns_plan_order_not_transcript_order():
+    messages = [
+        {"role": "assistant", "content": "## b\nB"},
+        {"role": "assistant", "content": "## a\nA"},
+    ]
+    got = orchestrator.completed_phases(messages, ["a", "b"])
+    assert [p.description for p in got] == ["a", "b"]
+
+
+def test_a_resumed_run_skips_finished_steps_and_threads_their_results():
+    """The regression: stopping a run meant redoing it from step one."""
+    delegated = []
+
+    def delegate(prompt, step):
+        delegated.append((step, prompt))
+        return f"did {step}"
+
+    prior = [orchestrator.PhaseResult("one", "did one")]
+    result = orchestrator.run_plan("task", ["one", "two", "three"], delegate, prior=prior)
+    # step one was not run again
+    assert [step for step, _ in delegated] == ["two", "three"]
+    # ...but its result was still handed to the step that followed
+    assert "did one" in delegated[0][1]
+    assert [p.description for p in result.phases] == ["one", "two", "three"]
+
+
+def test_resume_does_not_re_announce_the_phases_it_skipped():
+    """on_phase drives persistence and the checklist, so a skipped step must not fire
+    it again — that would duplicate the message and re-tick what is already ticked."""
+    seen = []
+    orchestrator.run_plan(
+        "task", ["one", "two"], lambda prompt, step: f"did {step}",
+        prior=[orchestrator.PhaseResult("one", "did one")],
+        on_phase=lambda p: seen.append(p.description),
+    )
+    assert seen == ["two"]
+
+
+def test_a_repeated_step_is_resumed_one_occurrence_at_a_time():
+    """A plan may legitimately list the same step twice; one recovered result must
+    satisfy one occurrence, not both."""
+    delegated = []
+    orchestrator.run_plan(
+        "task", ["Run the tests", "Fix it", "Run the tests"],
+        lambda prompt, step: delegated.append(step) or "ok",
+        prior=[orchestrator.PhaseResult("Run the tests", "3 failed")],
+    )
+    assert delegated == ["Fix it", "Run the tests"]

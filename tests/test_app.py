@@ -2072,3 +2072,117 @@ async def test_the_run_synthesis_turn_is_deliberately_tool_free(monkeypatch):
         # sub-agents get tools; the final synthesis call gets none
         assert seen_tools[0] is not None
         assert seen_tools[-1] is None
+
+
+# --- Stop: fold the plan, then resume it -------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_folds_the_pinned_plan_without_losing_it(monkeypatch):
+    """A stopped run is when the user most wants the chat area back, and the plan is
+    the widest thing on screen. Folding is presentation only — /run still resumes."""
+    calls = iter(range(100))
+
+    def fake_stream(messages, tools=None):
+        n = next(calls)
+        if n == 1:
+            app._plan_worker.cancel()
+        return iter([TextDelta(f"phase {n}")])
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        panel = app.query_one(TodoPanel)
+        panel.update_todos([{"content": "Write solver.py"}, {"content": "Run the examples"},
+                            {"content": "Report the timings"}])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert panel.collapsed
+        # the phase that was in flight when Stop landed still finished, so 2 of 3
+        assert panel._content.startswith("▸ Plan · 2/3 done")
+        assert len(panel.items) == 3          # the plan itself is intact
+        panel.on_click()                       # click to unfold
+        assert not panel.collapsed and "☑ Write solver.py" in panel._content
+
+
+@pytest.mark.asyncio
+async def test_run_after_a_stop_resumes_instead_of_restarting(monkeypatch):
+    """The point of the whole feature: a stopped run continues from the step it stopped
+    on, and the sub-agents for finished steps are not spawned again."""
+    from ahacode.widgets.subagent_card import SubagentCard
+
+    delegated = []
+    stop_at = {"n": 1}
+    calls = iter(range(100))
+
+    def fake_stream(messages, tools=None):
+        n = next(calls)
+        task_turn = next((m["content"] for m in messages if m["role"] == "user"), "")
+        if "# Your phase" in task_turn:
+            delegated.append(task_turn.split("# Your phase\n")[1].split("\n")[0])
+        if stop_at["n"] is not None and n == stop_at["n"]:
+            app._plan_worker.cancel()
+        return iter([TextDelta(f"result {n}")])
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        app.query_one(TodoPanel).update_todos([
+            {"content": "Write solver.py"}, {"content": "Run the examples"},
+            {"content": "Report the timings"}])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        first_pass = list(delegated)
+        assert first_pass == ["Write solver.py", "Run the examples"]  # stopped after 2
+
+        stop_at["n"] = None          # let it finish this time
+        delegated.clear()
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        # only the step that never ran is delegated on the second pass
+        assert delegated == ["Report the timings"]
+        # and the earlier results were threaded into it, not forgotten
+        assert len(app.query(SubagentCard)) == 3   # 2 + 1, none re-spawned
+        assert [i.get("status") for i in app.query_one(TodoPanel).items] == \
+            ["done", "done", "done"]
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_run_does_not_duplicate_the_phases_it_skipped(monkeypatch):
+    """The skipped phases were recovered FROM the history, so re-appending them would
+    grow the transcript on every resume."""
+    calls = iter(range(100))
+    stop_at = {"n": 0}
+
+    def fake_stream(messages, tools=None):
+        n = next(calls)
+        if n == stop_at["n"]:
+            app._plan_worker.cancel()
+        return iter([TextDelta(f"result {n}")])
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        app.query_one(TodoPanel).update_todos([{"content": "Write solver.py"},
+                                               {"content": "Run the examples"}])
+        app.auto_approve = True
+        for _ in range(2):
+            app.query_one("#prompt", PromptInput).text = "/run"
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            stop_at["n"] = None
+        headings = [m["content"] for m in app.session.messages
+                    if m.get("role") == "assistant" and m["content"].startswith("## ")]
+        assert sorted(h.split("\n")[0] for h in headings) == \
+            ["## Run the examples", "## Write solver.py"]  # one each, not two

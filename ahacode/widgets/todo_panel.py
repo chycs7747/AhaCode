@@ -23,6 +23,7 @@ class TodoPanel(Static):
         super().__init__("", markup=False)
         self._content = ""
         self.items: list[dict] = []  # the raw plan, so /run can execute its steps
+        self.collapsed = False       # folded to one line; the plan itself is untouched
         self.display = False  # nothing to show until a plan exists
 
     def clear(self) -> None:
@@ -33,6 +34,7 @@ class TodoPanel(Static):
         a view of the open session, so switching sessions must empty it too.
         """
         self.items = []
+        self.collapsed = False
         self._content = ""
         self.update("")
         self.display = False
@@ -47,6 +49,7 @@ class TodoPanel(Static):
         is why complete_step() below writes into `items` rather than a side table.
         """
         self.items = list(items)
+        self.collapsed = False  # a new or revised plan is worth seeing in full
         self._redraw()
 
     def complete_step(self, description: str) -> bool:
@@ -65,6 +68,27 @@ class TodoPanel(Static):
                 return True
         return False
 
+    def set_collapsed(self, collapsed: bool) -> None:
+        """Fold the plan to a single summary line, or unfold it.
+
+        Folding is presentation only — `items` is untouched, so /run can still resume
+        from a folded plan. A long plan pinned at full height eats the chat area, and
+        it is most in the way exactly when the run has stopped and there is output to
+        read; app.action_stop folds it for that reason.
+        """
+        if self.items and self.collapsed != collapsed:
+            self.collapsed = collapsed
+            self._redraw()
+
+    def on_click(self) -> None:
+        """Click the panel to fold/unfold it — the only affordance it needs."""
+        self.set_collapsed(not self.collapsed)
+
+    def _summary(self) -> str:
+        """The folded line: enough to know where the plan stands without unfolding."""
+        finished = sum(1 for it in self.items if it.get("status") == DONE)
+        return f"▸ Plan · {finished}/{len(self.items)} done  (클릭하면 펼침)"
+
     def _redraw(self) -> None:
         """Draw the checklist from `items` — the one place that reads the statuses.
 
@@ -73,10 +97,13 @@ class TodoPanel(Static):
         None (it crashes during layout, not at import — so the name looks fine until
         the app draws).
         """
-        lines = [f"{mark(it.get('status'))} {it['content']}" for it in self.items]
         done = bool(self.items) and all(it.get("status") == DONE for it in self.items)
-        header = "✓ Plan complete" if done else "Plan"
-        self._content = "\n".join([header, *lines])
+        if self.collapsed:
+            self._content = "✓ Plan complete" if done else self._summary()
+        else:
+            lines = [f"{mark(it.get('status'))} {it['content']}" for it in self.items]
+            header = "✓ Plan complete" if done else "▾ Plan"
+            self._content = "\n".join([header, *lines])
         self.update(self._content)
         self.display = True
         self.set_class(done, "todo-panel--done")

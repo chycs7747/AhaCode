@@ -479,6 +479,15 @@ class AhaCodeApp(App):
             self.mode = "act"  # set first: the Select's handler no-ops when it matches
             self.query_one("#mode-select", Select).value = "act"
             await self._say_system("계획 실행이라 act 모드로 전환했어요.")
+        # Resume rather than restart: phases already carried out are recovered from this
+        # session's transcript, so stopping a run and typing /run again continues from
+        # the step it stopped on instead of redoing minutes of sub-agent work. The
+        # whole plan is still handed to run_plan — it skips what `prior` covers.
+        prior = orchestrator.completed_phases(self.session.messages, steps)
+        if prior:
+            await self._say_system(
+                f"↻ 이어서 실행 — {len(prior)}/{len(steps)}단계는 이미 끝나 있어 건너뜁니다."
+            )
         # Warn, never block: a step that is a topic rather than a task has no tool-shaped
         # way to finish, so its sub-agent turns `write` into a scratchpad. The check is a
         # heuristic (see tools.plan.non_actionable), so it informs the user and runs
@@ -498,7 +507,7 @@ class AhaCodeApp(App):
         await container.mount(self._turn)
         container.scroll_end(animate=False)
         self._status("● running plan…  (esc to stop)")
-        self._plan_worker = self.run_plan_response(task, steps, self._turn)
+        self._plan_worker = self.run_plan_response(task, steps, self._turn, prior)
         self._set_send_running(True)
 
     @staticmethod
@@ -744,7 +753,8 @@ class AhaCodeApp(App):
         only touched when that session is still the open one, so a mid-run session
         switch cannot splice one plan's results into another conversation.
         """
-        msg = {"role": "assistant", "content": f"## {event.description}\n{event.result}"}
+        phase = orchestrator.PhaseResult(event.description, event.result)
+        msg = {"role": "assistant", "content": orchestrator.phase_message(phase)}
         storage.append_message(event.path, msg)
         if event.path == self.session_path:
             self.session.messages.append(msg)
@@ -920,6 +930,11 @@ class AhaCodeApp(App):
         if stopped:
             self._status("■ stopped")
             self._set_send_running(False)
+            # Fold the pinned plan. A stopped run is exactly when the user wants the
+            # chat area back to read what happened, and the plan is the widest thing
+            # on screen. Folding is presentation only — the steps survive, so /run
+            # picks up where it stopped. Click the panel to unfold.
+            self.query_one(TodoPanel).set_collapsed(True)
 
     @work(thread=True, exit_on_error=False)
     def generate_title(self, messages: list[dict], path) -> None:
@@ -1025,7 +1040,7 @@ class AhaCodeApp(App):
     # cancel path then discarded every completed phase. A plan gets its own group so
     # the two coexist; `escape` still stops both (action_stop cancels each).
     @work(thread=True, exclusive=True, group="plan", exit_on_error=False)
-    def run_plan_response(self, task: str, steps: list[str], turn) -> None:
+    def run_plan_response(self, task: str, steps: list[str], turn, prior=None) -> None:
         """Structurally execute a plan: delegate each step to a fresh sub-agent, in
         order, threading each concise result forward (orchestrator.run_plan). The
         decision to split is harness code, not a model tool call — the fix for the
@@ -1077,6 +1092,7 @@ class AhaCodeApp(App):
                 synthesize=synthesize if len(steps) >= 2 else None,
                 is_cancelled=lambda: worker.is_cancelled,
                 on_phase=on_phase,
+                prior=prior,
             )
         except Exception as exc:
             self.post_message(self.ResponseFailed(f"{type(exc).__name__}: {exc}"[:300]))
@@ -1086,6 +1102,10 @@ class AhaCodeApp(App):
             # committed each one), so there is nothing to discard — only the run to close
             # out. Previously this returned bare, throwing away every completed phase.
             done = len(result.phases)
+            # Fold the plan here as well as in action_stop: this branch is reached
+            # however the run was cancelled, and a stopped run should always hand the
+            # screen back. set_collapsed is idempotent, so the two paths cannot fight.
+            self.call_from_thread(self.query_one(TodoPanel).set_collapsed, True)
             self.post_message(self.ResponseComplete(
                 [], f"■ 계획 중지 — 완료된 {done}/{len(steps)}단계는 저장됨"
             ))
@@ -1101,7 +1121,8 @@ class AhaCodeApp(App):
             )
         # A single phase IS its own result and on_phase already persisted it — appending
         # `final` again would double it in the history. Only the synthesis (≥2 steps) is
-        # a new message.
+        # a new message. On a resumed run the skipped phases are already in the history
+        # (that is where they were recovered from), so they are not re-appended either.
         new_messages = (
             [{"role": "assistant", "content": final}] if len(steps) >= 2 else []
         )
