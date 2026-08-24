@@ -21,6 +21,19 @@ class TodoPanel(Static):
         self.items: list[dict] = []  # the raw plan, so /run can execute its steps
         self.display = False  # nothing to show until a plan exists
 
+    def clear(self) -> None:
+        """Drop the plan and hide the panel.
+
+        Not just `display = False`: `/run` executes whatever sits in `items`, so a
+        hidden-but-stale list would silently run another session's plan. The panel is
+        a view of the open session, so switching sessions must empty it too.
+        """
+        self.items = []
+        self._content = ""
+        self.update("")
+        self.display = False
+        self.set_class(False, "todo-panel--done")
+
     def update_todos(self, items: list[dict]) -> None:
         self.items = list(items)
         lines = [

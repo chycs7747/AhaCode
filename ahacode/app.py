@@ -224,10 +224,19 @@ class AhaCodeApp(App):
     async def _render_history(self) -> None:
         """Clear the chat and remount the session's messages, matching the live
         rendering: each assistant turn under a .turn rail, bash/read as one titled
-        card (command/path in the title), edit as a diff card — no raw tool-call
-        bubbles, so a reloaded session looks exactly like the turn that made it."""
+        card (command/path in the title), edit as a diff card, todo_write into the
+        pinned panel — no raw tool-call bubbles, so a reloaded session looks exactly
+        like the turn that made it.
+
+        This is also the ONE owner of the pinned plan: the panel is cleared here and
+        refilled from the history, so its contents are always a function of the open
+        session's messages. Session switches go through here, which is what keeps a
+        previous session's plan from lingering behind a hidden panel (`/run` reads it).
+        """
         container = self.query_one("#chat-container", VerticalScroll)
         await container.remove_children()
+        todo = self.query_one(TodoPanel)
+        todo.clear()
         call_args: dict[str, dict] = {}   # tool_call_id -> parsed arguments
         call_names: dict[str, str] = {}   # tool_call_id -> tool name
         turn = None
@@ -253,13 +262,20 @@ class AhaCodeApp(App):
                         call_args[cid] = {}
                     if name == "edit":  # its result is skipped below
                         await turn.mount(self._edit_card(call_args[cid]))
+                    elif name == "todo_write":  # to the pinned panel, as when live
+                        todo.update_todos(call_args[cid].get("items", []))
             elif role == "tool":
                 cid = msg.get("tool_call_id")
                 name = call_names.get(cid, "tool")
-                if name == "edit":
-                    continue  # already shown as the diff card
+                if name in ("edit", "todo_write"):
+                    continue  # already shown as the diff card / the pinned panel
                 summary = tool_summary(name, call_args.get(cid, {}))
                 await turn.mount(ToolResultBlock(name, content, summary=summary))
+        # A turn whose every block went somewhere else (a lone todo_write → the panel)
+        # would leave a bare green rail behind; drop those, as the live path does.
+        for rail in list(container.query(".turn")):
+            if not rail.children:
+                await rail.remove()
         container.scroll_end(animate=False)
 
     async def _new_session(self) -> None:
@@ -273,8 +289,7 @@ class AhaCodeApp(App):
         self.session_depth = 0
         self._has_title = False
         self._set_header_title("")
-        self.query_one(TodoPanel).display = False
-        await self._render_history()
+        await self._render_history()  # clears the pinned plan with the rest of the view
         self._reflect_view_only()  # a fresh main session is drivable again
         self._status("")
         await self._say_system("new session started")
@@ -288,8 +303,7 @@ class AhaCodeApp(App):
         self.session_depth = int(meta.get("depth", 0))
         self._has_title = bool(meta.get("title"))
         self._set_header_title(meta.get("title", ""))
-        self.query_one(TodoPanel).display = False
-        await self._render_history()
+        await self._render_history()  # replays this session's plan into the panel
         self._reflect_view_only()
         if self.view_only:  # opened a sub-agent transcript — announce it's read-only
             await self._say_system(

@@ -1,3 +1,4 @@
+import json
 import time
 
 import pytest
@@ -827,6 +828,114 @@ async def test_todo_panel_marks_complete_when_all_done(monkeypatch):
         panel = app.query_one(TodoPanel)
         assert panel.has_class("todo-panel--done")
         assert "complete" in panel._content
+
+
+@pytest.mark.asyncio
+async def test_new_session_clears_the_plan(monkeypatch):
+    """/new empties the pinned plan — a hidden-but-stale list would let /run execute
+    the PREVIOUS session's steps."""
+    from ahacode.events import ToolCall
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    turns = iter([
+        [ToolCall(id="1", name="todo_write", arguments={"items": [
+            {"content": "old step", "status": "pending"},
+        ]})],
+        [TextDelta("planned")],
+    ])
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter(next(turns)))
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "plan it"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.query_one(TodoPanel).items  # the plan is there
+
+        app.query_one("#prompt", PromptInput).text = "/new"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        panel = app.query_one(TodoPanel)
+        assert panel.items == []      # not merely hidden — actually empty
+        assert panel.display is False
+
+        # ...so /run in the fresh session finds no plan instead of running the old one.
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "실행할 계획이 없어요" in list(app.query(Chatbox))[-1]._content
+
+
+@pytest.mark.asyncio
+async def test_switching_sessions_restores_each_ones_plan(monkeypatch):
+    """The panel is a view of the OPEN session: switching away hides the plan,
+    switching back replays it from the stored todo_write call."""
+    from ahacode.events import ToolCall
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    turns = iter([
+        [ToolCall(id="1", name="todo_write", arguments={"items": [
+            {"content": "session one step", "status": "pending"},
+        ]})],
+        [TextDelta("planned")],
+    ])
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter(next(turns)))
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "plan it"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        first = app.session_path
+
+        app.query_one("#prompt", PromptInput).text = "/new"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.query_one(TodoPanel).items == []
+
+        await app._switch_session(first.stem)  # back to the planning session
+        await pilot.pause()
+        panel = app.query_one(TodoPanel)
+        assert [it["content"] for it in panel.items] == ["session one step"]
+        assert panel.display is True
+
+
+@pytest.mark.asyncio
+async def test_restored_todo_write_goes_to_the_panel_not_a_card(monkeypatch):
+    """A reloaded session renders todo_write exactly like the live turn did:
+    the pinned panel, not a tool-result card (and no empty turn rail left behind)."""
+    from textual.containers import Vertical
+
+    from ahacode.widgets.todo_panel import TodoPanel
+    from ahacode.widgets.tool_result import ToolResultBlock
+
+    path = storage.new_session_path()
+    storage.write_header(path, storage.make_header(path.stem, kind="main"))
+    for msg in [
+        {"role": "user", "content": "plan it"},
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "1", "type": "function",
+            "function": {"name": "todo_write", "arguments": json.dumps({"items": [
+                {"content": "restored step", "status": "in_progress"},
+            ]})},
+        }]},
+        {"role": "tool", "tool_call_id": "1", "content": "▶ restored step"},
+        {"role": "assistant", "content": "here is the plan"},
+    ]:
+        storage.append_message(path, msg)
+
+    app = AhaCodeApp()  # startup resumes the newest main session
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        panel = app.query_one(TodoPanel)
+        assert [it["content"] for it in panel.items] == ["restored step"]
+        assert panel.display is True
+        # no tool-result card for it, and no bare rail where its turn would have been
+        assert [b for b in app.query(ToolResultBlock) if "todo_write" in b.title] == []
+        assert all(rail.children for rail in app.query(".turn").results(Vertical))
 
 
 @pytest.mark.asyncio
