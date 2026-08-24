@@ -15,7 +15,9 @@ from rich.text import Text
 from rich.theme import Theme
 
 from ahacode import agent, client, config, orchestrator, prompts, storage, subagent, tools
-from ahacode.events import TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage
+from ahacode.events import (
+    Notice, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage,
+)
 from ahacode.render import diff_stats, edit_diff_lines, tool_summary
 from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
@@ -113,6 +115,9 @@ class AhaCodeApp(App):
         # (so a manual scroll during streaming sticks) and back on when they return.
         self._follow_output = True
         self._approval_lock = threading.Lock()  # one approval modal at a time (parallel children queue)
+        # The server's prompt-token count for the last request, carried across turns
+        # so context compaction measures the real thing instead of an estimate.
+        self._last_prompt_tokens: int | None = None
         latest = storage.latest_session()
         if latest:  # resume the most recent session
             self.session_path = latest
@@ -141,6 +146,7 @@ class AhaCodeApp(App):
 
         messages: list[dict]
         stats: str = ""
+        prompt_tokens: int | None = None  # the server's count for this turn's request
 
     @dataclass
     class ResponseFailed(Message):
@@ -570,6 +576,8 @@ class AhaCodeApp(App):
             self.session.messages.append(msg)
             storage.append_message(self.session_path, msg)
         self._status(event.stats)
+        if event.prompt_tokens:
+            self._last_prompt_tokens = event.prompt_tokens
         # First real reply of an untitled session -> generate a title in the background.
         if not self._has_title and any(m.get("role") == "assistant" for m in self.session.messages):
             self._has_title = True
@@ -607,7 +615,14 @@ class AhaCodeApp(App):
         holds the current turn's live thinking/answer bubbles; a tool call ends a
         turn, so the next thinking/text opens fresh bubbles.
         """
-        if isinstance(event, ThinkingDelta):
+        if isinstance(event, Notice):
+            # Harness-authored, not the model's answer — the same neutral bubble a
+            # slash command gets. It ends the current answer, so the next TextDelta
+            # opens a fresh one below it.
+            self._fold_thinking(boxes)
+            boxes["answer"] = None
+            await container.mount(Chatbox(event.text, role="system"))
+        elif isinstance(event, ThinkingDelta):
             if boxes["thinking"] is None:
                 boxes["thinking"] = ThinkingBlock()  # foldable; starts expanded
                 await container.mount(boxes["thinking"])
@@ -875,12 +890,16 @@ class AhaCodeApp(App):
         # Current turn's live bubbles; _render_event fills these in on the main thread.
         boxes: dict = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}, "call_args": {}}
 
-        stats = {"prompt": 0, "completion": 0, "t_start": time.monotonic(), "t_first": None}
+        stats = {"prompt": 0, "completion": 0, "t_start": time.monotonic(), "t_first": None,
+                 "last_prompt": None}
 
         def emit(event) -> None:
             if isinstance(event, Usage):  # accounting only — never a bubble
                 stats["prompt"] += event.prompt_tokens
                 stats["completion"] += event.completion_tokens
+                # The LAST turn's prompt size is what the next turn has to fit under;
+                # the running total above is only for the throughput readout.
+                stats["last_prompt"] = event.prompt_tokens
                 return
             if stats["t_first"] is None and isinstance(event, (ThinkingDelta, TextDelta)):
                 stats["t_first"] = time.monotonic()
@@ -901,6 +920,7 @@ class AhaCodeApp(App):
                 approve=approve,                    # bash and friends are confirmed first
                 registry=self._registry_for_mode(),  # plan mode = read-only subset
                 ctx=ctx,                            # task delegates through this
+                prompt_tokens=self._last_prompt_tokens,  # measured, for compaction
             )
         except Exception as exc:
             # Server 500, timeout, connection refused... all become a bubble, not a crash.
@@ -909,7 +929,9 @@ class AhaCodeApp(App):
             return
         if worker.is_cancelled:  # cancelled mid-run: don't persist a partial turn
             return
-        self.post_message(self.ResponseComplete(new_messages, self._format_stats(stats)))
+        self.post_message(self.ResponseComplete(
+            new_messages, self._format_stats(stats), stats["last_prompt"]
+        ))
 
 
 app = AhaCodeApp

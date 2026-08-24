@@ -20,6 +20,11 @@ DEFAULT_REASONING_EFFORT = "medium"   # OpenAI-style hint (low|medium|high|xhigh
 # skip <think> on those turns. Kills the per-turn re-thinking that otherwise stacks
 # across a multi-turn loop into a spiral (thinking budget only caps ONE turn).
 DEFAULT_NO_THINK_AFTER_TOOLS = True
+# Context management. The window is the model's; the threshold is the fraction of it
+# at which the oldest stretch is condensed into a summary. 0 disables compaction.
+DEFAULT_CONTEXT_WINDOW = 32768
+DEFAULT_COMPACT_THRESHOLD = 0.8
+DEFAULT_KEEP_RECENT_MESSAGES = 6  # newest messages always kept verbatim
 
 
 @dataclass(frozen=True)
@@ -42,6 +47,12 @@ class ModelConfig:
     # When True, turns whose last message is a tool result are sent with thinking
     # disabled (enable_thinking=False), so the model executes instead of re-thinking.
     no_think_after_tools: bool = DEFAULT_NO_THINK_AFTER_TOOLS
+    # Context management: once a request's prompt reaches context_window *
+    # compact_threshold tokens, the oldest messages are replaced by one summary,
+    # keeping the newest keep_recent_messages verbatim. context_window = 0 is off.
+    context_window: int = DEFAULT_CONTEXT_WINDOW
+    compact_threshold: float = DEFAULT_COMPACT_THRESHOLD
+    keep_recent_messages: int = DEFAULT_KEEP_RECENT_MESSAGES
 
 
 DEFAULTS = ModelConfig(
@@ -66,6 +77,7 @@ timeout = {cfg.timeout}    # seconds; caps how long a read may block between chu
 thinking_token_budget = {cfg.thinking_token_budget}  # per-turn reasoning cap; 0 = unbounded (server reasoning-config required)
 reasoning_effort = "{cfg.reasoning_effort}"          # low|medium|high|xhigh — a hint; effect is server-dependent
 no_think_after_tools = {str(cfg.no_think_after_tools).lower()}  # skip <think> on turns that just got a tool result (stops the multi-turn spiral)
+context_window = {cfg.context_window}  # the model's context window in tokens; 0 disables compaction
 
 [agent]
 # How many generations of sub-agents may nest. 1 = the main agent may spawn
@@ -74,6 +86,10 @@ subagent_depth = {cfg.subagent_depth}
 # Max concurrent requests to the gateway across all agents (the single-GPU backend
 # saturates around here; higher just queues and adds latency).
 max_parallel_agents = {cfg.max_parallel_agents}
+# Condense the oldest messages once a request reaches this fraction of the window,
+# always keeping the newest keep_recent_messages untouched.
+compact_threshold = {cfg.compact_threshold}
+keep_recent_messages = {cfg.keep_recent_messages}
 """
 
 
@@ -104,4 +120,7 @@ def load(path: Path | None = None) -> ModelConfig:
         thinking_token_budget=int(model.get("thinking_token_budget", DEFAULT_THINKING_TOKEN_BUDGET)),
         reasoning_effort=str(model.get("reasoning_effort", DEFAULT_REASONING_EFFORT)),
         no_think_after_tools=bool(model.get("no_think_after_tools", DEFAULT_NO_THINK_AFTER_TOOLS)),
+        context_window=int(model.get("context_window", DEFAULT_CONTEXT_WINDOW)),
+        compact_threshold=float(agent.get("compact_threshold", DEFAULT_COMPACT_THRESHOLD)),
+        keep_recent_messages=int(agent.get("keep_recent_messages", DEFAULT_KEEP_RECENT_MESSAGES)),
     )

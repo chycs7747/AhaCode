@@ -58,6 +58,17 @@ class ToolResult:
 
 
 @dataclass
+class Notice:
+    """Something the HARNESS needs to tell the user — not the model's answer.
+
+    Context compaction is the first: silently dropping history would leave the user
+    wondering why the agent forgot something, so the loop says so.
+    """
+
+    text: str
+
+
+@dataclass
 class Usage:
     """Token accounting for one model call, from the stream's usage trailer
     (choices=[] chunk sent when stream_options.include_usage is on)."""
@@ -69,4 +80,6 @@ class Usage:
 
 # The union every consumer switches on. isinstance(event, TextDelta) is the
 # Python equivalent of matching on a discriminated-union `type` tag.
-Event = ThinkingDelta | TextDelta | ToolCallDelta | ToolCall | ToolResult | Usage
+Event = (
+    ThinkingDelta | TextDelta | ToolCallDelta | ToolCall | ToolResult | Notice | Usage
+)

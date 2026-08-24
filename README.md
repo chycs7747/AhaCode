@@ -79,6 +79,15 @@ foldable cards you approve before they run.
 - **Thinking controls** — a per-turn reasoning budget (`/think`), and reasoning
   switched off on turns that only need to act on a tool result, which is what
   stops a multi-turn loop from spiralling.
+- **Context compaction** — when a request approaches the model's window, the
+  oldest stretch of the conversation is replaced by one summary and the newest
+  turns are kept verbatim, with a note in the chat so nothing disappears
+  silently. Two details make it safe: the trigger is the server's *own*
+  `usage.prompt_tokens` rather than a guessed token count, and the cut can only
+  land on a user turn — anywhere else would separate a `tool` message from the
+  `assistant` tool_calls entry that introduced it, which an OpenAI-compatible
+  server rejects outright. Your session file keeps the full, uncondensed
+  transcript either way; only the request in flight is shortened.
 
 ### Sessions & config
 
@@ -156,9 +165,13 @@ thinking_token_budget = 4096 # per-turn reasoning cap; 0 = unbounded
 reasoning_effort = "medium"  # low|medium|high|xhigh — a hint; effect is server-dependent
 no_think_after_tools = true  # skip reasoning on turns that only act on a tool result
 
+context_window = 32768       # your model's window, in tokens; 0 disables compaction
+
 [agent]
-subagent_depth = 1      # generations of sub-agents that may nest (0 = none)
-max_parallel_agents = 8 # cap on concurrent requests across every agent
+subagent_depth = 1        # generations of sub-agents that may nest (0 = none)
+max_parallel_agents = 8   # cap on concurrent requests across every agent
+compact_threshold = 0.8   # condense once a request reaches this fraction of the window
+keep_recent_messages = 6  # newest messages always kept verbatim
 ```
 
 Both reasoning knobs are vendor extensions, so they are *hints*: a server without
@@ -194,10 +207,11 @@ ahacode/
 ├── app.py            # Textual App: layout, event wiring, worker → UI rendering
 ├── events.py         # the canonical event union every layer speaks
 │                     #   ThinkingDelta · TextDelta · ToolCallDelta
-│                     #   ToolCall · ToolResult · Usage
+│                     #   ToolCall · ToolResult · Notice · Usage
 │
 ├── agent.py          # the agent loop: stream a turn → run its tools → feed the
 │                     # results back → until a turn has no tool calls
+├── context.py        # condense the history before it outgrows the window
 ├── subagent.py       # one delegated task as a fresh child loop (sub-agent-as-a-tool)
 ├── orchestrator.py   # /run: a plan's steps executed as sub-agents, in order
 ├── prompts.py        # system prompts, assembled per mode/model

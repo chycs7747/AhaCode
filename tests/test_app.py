@@ -942,6 +942,47 @@ async def test_restored_todo_write_goes_to_the_panel_not_a_card(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_context_compaction_tells_the_user(monkeypatch):
+    """Silently losing history is the bad failure mode — a compacted turn drops a
+    neutral system bubble, and the answer that follows opens a fresh bubble below it."""
+    from dataclasses import replace
+
+    from ahacode import context
+    from ahacode.events import Usage
+
+    monkeypatch.setattr(
+        config, "load",
+        lambda *a, **k: replace(config.DEFAULTS, context_window=100, keep_recent_messages=2),
+    )
+    monkeypatch.setattr(context, "llm_summarize", lambda msgs: "they agreed on utf-8")
+    turns = iter([
+        [TextDelta("first"), Usage(10, 1, 11)],             # a small prompt: no action
+        [TextDelta("second"), Usage(9_999, 1, 10_000)],     # the server reports a huge one
+        [TextDelta("third")],                               # ...so THIS turn condenses first
+    ])
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter(next(turns)))
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        for text in ("one", "two", "three"):
+            app.query_one("#prompt", PromptInput).text = text
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+        notices = [b for b in app.query(Chatbox)
+                   if b.has_class("chatbox--system") and "압축" in b._content]
+        assert len(notices) == 1
+        # the real messages were still persisted — the summary lives only in flight
+        assert [m["role"] for m in app.session.messages] == [
+            "user", "assistant", "user", "assistant", "user", "assistant"
+        ]
+        assert app.session.messages[0]["content"] == "one"    # not replaced by a summary
+        assert app.session.messages[-1]["content"] == "third"
+        assert storage.load_messages(app.session_path)[0]["content"] == "one"  # nor on disk
+
+
+@pytest.mark.asyncio
 async def test_bash_approval_via_button_click(monkeypatch):
     """The Run button (not just the y key) approves and runs the command."""
     from ahacode.events import ToolCall

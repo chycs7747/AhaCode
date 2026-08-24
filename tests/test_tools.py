@@ -26,6 +26,20 @@ def test_bash_reports_nonzero_exit():
     assert "exit code 3" in out
 
 
+def test_bash_output_is_capped_keeping_both_ends():
+    """One `cat` of a big file must not put the whole thing in the context. Both ends
+    survive — a build log's error is at the end, a listing's header at the start."""
+    from ahacode.tools import bash as bash_mod
+
+    out = bash_mod.BASH.execute(
+        {"command": "python3 -c \"print('HEAD'); print('x'*80000); print('TAIL')\""}
+    )
+    assert out.startswith("HEAD")
+    assert out.endswith("TAIL")
+    assert "elided" in out
+    assert len(out) < bash_mod._MAX_OUTPUT_CHARS + 200
+
+
 def test_registry_and_approval_flags():
     assert set(tools.REGISTRY) == {
         "read", "glob", "grep", "write", "edit", "bash", "todo_write"

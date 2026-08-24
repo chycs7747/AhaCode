@@ -14,8 +14,8 @@ import json
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 
-from ahacode import client, prompts, tools
-from ahacode.events import Event, TextDelta, ToolCall, ToolResult
+from ahacode import client, context, prompts, tools
+from ahacode.events import Event, Notice, TextDelta, ToolCall, ToolResult, Usage
 
 # Type aliases spelling out the seams the app (and tests) plug into.
 StreamFn = Callable[[list[dict], list[dict] | None], Iterator[Event]]
@@ -97,39 +97,64 @@ def run(
     registry: dict | None = None,
     ctx: object | None = None,  # opaque bag for wants_ctx tools (task → sub-agents)
     max_turns: int = 10,
+    summarize: context.SummarizeFn | None = None,
+    prompt_tokens: int | None = None,
 ) -> list[dict]:
     """Drive the loop and return the messages appended to history this run.
 
-    `messages` is mutated in place (assistant + tool entries are appended); the
-    return value is just the tail so the caller can persist exactly what's new.
+    `messages` is mutated in place (assistant + tool entries are appended) and may
+    also be CONDENSED in place when it approaches the context window. The return
+    value is a separate accumulator of exactly what this run produced, so the
+    caller persists the real messages even when the in-flight copy was compacted —
+    the transcript on disk stays complete while the request stays inside the window.
+    (It is also why this is an accumulator rather than a `messages[start:]` slice:
+    compaction changes the list's length, which would invalidate any saved index.)
     """
     registry = tools.REGISTRY if registry is None else registry
     stream = stream or client.stream_chat  # resolved now, not at def time
     is_cancelled = is_cancelled or (lambda: False)
     specs = tools.specs(registry)
-    start = len(messages)
+    appended: list[dict] = []
+    # The server's own count for the last request — the accurate compaction signal.
+    # Seeded by the caller because one run is one user turn: without carrying the
+    # previous turn's count across the boundary, a growing conversation would only
+    # ever be measured by the estimate.
+
+    def add(msg: dict) -> None:
+        """Record a message both in the live history and in what we hand back."""
+        messages.append(msg)
+        appended.append(msg)
 
     for _ in range(max_turns):
         if is_cancelled():
             break
+
+        # Condense BEFORE sending, so this turn's request fits. `appended` is
+        # untouched by this, so a compacted run still persists its real messages.
+        removed = context.maybe_compact(messages, prompt_tokens, summarize=summarize)
+        if removed:
+            prompt_tokens = None  # the old count no longer describes this prompt
+            emit(Notice(f"🗜 컨텍스트 한계에 가까워 이전 메시지 {removed}개를 요약으로 압축했어요."))
 
         # --- one LLM turn: stream deltas live, collect the tool calls ---
         text = ""
         calls: list[ToolCall] = []
         for event in stream(messages, specs):
             if is_cancelled():
-                return messages[start:]
+                return appended
             if isinstance(event, ToolCall):
                 calls.append(event)
             elif isinstance(event, TextDelta):
                 text += event.text
+            elif isinstance(event, Usage):
+                prompt_tokens = event.prompt_tokens
             emit(event)  # thinking / text / tool-call shown as it arrives
 
-        messages.append(_assistant_message(text, calls))
+        add(_assistant_message(text, calls))
 
         # Termination: a turn with no tool calls is the final answer.
         if not calls:
-            return messages[start:]
+            return appended
 
         # --- run the requested tools, feed results back, then loop ---
         # Approval/safety runs sequentially (so modals never race); execution then
@@ -152,7 +177,7 @@ def run(
         for call, gate in gated:
             result = gate if isinstance(gate, ToolResult) else done[call.id]
             emit(result)
-            messages.append(_tool_message(call.id, result.output))
+            add(_tool_message(call.id, result.output))
 
     else:  # loop fell through without returning -> hit the turn cap
         # Force ONE tool-free wrap-up turn instead of truncating mid-work: withhold the
@@ -160,14 +185,14 @@ def run(
         # MUST answer, primed to summarize done/remaining/next. Beats a bare stop — the
         # user gets a usable close, and a runaway loop still can't keep calling tools.
         if not is_cancelled():
-            messages.append({"role": "user", "content": prompts.max_turns_prompt()})
+            add({"role": "user", "content": prompts.max_turns_prompt()})
             text = ""
             for event in stream(messages, None):  # tools off for this turn
                 if is_cancelled():
-                    return messages[start:]
+                    return appended
                 if isinstance(event, TextDelta):
                     text += event.text
                 emit(event)
-            messages.append(_assistant_message(text, []))
+            add(_assistant_message(text, []))
 
-    return messages[start:]
+    return appended

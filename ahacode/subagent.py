@@ -59,6 +59,7 @@ def run(
     is_cancelled: Callable[[], bool] | None = None,
     max_turns: int = 10,
     system: str = SUBAGENT_SYSTEM,
+    summarize=None,
 ) -> SubagentResult:
     """Drive a child agent loop for one delegated task and return its result.
 
@@ -67,12 +68,17 @@ def run(
     forwarded for the depth>1 case where a child may itself spawn; at the default
     depth limit the child simply has no task tool and never touches it.
     """
-    messages: list[dict] = [
+    seed = [
         {"role": "system", "content": system},
         {"role": "user", "content": task_prompt},
     ]
-    agent.run(
-        messages,
+    # agent.run mutates its list — and may CONDENSE it if the child's own context
+    # grows — so the transcript we hand back is the seed plus what the run actually
+    # produced, never the live list. The caller writes this to the child's session
+    # file, which must stay complete even when the request in flight was compacted.
+    live = list(seed)
+    produced = agent.run(
+        live,
         emit=emit,
         approve=approve,
         stream=stream,
@@ -80,5 +86,7 @@ def run(
         ctx=ctx,
         is_cancelled=is_cancelled,
         max_turns=max_turns,
+        summarize=summarize,
     )
+    messages = [*seed, *produced]
     return SubagentResult(messages=messages, result=_final_text(messages))

@@ -65,3 +65,26 @@ def test_no_think_after_tools_default_and_roundtrip(tmp_path):
 
     config.save(replace(cfg, no_think_after_tools=False), path)
     assert config.load(path).no_think_after_tools is False
+
+
+def test_context_controls_default_and_roundtrip(tmp_path):
+    path = tmp_path / "config.toml"
+    cfg = config.load(path)
+    assert cfg.context_window == config.DEFAULT_CONTEXT_WINDOW
+    assert cfg.compact_threshold == config.DEFAULT_COMPACT_THRESHOLD
+    assert cfg.keep_recent_messages == config.DEFAULT_KEEP_RECENT_MESSAGES
+
+    from dataclasses import replace
+    config.save(replace(cfg, context_window=8192, compact_threshold=0.5,
+                        keep_recent_messages=2), path)
+    again = config.load(path)
+    assert (again.context_window, again.compact_threshold, again.keep_recent_messages) \
+        == (8192, 0.5, 2)
+
+
+def test_context_window_zero_survives_a_roundtrip(tmp_path):
+    """0 means "never compact" — it must not be read back as the default."""
+    from dataclasses import replace
+    path = tmp_path / "config.toml"
+    config.save(replace(config.load(path), context_window=0), path)
+    assert config.load(path).context_window == 0

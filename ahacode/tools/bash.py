@@ -16,6 +16,10 @@ import subprocess
 from ahacode.tools.base import PROJECT_ROOT, Tool
 
 _TIMEOUT = 30  # seconds; a hung command must not freeze the agent
+# Output cap, matching read/grep: one `cat` of a large file would otherwise put
+# the whole thing in the context in a single shot. Both ends are kept — a build
+# log's error is usually at the end, a listing's header at the start.
+_MAX_OUTPUT_CHARS = 30_000
 
 # Roo splits a command into sub-commands before checking each one, so that
 # `ls && rm -rf /` cannot slip a dangerous half past the check.
@@ -67,6 +71,10 @@ def _bash(args: dict) -> str:
         timeout=_TIMEOUT,
     )
     out = proc.stdout + proc.stderr
+    if len(out) > _MAX_OUTPUT_CHARS:
+        half = _MAX_OUTPUT_CHARS // 2
+        elided = len(out) - _MAX_OUTPUT_CHARS
+        out = f"{out[:half]}\n... [{elided} chars elided] ...\n{out[-half:]}"
     if proc.returncode != 0:
         out += f"\n(exit code {proc.returncode})"
     return out.strip() or "(no output)"

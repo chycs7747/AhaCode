@@ -74,6 +74,19 @@ SYNTHESIS_SYSTEM = (
     "Be concise."
 )
 
+# Context compaction: the oldest stretch of a long conversation is replaced by one
+# summary produced with this prompt. What matters is carrying DECISIONS and
+# CONSTRAINTS forward — an agent that forgets a constraint re-violates it, which is
+# exactly the failure mode plain truncation causes.
+COMPACT_SYSTEM = (
+    "You are compressing the earlier part of a coding session so the work can "
+    "continue with a smaller context. Write a dense summary that preserves: the "
+    "user's goal and any constraints they stated, decisions already made and why, "
+    "files and symbols touched, what has been verified, and what is still open. "
+    "Drop pleasantries, reasoning you can re-derive, and tool output that no longer "
+    "matters. Facts only, no preamble."
+)
+
 TITLE_SYSTEM = (
     "You write a very short title (2-5 words) for a conversation. "
     "Reply with ONLY the title — no quotes, no trailing punctuation."
@@ -148,6 +161,11 @@ def title_system() -> str:
 def max_turns_prompt() -> str:
     """The user turn injected to force a tool-free wrap-up when the loop hits its cap."""
     return MAX_TURNS_PROMPT
+
+
+def compact_system() -> str:
+    """System prompt for condensing an over-long conversation (see context.py)."""
+    return COMPACT_SYSTEM
 
 
 def synthesis_system() -> str:
