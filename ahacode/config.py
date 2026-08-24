@@ -25,6 +25,9 @@ DEFAULT_NO_THINK_AFTER_TOOLS = True
 DEFAULT_CONTEXT_WINDOW = 32768
 DEFAULT_COMPACT_THRESHOLD = 0.8
 DEFAULT_KEEP_RECENT_MESSAGES = 6  # newest messages always kept verbatim
+# Plan gate: in act mode, a fresh plan of at least this many steps pauses the loop
+# and asks before any of it runs. 0 disables the gate.
+DEFAULT_PLAN_GATE_MIN_STEPS = 3
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,9 @@ class ModelConfig:
     context_window: int = DEFAULT_CONTEXT_WINDOW
     compact_threshold: float = DEFAULT_COMPACT_THRESHOLD
     keep_recent_messages: int = DEFAULT_KEEP_RECENT_MESSAGES
+    # In act mode, a fresh plan (todo_write) with at least this many steps pauses
+    # the agent loop and asks the user before anything runs. 0 = never ask.
+    plan_gate_min_steps: int = DEFAULT_PLAN_GATE_MIN_STEPS
 
 
 DEFAULTS = ModelConfig(
@@ -90,6 +96,9 @@ max_parallel_agents = {cfg.max_parallel_agents}
 # always keeping the newest keep_recent_messages untouched.
 compact_threshold = {cfg.compact_threshold}
 keep_recent_messages = {cfg.keep_recent_messages}
+# In act mode, pause and ask before running a fresh plan of this many steps or
+# more (the model lays it out with todo_write). 0 never asks.
+plan_gate_min_steps = {cfg.plan_gate_min_steps}
 """
 
 
@@ -123,4 +132,5 @@ def load(path: Path | None = None) -> ModelConfig:
         context_window=int(model.get("context_window", DEFAULT_CONTEXT_WINDOW)),
         compact_threshold=float(agent.get("compact_threshold", DEFAULT_COMPACT_THRESHOLD)),
         keep_recent_messages=int(agent.get("keep_recent_messages", DEFAULT_KEEP_RECENT_MESSAGES)),
+        plan_gate_min_steps=int(agent.get("plan_gate_min_steps", DEFAULT_PLAN_GATE_MIN_STEPS)),
     )

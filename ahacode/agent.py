@@ -99,8 +99,14 @@ def run(
     max_turns: int = 10,
     summarize: context.SummarizeFn | None = None,
     prompt_tokens: int | None = None,
+    should_pause: Callable[[], bool] | None = None,
 ) -> list[dict]:
     """Drive the loop and return the messages appended to history this run.
+
+    `should_pause` is checked between turns. It stops the loop the way a finished
+    answer would — cleanly, with everything so far returned — rather than the way a
+    cancellation does. Used by the plan gate: the model lays out a multi-step plan,
+    and the harness holds execution until the user approves it.
 
     `messages` is mutated in place (assistant + tool entries are appended) and may
     also be CONDENSED in place when it approaches the context window. The return
@@ -127,6 +133,12 @@ def run(
 
     for _ in range(max_turns):
         if is_cancelled():
+            break
+        # A pause is NOT a cancellation: something outside the loop (the plan gate)
+        # wants the user to decide before the next turn runs. We stop between turns,
+        # so everything produced so far is complete and gets persisted; the caller
+        # resumes by simply running again with the same history.
+        if should_pause and should_pause():
             break
 
         # Condense BEFORE sending, so this turn's request fits. `appended` is

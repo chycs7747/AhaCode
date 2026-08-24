@@ -68,10 +68,17 @@ foldable cards you approve before they run.
 - **Plan mode** — a read-only mode (`read`/`glob`/`grep`/`todo_write` only) where
   the model investigates and writes a plan into a pinned checklist instead of
   acting on it.
+- **A plan gate** — when the model lays out a plan of three or more steps in act
+  mode, the loop stops *between turns*, before any of it runs, and asks: run it
+  step-by-step, or carry on in one session? The trigger is a tool call the model
+  already makes, not a judgement about its own complexity — and the pause is a
+  harness decision, not a prompt asking nicely. Continuing re-enters the very
+  same loop, so nothing is redone. Threshold configurable; `0` turns it off.
 - **`/run` executes that plan structurally** — each step is handed to its own
   fresh sub-agent, in order, with only the previous steps' concise *results*
   threaded forward, then one final pass combines them into a single answer.
-  Splitting the work is a decision made by the harness, not by the model.
+  Splitting the work is a decision made by the harness, not by the model. It is
+  execution, so it switches the session to act mode.
 - **Sub-agents** — `task` spawns a child agent that renders into a nested,
   foldable 🤖 card and gets its own linked session file. Nesting depth is capped
   by config, a fan-out of tasks runs concurrently, and one process-wide gate
@@ -131,7 +138,7 @@ and are not recorded in your session.
 | `/model <name>` | Switch model (persisted; the dropdown under the prompt does the same) |
 | `/url <base_url>` | Switch endpoint (persisted) |
 | `/think <n>` \| `/think off` | Per-turn reasoning budget in tokens |
-| `/run` | Execute the current plan — each step in its own fresh sub-agent |
+| `/run` | Execute the current plan — each step in its own fresh sub-agent (switches to act) |
 | `/new` | Start a new session |
 | `/sessions` | Open the session tree and switch |
 | `/help` | List available commands |
@@ -172,6 +179,7 @@ subagent_depth = 1        # generations of sub-agents that may nest (0 = none)
 max_parallel_agents = 8   # cap on concurrent requests across every agent
 compact_threshold = 0.8   # condense once a request reaches this fraction of the window
 keep_recent_messages = 6  # newest messages always kept verbatim
+plan_gate_min_steps = 3   # ask before running a fresh plan of this many steps; 0 never asks
 ```
 
 Both reasoning knobs are vendor extensions, so they are *hints*: a server without
@@ -228,8 +236,8 @@ ahacode/
 ├── storage.py        # JSONL persistence + the session tree (./sessions/)
 ├── ahacode.tcss      # styles (no inline CSS)
 └── widgets/          # one file per widget: chatbox, thinking, tool_result,
-                      # subagent_card, todo_panel, approval_modal, model_bar,
-                      # header_bar, prompt_input, session_picker
+                      # subagent_card, todo_panel, plan_gate, approval_modal,
+                      # model_bar, header_bar, prompt_input, session_picker
 ```
 
 Design rules the codebase sticks to:

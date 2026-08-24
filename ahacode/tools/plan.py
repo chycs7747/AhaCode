@@ -24,8 +24,13 @@ def _todo_write(args: dict) -> str:
 TODO_WRITE = Tool(
     name="todo_write",
     description=(
+        # Where the "plan first" nudge lives. Deliberately here and not in the
+        # always-on system prompt: attached to the tool, the model reads it while
+        # deciding to call this, instead of it biasing every atomic question.
         "Record or update the plan as a task list. Call this to lay out the steps "
-        "before acting; send the full list each time (status: pending/in_progress/done)."
+        "before acting; send the full list each time (status: pending/in_progress/done). "
+        "If the work splits into three or more steps, lay the plan out here BEFORE "
+        "making any change."
     ),
     parameters={
         "type": "object",

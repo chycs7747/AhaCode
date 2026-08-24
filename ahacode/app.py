@@ -9,7 +9,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
-from textual.widgets import Button
+from textual.widgets import Button, Select
 from textual.worker import get_current_worker
 from rich.text import Text
 from rich.theme import Theme
@@ -23,6 +23,7 @@ from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.header_bar import HeaderBar
+from ahacode.widgets.plan_gate import PlanGate
 from ahacode.widgets.prompt_input import PromptInput
 from ahacode.widgets.session_picker import SessionPicker
 from ahacode.widgets.subagent_card import SubagentCard
@@ -118,6 +119,13 @@ class AhaCodeApp(App):
         # The server's prompt-token count for the last request, carried across turns
         # so context compaction measures the real thing instead of an estimate.
         self._last_prompt_tokens: int | None = None
+        # Plan gate: the loop pauses between turns while this is set, so the user can
+        # decide whether a fresh multi-step plan runs step-by-step or straight through.
+        # Written on the main thread, read by the worker's should_pause — a single
+        # bool, so no lock is needed.
+        self._plan_gate_pending = False
+        self._plan_gate: PlanGate | None = None
+        self._gated_plan: tuple[str, ...] | None = None  # the plan we already asked about
         latest = storage.latest_session()
         if latest:  # resume the most recent session
             self.session_path = latest
@@ -294,6 +302,7 @@ class AhaCodeApp(App):
         )
         self.session_depth = 0
         self._has_title = False
+        self._reset_plan_gate()
         self._set_header_title("")
         await self._render_history()  # clears the pinned plan with the rest of the view
         self._reflect_view_only()  # a fresh main session is drivable again
@@ -308,6 +317,7 @@ class AhaCodeApp(App):
         meta = storage.read_session_meta(self.session_path) or {}
         self.session_depth = int(meta.get("depth", 0))
         self._has_title = bool(meta.get("title"))
+        self._reset_plan_gate()
         self._set_header_title(meta.get("title", ""))
         await self._render_history()  # replays this session's plan into the panel
         self._reflect_view_only()
@@ -361,6 +371,11 @@ class AhaCodeApp(App):
             )
             return
 
+        # A message typed while the gate is open answers it: the user moved on, so
+        # the plan is not executed and the paused loop is not resumed.
+        if self._plan_gate_pending:
+            self._settle_plan_gate("다른 지시로 진행")
+
         if text.startswith("/"):
             # Slash commands configure the app; they never reach the LLM
             # and are not recorded in the session.
@@ -382,6 +397,16 @@ class AhaCodeApp(App):
         self._follow_output = True  # a new turn re-pins to the bottom to show the reply
         container = self.query_one("#chat-container", VerticalScroll)
         await container.mount(Chatbox(text, role="user"))
+        await self._start_turn()
+
+    async def _start_turn(self) -> None:
+        """Mount a fresh turn rail and run the agent loop over the current history.
+
+        Shared by a new user message and by the plan gate's "continue" path: the
+        history there already ends with the todo_write result, so re-entering the
+        loop simply carries on from where the pause stopped it.
+        """
+        container = self.query_one("#chat-container", VerticalScroll)
         # The assistant's whole reply (thinking → tools → answer) is mounted into one
         # .turn container with a green left rail, so the steps read as one connected
         # flow rather than a flat stack. The user message stays outside it.
@@ -392,11 +417,10 @@ class AhaCodeApp(App):
         # Run the agent loop in a worker. A snapshot copy is passed so the worker
         # never shares a mutable list with the main thread; bubbles for the reply
         # are mounted lazily as loop events arrive (turn count is not known ahead).
-        history = list(self.session.messages)
-        # Every turn is grounded by a system prompt now (act mode had none before):
-        # act gets the full agent prompt (base + live environment), plan the planner.
+        # Every turn is grounded by a system prompt: act gets the full agent prompt
+        # (base + live environment), plan the planner.
         base = prompts.plan_system() if self.mode == "plan" else prompts.act_system()
-        history = [{"role": "system", "content": base}, *history]
+        history = [{"role": "system", "content": base}, *self.session.messages]
         self._status("● waiting…  (esc to stop)")
         self._response_worker = self.stream_response(history, self._turn)
         self._set_send_running(True)  # the Send button becomes Stop
@@ -420,6 +444,16 @@ class AhaCodeApp(App):
             await self._say_system("계획의 원본 작업(직전 사용자 메시지)을 찾지 못했어요.")
             return
         container = self.query_one("#chat-container", VerticalScroll)
+        # /run IS execution, so it belongs in act mode. The sub-agents it spawns were
+        # always given the full tool set (run_subagent builds their registry from
+        # tools.registry_for, never from self.mode), so plan mode had been quietly
+        # watching writes happen while the bar still said "plan". Switching here
+        # changes nothing about what runs — it stops the bar from lying, and leaves
+        # the session in the mode the user is actually in afterwards.
+        if self.mode != "act":
+            self.mode = "act"  # set first: the Select's handler no-ops when it matches
+            self.query_one("#mode-select", Select).value = "act"
+            await self._say_system("계획 실행이라 act 모드로 전환했어요.")
         await self._say_system(
             f"▶ 계획 실행 — {len(steps)}단계를 각각 새 컨텍스트의 서브에이전트에 순차 위임합니다."
         )
@@ -530,6 +564,67 @@ class AhaCodeApp(App):
             )
         else:
             await self._say_system("auto-approve OFF — tools ask first.")
+
+    async def _maybe_open_plan_gate(self, items: list[dict], boxes: dict, container) -> None:
+        """Hold execution when the model lays out a fresh multi-step plan.
+
+        Each condition closes a specific hole:
+        - `boxes["gate"]`: the MAIN loop only. A sub-agent has no user to ask, and
+          pausing one would stall the parent that is blocked waiting for it.
+        - act mode: in plan mode nothing can execute, so there is nothing to hold.
+        - a step threshold: splitting a two-step plan into fresh sub-agents costs a
+          request per phase and buys nothing — the loop does it cheaper in one go.
+        - every item still `pending`: todo_write is called repeatedly to update
+          status (the tool takes the whole list each time), and a progress update is
+          not a plan awaiting approval.
+        - a fingerprint of the plan we already asked about, so re-sending the same
+          list after the user chose "continue" does not ask again.
+        """
+        steps = [it["content"] for it in items if it.get("content")]
+        min_steps = config.load().plan_gate_min_steps
+        fingerprint = tuple(steps)
+        if not (
+            boxes.get("gate")
+            and self.mode == "act"
+            and min_steps
+            and len(steps) >= min_steps
+            and all(it.get("status", "pending") == "pending" for it in items)
+            and not self._plan_gate_pending
+            and fingerprint != self._gated_plan
+        ):
+            return
+        # Setting this stops the loop between turns (agent.run's should_pause), so
+        # nothing in the plan runs until a button is pressed.
+        self._plan_gate_pending = True
+        self._gated_plan = fingerprint
+        self._plan_gate = PlanGate(steps)
+        await container.mount(self._plan_gate)
+        self._status("⏸ 계획 승인 대기")
+
+    def _settle_plan_gate(self, choice: str) -> None:
+        """Answer the open gate (whatever the user chose) and release the loop."""
+        self._plan_gate_pending = False
+        if self._plan_gate is not None and self._plan_gate.is_mounted:
+            self._plan_gate.settle(choice)
+        self._plan_gate = None
+
+    def _reset_plan_gate(self) -> None:
+        """Forget the gate entirely — a different session asks about its own plans."""
+        self._plan_gate_pending = False
+        self._plan_gate = None
+        self._gated_plan = None
+
+    @on(Button.Pressed, "#plan-gate-run")
+    async def _on_plan_gate_run(self, event: Button.Pressed) -> None:
+        event.stop()
+        self._settle_plan_gate("▶ 단계별 실행")
+        await self._start_plan_run()
+
+    @on(Button.Pressed, "#plan-gate-continue")
+    async def _on_plan_gate_continue(self, event: Button.Pressed) -> None:
+        event.stop()
+        self._settle_plan_gate("계속 — 한 세션에서 진행")
+        await self._start_turn()  # the paused loop picks up where it stopped
 
     @property
     def view_only(self) -> bool:
@@ -670,10 +765,15 @@ class AhaCodeApp(App):
             # Remember the call's input so the result card can title itself with it.
             boxes.setdefault("call_args", {})[event.id] = event.arguments
             if event.name == "todo_write":  # goes to the pinned panel, not a bubble
-                self.query_one(TodoPanel).update_todos(event.arguments.get("items", []))
+                items = event.arguments.get("items", [])
+                self.query_one(TodoPanel).update_todos(items)
                 boxes["tool"].clear()
                 boxes["tool_buf"].clear()
                 self._status("● planning…  (esc to stop)")
+                # A fresh multi-step plan stops here for the user's go-ahead. This
+                # runs on the main thread while the worker blocks in call_from_thread,
+                # so the flag is set before the loop checks it again.
+                await self._maybe_open_plan_gate(items, boxes, container)
                 return
             if event.name == "edit":  # green diff card (shared with history restore)
                 await container.mount(self._edit_card(event.arguments))
@@ -888,7 +988,10 @@ class AhaCodeApp(App):
         worker = get_current_worker()
         container = turn  # the reply's blocks mount into this turn's rail container
         # Current turn's live bubbles; _render_event fills these in on the main thread.
-        boxes: dict = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}, "call_args": {}}
+        # "gate": only this loop may open the plan gate — a sub-agent's boxes carry
+        # no such key, so a child's todo_write can never pause its parent.
+        boxes: dict = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {},
+                       "call_args": {}, "gate": True}
 
         stats = {"prompt": 0, "completion": 0, "t_start": time.monotonic(), "t_first": None,
                  "last_prompt": None}
@@ -921,6 +1024,7 @@ class AhaCodeApp(App):
                 registry=self._registry_for_mode(),  # plan mode = read-only subset
                 ctx=ctx,                            # task delegates through this
                 prompt_tokens=self._last_prompt_tokens,  # measured, for compaction
+                should_pause=lambda: self._plan_gate_pending,  # the plan gate
             )
         except Exception as exc:
             # Server 500, timeout, connection refused... all become a bubble, not a crash.

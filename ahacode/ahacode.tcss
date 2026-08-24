@@ -335,3 +335,32 @@ ModelBar SelectOverlay {
     constrain: none inside;
     margin-bottom: 4;
 }
+
+/* The approve-before-executing card. A yellow rail marks it as a decision point —
+   distinct from the green turn rail and the purple sub-agent body. */
+.plan-gate {
+    height: auto;
+    border-left: thick $warning;
+    background: $panel;
+    padding: 0 1;
+    margin: 1 0;
+}
+.plan-gate--settled {
+    border-left: thick $panel-lighten-2;
+}
+.plan-gate-title {
+    text-style: bold;
+    padding: 0 0 1 0;
+}
+.plan-gate-steps {
+    color: $text-muted;
+    padding: 0 0 1 0;
+}
+.plan-gate-buttons {
+    height: auto;
+    align-horizontal: left;
+}
+.plan-gate-buttons Button {
+    margin: 0 1 0 0;
+    min-width: 16;
+}
