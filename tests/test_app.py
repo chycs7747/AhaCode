@@ -1048,16 +1048,20 @@ async def test_parallel_subagents_need_no_modals_when_pre_approved(monkeypatch):
 
     monkeypatch.setattr(
         config, "load",
-        lambda *a, **k: replace(config.DEFAULTS, allow_rules=("task", "bash:pytest*")),
+        lambda *a, **k: replace(config.DEFAULTS, allow_rules=("task", "bash:echo *")),
     )
     fan_out = [
         ToolCall(id=f"t{i}", name="task",
                  arguments={"description": f"verify {i}", "prompt": f"check {i}"})
         for i in range(3)
     ]
+    # These bash commands REALLY run — that is the point of the test. They must be
+    # trivial and must never re-enter this suite: `pytest` here made each sub-agent
+    # re-run every test, this one included, three at a time (3^n).
     turns = iter([
         fan_out,
-        *[[ToolCall(id="b", name="bash", arguments={"command": "pytest -q"})] for _ in range(3)],
+        *[[ToolCall(id="b", name="bash",
+                  arguments={"command": f"echo verified {i}"})] for i in range(3)],
         *[[TextDelta(f"verified {i}")] for i in range(3)],
         [TextDelta("all verified")],
     ])
