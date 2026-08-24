@@ -2,6 +2,8 @@ from rich.markdown import Markdown
 from rich.text import Text
 from textual.widgets import Static
 
+from ahacode.text import keep_line_breaks
+
 # Syntax theme for fenced code blocks — "nord" is soft/low-contrast (easier on the
 # eyes than Rich's default "monokai"). Heading/inline-code colours are themed
 # separately on the app console (see app.MARKDOWN_THEME).
@@ -30,7 +32,10 @@ class Chatbox(Static):
         if self._rich is not None:
             return self._rich
         if self._markdown and self._content:
-            return Markdown(self._content, code_theme=_CODE_THEME)
+            # The author's single newlines are preserved (see text.keep_line_breaks):
+            # markdown would otherwise fold them into spaces and re-wrap the paragraph,
+            # which is what made answers read denser than the plain-Text bubbles.
+            return Markdown(keep_line_breaks(self._content), code_theme=_CODE_THEME)
         return Text(self._content)
 
     def append_chunk(self, chunk: str) -> None:
