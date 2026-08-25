@@ -22,6 +22,13 @@ def _chunk(delta=None, finish_reason=None, no_choices=False):
     )
 
 
+def _thinking_keys(extra: dict) -> dict:
+    """The thinking-related part of extra_body, without the sampling profile that
+    now shares the dict (see client.SAMPLING)."""
+    return {k: v for k, v in extra.items()
+            if k in ("reasoning_effort", "thinking_token_budget", "chat_template_kwargs")}
+
+
 def _frag(index, id=None, name=None, arguments=None):
     return SimpleNamespace(
         index=index, id=id, function=SimpleNamespace(name=name, arguments=arguments)
@@ -147,7 +154,7 @@ def test_stream_chat_sends_reasoning_extra_body(monkeypatch):
     monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg()))
     monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
     list(client.stream_chat([{"role": "user", "content": "x"}]))
-    assert seen["extra_body"] == {"reasoning_effort": "medium", "thinking_token_budget": 4096}
+    assert _thinking_keys(seen["extra_body"]) == {"reasoning_effort": "medium", "thinking_token_budget": 4096}
 
 
 def test_stream_chat_omits_budget_when_zero(monkeypatch):
@@ -156,7 +163,7 @@ def test_stream_chat_omits_budget_when_zero(monkeypatch):
     monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg(thinking_token_budget=0)))
     monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
     list(client.stream_chat([{"role": "user", "content": "x"}]))
-    assert seen["extra_body"] == {"reasoning_effort": "medium"}  # no budget key
+    assert _thinking_keys(seen["extra_body"]) == {"reasoning_effort": "medium"}  # no budget key
 
 
 def test_budget_fallback_on_reasoning_config_error(monkeypatch):
@@ -175,7 +182,7 @@ def test_budget_fallback_on_reasoning_config_error(monkeypatch):
     list(client.stream_chat([{"role": "user", "content": "x"}]))
     assert len(calls) == 2
     assert "thinking_token_budget" in calls[0]["extra_body"]      # first tried with budget
-    assert calls[1]["extra_body"] == {"reasoning_effort": "medium"}  # retry dropped only the budget
+    assert _thinking_keys(calls[1]["extra_body"]) == {"reasoning_effort": "medium"}  # retry dropped only the budget
 
 
 def test_no_think_after_tool_result(monkeypatch):
@@ -190,7 +197,7 @@ def test_no_think_after_tool_result(monkeypatch):
         {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
         {"role": "tool", "tool_call_id": "c1", "content": "ran"},
     ]))
-    assert seen["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert _thinking_keys(seen["extra_body"]) == {"chat_template_kwargs": {"enable_thinking": False}}
     assert "thinking_token_budget" not in seen["extra_body"]  # meaningless with thinking off
 
 
@@ -201,7 +208,7 @@ def test_no_think_off_keeps_thinking_on_tool_turn(monkeypatch):
     monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg(no_think_after_tools=False)))
     monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
     list(client.stream_chat([{"role": "tool", "tool_call_id": "c1", "content": "ran"}]))
-    assert seen["extra_body"] == {"reasoning_effort": "medium", "thinking_token_budget": 4096}
+    assert _thinking_keys(seen["extra_body"]) == {"reasoning_effort": "medium", "thinking_token_budget": 4096}
 
 
 def test_unrelated_error_is_not_retried(monkeypatch):
@@ -217,3 +224,56 @@ def test_unrelated_error_is_not_retried(monkeypatch):
     with pytest.raises(RuntimeError, match="some other 500"):
         list(client.stream_chat([{"role": "user", "content": "x"}]))
     assert len(calls) == 1  # no retry
+
+
+# --- sampling profiles -------------------------------------------------------
+# Nothing was sent before, so the server's own default governed every request — an
+# invisible setting that changes when the container is restarted and makes a run
+# impossible to reproduce. See client.SAMPLING for the full reasoning.
+
+def test_sampling_differs_by_mode():
+    """The app switches thinking on and off within one conversation, and Qwen
+    publishes different parameters for the two modes."""
+    think_kwargs, think_extra = client.sampling_for("qwen38", no_think=False)
+    act_kwargs, act_extra = client.sampling_for("qwen38", no_think=True)
+    assert think_kwargs == {"temperature": 1.0, "top_p": 0.95, "presence_penalty": 0.0}
+    assert act_kwargs == {"temperature": 0.7, "top_p": 0.80, "presence_penalty": 1.5}
+    assert think_extra == act_extra == {"top_k": 20, "min_p": 0.0, "repetition_penalty": 1.0}
+
+
+def test_an_unknown_family_gets_no_sampling_params():
+    """top_k / min_p / repetition_penalty are vLLM extensions; sending them to a
+    provider that does not know them would be rejected outright."""
+    assert client.sampling_for("claude-sonnet-5", no_think=False) == ({}, {})
+    assert client.sampling_for("gpt-5", no_think=True) == ({}, {})
+
+
+def test_the_request_carries_the_profile_for_its_mode(monkeypatch):
+    """Standard fields in the body, vendor extensions in extra_body — and the mode
+    must match the one the thinking switch just chose."""
+    seen = {}
+    fc = _fake_client(lambda **kw: (seen.update(kw), _FakeStream())[1])
+    monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg(name="qwen38")))
+    monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
+
+    list(client.stream_chat([{"role": "user", "content": "hi"}]))
+    assert seen["temperature"] == 1.0 and seen["top_p"] == 0.95
+    assert seen["extra_body"]["top_k"] == 20
+    assert "chat_template_kwargs" not in seen["extra_body"]      # thinking is on
+
+    seen.clear()
+    list(client.stream_chat([{"role": "user", "content": "hi"},
+                             {"role": "tool", "tool_call_id": "1", "content": "x"}]))
+    assert seen["temperature"] == 0.7 and seen["presence_penalty"] == 1.5
+    assert seen["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_complete_also_pins_its_sampling(monkeypatch):
+    """The utility path (titles, summaries) had the same invisible dependency."""
+    seen = {}
+    reply = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="t"))])
+    fc = _fake_client(lambda **kw: (seen.update(kw), reply)[1])
+    monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg(name="qwen38")))
+    assert client.complete([{"role": "user", "content": "title this"}]) == "t"
+    assert seen["temperature"] == 0.7          # a title is not a thinking task
+    assert seen["extra_body"]["top_k"] == 20

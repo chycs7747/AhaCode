@@ -140,6 +140,13 @@ def _family(model: str | None = None) -> str:
     return "qwen"
 
 
+def family(model: str | None = None) -> str:
+    """Public name for the family mapping — client.py picks its sampling profile by
+    the same key this module picks prompt deltas by, so the two can never disagree
+    about what kind of model is on the other end."""
+    return _family(model)
+
+
 def environment_block(model: str | None = None) -> str:
     """The live facts the model needs to emit valid commands: real OS/shell/cwd and
     the active model. Rebuilt each call so a /model switch or a different cwd is

@@ -5,12 +5,58 @@ from collections.abc import Iterable, Iterator
 
 from openai import OpenAI
 
-from ahacode import config
+from ahacode import config, prompts
 from ahacode.events import Event, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, Usage
 
 # The UI never sees provider-specific shapes: this module converts them into the
 # canonical events in events.py. A plain turn emits TextDelta / ThinkingDelta;
 # when tools are offered, completed ToolCalls are emitted once reassembled.
+
+# --- sampling profiles ------------------------------------------------------
+# How a model should be SAMPLED is a property of the model, not of the task, so it
+# belongs here beside the other provider-specific knobs rather than in config.toml.
+#
+# Until now nothing was sent at all, which meant the server's own default governed
+# every request. That is worse than a wrong value: it is an INVISIBLE one. It changes
+# when the vLLM container is restarted with different flags or a different
+# generation_config.json, the app has no way to know, and an experiment run today
+# cannot be reproduced tomorrow. Measured on the gateway: with nothing sent, five
+# identical requests produced five different answers; with temperature=0 they were
+# byte-identical — so a per-request value does override the load-time default.
+#
+# The values are Qwen's published recommendation, and they differ BY MODE — which
+# matters here because this app switches modes within a single conversation (see
+# no_think below). One server-side default cannot satisfy both.
+#
+# A/B measured across 48 runs: no effect on solve rate, turns or tokens (48/48 either
+# way). This is not here to make the model better; it is here so the app stops
+# depending on a setting it cannot see.
+#
+# Standard OpenAI fields go in the request body; top_k / min_p / repetition_penalty
+# are vLLM extensions and must ride in extra_body — which is also why the profile is
+# keyed by family: sending them to Anthropic or OpenAI would be rejected.
+SAMPLING: dict[str, dict[str, dict]] = {
+    "qwen": {
+        "think":   {"kwargs": {"temperature": 1.0, "top_p": 0.95, "presence_penalty": 0.0},
+                    "extra":  {"top_k": 20, "min_p": 0.0, "repetition_penalty": 1.0}},
+        "nothink": {"kwargs": {"temperature": 0.7, "top_p": 0.80, "presence_penalty": 1.5},
+                    "extra":  {"top_k": 20, "min_p": 0.0, "repetition_penalty": 1.0}},
+    },
+}
+
+
+def sampling_for(model: str, *, no_think: bool) -> tuple[dict, dict]:
+    """(request kwargs, extra_body) for this model in this mode.
+
+    An unknown family gets nothing — better to let that provider apply its own
+    default than to send it parameters it may not understand.
+    """
+    profile = SAMPLING.get(prompts.family(model))
+    if not profile:
+        return {}, {}
+    slot = profile["nothink" if no_think else "think"]
+    return dict(slot["kwargs"]), dict(slot["extra"])
+
 
 _client: OpenAI | None = None
 _cfg: config.ModelConfig | None = None
@@ -152,6 +198,11 @@ def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterat
             extra["reasoning_effort"] = cfg.reasoning_effort
         if cfg.thinking_token_budget:
             extra["thinking_token_budget"] = cfg.thinking_token_budget
+    # Sampling rides the SAME branch: the mode was just decided above, and the two
+    # profiles differ, so deciding it twice is how they would drift apart.
+    sample_kwargs, sample_extra = sampling_for(cfg.name, no_think=no_think)
+    kwargs.update(sample_kwargs)
+    extra.update(sample_extra)
     if extra:
         kwargs["extra_body"] = extra
     # Hold a global concurrency permit for the request's lifetime: acquired here,
@@ -189,7 +240,15 @@ def complete(messages: list[dict]) -> str:
     Separate from stream_chat: no tools, no streaming, just the text back.
     """
     client, cfg = _ensure_client()
-    resp = client.chat.completions.create(model=cfg.name, messages=messages, stream=False)
+    # Same reason as stream_chat: never leave the sampling to whatever the server
+    # happens to default to. A title or a summary is not a thinking task, so it takes
+    # the non-thinking profile. (Thinking itself is left alone here — this helper does
+    # not switch it, and turning it off would be a separate decision.)
+    sample_kwargs, sample_extra = sampling_for(cfg.name, no_think=True)
+    resp = client.chat.completions.create(
+        model=cfg.name, messages=messages, stream=False,
+        extra_body=sample_extra or None, **sample_kwargs,
+    )
     return (resp.choices[0].message.content or "").strip()
 
 
