@@ -9,6 +9,7 @@ from ahacode.tools.edit import EDIT
 from ahacode.tools.glob import GLOB
 from ahacode.tools.grep import GREP
 from ahacode.tools.plan import TODO_WRITE
+from ahacode.tools.plan_submit import PLAN_SUBMIT
 from ahacode.tools.read import READ
 from ahacode.tools.task import TASK
 from ahacode.tools.write import WRITE
@@ -16,6 +17,8 @@ from ahacode.tools.write import WRITE
 # Name -> Tool. The agent looks tools up here when the model calls one by name.
 # `task` is deliberately NOT here: it needs a spawning context and a depth check,
 # so it is added per-session by registry_for() rather than offered globally.
+# `plan_submit` is not here either: it belongs to plan mode alone (the app builds
+# that registry), and a sub-agent must never be able to ask for approval.
 REGISTRY: dict[str, Tool] = {
     t.name: t for t in (READ, GLOB, GREP, WRITE, EDIT, BASH, TODO_WRITE)
 }
@@ -52,5 +55,6 @@ def specs(registry: dict[str, Tool] | None = None) -> list[dict]:
 
 __all__ = [
     "Tool", "READ", "GLOB", "GREP", "WRITE", "EDIT", "BASH", "TODO_WRITE", "TASK",
+    "PLAN_SUBMIT",
     "REGISTRY", "specs", "registry_for",
 ]

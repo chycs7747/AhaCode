@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from ahacode import agent, prompts
 from ahacode.events import Event
@@ -23,15 +24,17 @@ from ahacode.prompts import SUBAGENT_SYSTEM  # re-exported for callers/tests
 
 @dataclass
 class AgentContext:
-    """The running context handed to wants_ctx tools (currently just `task`).
+    """The running context handed to wants_ctx tools (`task`, `plan_submit`).
 
-    The pure loop forwards it opaquely; only the app fills run_subagent in — it is
+    The pure loop forwards it opaquely; only the app fills it in. run_subagent is
     the closure that creates the child session file, renders the child's events into
     a nested card, and persists the transcript. Signature: (prompt, description) ->
-    the child's final result string.
+    the child's final result string. session_path is the file of the session the
+    loop is running in — plan_submit names the plan file after it.
     """
 
     run_subagent: Callable[[str, str], str] | None = None
+    session_path: Path | None = None
 
 
 @dataclass

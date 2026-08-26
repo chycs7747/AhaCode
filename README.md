@@ -55,7 +55,8 @@ foldable cards you approve before they run.
   | `write` | Create or overwrite a file | ✅ |
   | `edit` | Replace a unique snippet, shown as a `-`/`+` diff | ✅ |
   | `bash` | Run a shell command in the project root | ✅ |
-  | `todo_write` | Record the plan into the pinned checklist | — |
+  | `todo_write` | Keep a working checklist in the pinned panel | — |
+  | `plan_submit` | Plan mode only: submit the finished plan for approval | — |
   | `task` | Delegate a subtask to a fresh sub-agent | ✅ |
 
 - **Approval with a real preview** — side-effecting calls open a modal showing
@@ -65,15 +66,16 @@ foldable cards you approve before they run.
   bombs, `mkfs`, `dd of=/dev/…`) are hard-blocked before they can even be
   offered, and each half of a chained command is checked separately. Defense in
   depth, not a guarantee — the human prompt is still the real safeguard.
-- **Plan mode** — a read-only mode (`read`/`glob`/`grep`/`todo_write` only) where
-  the model investigates and writes a plan into a pinned checklist instead of
-  acting on it.
-- **A plan gate** — when the model lays out a plan of three or more steps in act
-  mode, the loop stops *between turns*, before any of it runs, and asks: run it
-  step-by-step, or carry on in one session? The trigger is a tool call the model
-  already makes, not a judgement about its own complexity — and the pause is a
-  harness decision, not a prompt asking nicely. Continuing re-enters the very
-  same loop, so nothing is redone. Threshold configurable; `0` turns it off.
+- **Plan mode** — a read-only mode (`read`/`glob`/`grep` + `plan_submit`) where
+  the model investigates, settles questions with you, and ends its turn by
+  *submitting* the plan. The harness writes it to `plans/<session>.md` and fills
+  the pinned checklist from it; a plan whose steps are not executable is refused
+  with the reason, and the model resubmits.
+- **A plan gate** — `plan_submit` is the trigger: the loop stops *between turns*
+  with the plan on screen and asks ▶ 실행 or ✎ 수정. No heuristics about step
+  counts — the model said it is done, and the pause is a harness decision, not a
+  prompt asking nicely. Choosing 수정 keeps you in plan mode; your next message
+  revises the plan and it is submitted again.
 - **`/run` executes that plan structurally** — each step is handed to its own
   fresh sub-agent, in order, with only the previous steps' concise *results*
   threaded forward, then one final pass combines them into a single answer.
@@ -190,7 +192,6 @@ subagent_depth = 1        # generations of sub-agents that may nest (0 = none)
 max_parallel_agents = 8   # cap on concurrent requests across every agent
 compact_threshold = 0.8   # condense once a request reaches this fraction of the window
 keep_recent_messages = 6  # newest messages always kept verbatim
-plan_gate_min_steps = 3   # ask before running a fresh plan of this many steps; 0 never asks
 ```
 
 Both reasoning knobs are vendor extensions, so they are *hints*: a server without
@@ -240,6 +241,7 @@ ahacode/
 │   ├── walk.py       #   shared traversal + skip rules for the search tools
 │   ├── spill.py      #   oversized tool output -> a file the tools can read back
 │   ├── read.py glob.py grep.py write.py edit.py bash.py plan.py task.py
+│   ├── plan_submit.py #   plan mode's way out: validate, write plans/<session>.md
 │   └── __init__.py   #   the registry, and the depth gate that hands out `task`
 │
 ├── client.py         # LLM I/O — the only module that talks to a provider

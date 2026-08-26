@@ -1,12 +1,12 @@
 """PlanGate: the approve-before-executing card.
 
-When the model lays out a multi-step plan in act mode, the harness stops the loop
-before any of it runs and mounts this card into the turn. Two buttons, two paths:
+The model ends a planning turn by calling plan_submit; the harness writes the plan
+file and mounts this card into the turn. The loop is held (agent.run's
+should_pause) until one of two buttons answers:
 
-- ▶ 실행  — hand the plan to the structural runner (`/run`): each step in its own
-  fresh sub-agent. This is the reason the gate exists — the split into phases is a
-  decision the harness makes, and it needs the user's go-ahead first.
-- 계속    — resume the ordinary agent loop, which carries on in one session.
+- ▶ 실행  — carry the plan out (`/run` is the keyboard path to the same thing).
+- ✎ 수정  — keep planning: the card settles and the user types what to change;
+           the next turn revises the plan and submits again.
 
 The card answers once: `settle()` freezes it into a record of what was chosen, so a
 scrolled-back turn cannot be re-triggered.
@@ -20,29 +20,31 @@ from textual.widgets import Button, Static
 
 
 class PlanGate(Vertical):
-    """A plan awaiting the user's go-ahead. Buttons bubble up to the app by id."""
+    """A submitted plan awaiting the user's go-ahead. Buttons bubble up by id."""
 
-    def __init__(self, steps: list[str]) -> None:
+    def __init__(self, steps: list[str], summary: str = "", path: str = "") -> None:
         super().__init__()
         self.steps = list(steps)
+        self.summary = summary
+        self.path = path
         self.add_class("plan-gate")
 
     def compose(self) -> ComposeResult:
-        # markup=False: step text comes from the model and may contain '[' (paths,
+        # markup=False: the text comes from the model and may contain '[' (paths,
         # code), which console markup would try to parse.
+        head = f"📋 {self.summary} — " if self.summary else "📋 "
         yield Static(
-            f"📋 {len(self.steps)}단계 계획이 준비됐어요 — 실행할까요?",
+            f"{head}{len(self.steps)}단계 계획이 준비됐어요 — 실행할까요?",
             classes="plan-gate-title",
             markup=False,
         )
-        yield Static(
-            "\n".join(f"  {i}. {s}" for i, s in enumerate(self.steps, 1)),
-            classes="plan-gate-steps",
-            markup=False,
-        )
+        body = "\n".join(f"  {i}. {s}" for i, s in enumerate(self.steps, 1))
+        if self.path:
+            body += f"\n  📄 {self.path}"
+        yield Static(body, classes="plan-gate-steps", markup=False)
         with Horizontal(classes="plan-gate-buttons"):
-            yield Button("▶ 실행 (단계별 서브에이전트)", variant="success", id="plan-gate-run")
-            yield Button("계속 (한 세션에서)", variant="default", id="plan-gate-continue")
+            yield Button("▶ 실행 (/run)", variant="success", id="plan-gate-run")
+            yield Button("✎ 수정 계속", variant="default", id="plan-gate-continue")
 
     def settle(self, choice: str) -> None:
         """Replace the buttons with what was chosen, so the card reads as history."""

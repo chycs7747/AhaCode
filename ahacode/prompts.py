@@ -61,13 +61,16 @@ ACT_SYSTEM = f"{ACT_INTRO}\n\n{CODING_RULES}"
 # in THIS turn's reasoning, where a thinking channel exists; the plan carries only
 # what a tool can carry out.
 PLAN_SYSTEM = (
-    "You are in PLAN MODE. Do not change anything or run commands. If needed, "
-    "investigate with the read tool, then call todo_write to lay out a clear, "
-    "step-by-step plan for the user to review. Do not carry out the plan.\n"
+    "You are in PLAN MODE. Do not change anything or run commands. Investigate with "
+    "the read/glob/grep tools as needed and settle open questions with the user, then "
+    "call plan_submit with the finished plan: a one-line summary, the steps, and how "
+    "to validate the result. Do not carry out the plan.\n"
     "Every step must be EXECUTABLE: an imperative verb plus a concrete artifact or "
     "checkable outcome (\"Write x.py with solution()\", \"Run the 4 examples and "
     "confirm 40/14/27/9\"). A step that only states a fact, a formula, or an idea "
-    "is not a step — do that thinking now, and let the plan carry only the doing."
+    "is not a step — do that thinking now, and let the plan carry only the doing.\n"
+    "plan_submit ends your planning turn. Call it once the plan is complete and no "
+    "question is left open — not before, and not again unless the user asks for changes."
 )
 
 # A worker sub-agent's framing. Deliberately short: it inherits the same tools, so

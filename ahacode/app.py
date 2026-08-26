@@ -123,14 +123,12 @@ class AhaCodeApp(App):
         # The server's prompt-token count for the last request, carried across turns
         # so context compaction measures the real thing instead of an estimate.
         self._last_prompt_tokens: int | None = None
-        # Plan gate: the loop pauses between turns while this is set, so the user can
-        # decide whether a fresh multi-step plan runs step-by-step or straight through.
+        # Plan gate: the loop pauses between turns while this is set — the model has
+        # submitted a plan (plan_submit) and nothing runs until the user answers.
         # Written on the main thread, read by the worker's should_pause — a single
         # bool, so no lock is needed.
         self._plan_gate_pending = False
         self._plan_gate: PlanGate | None = None
-        self._gated_plan: tuple[str, ...] | None = None  # the plan we already asked about
-        self._offered_plan: tuple[str, ...] | None = None  # the plan we already said /run for
         latest = storage.latest_session()
         if latest:  # resume the most recent session
             self.session_path = latest
@@ -302,6 +300,8 @@ class AhaCodeApp(App):
                         await turn.mount(self._edit_card(call_args[cid]))
                     elif name == "todo_write":  # to the pinned panel, as when live
                         todo.update_todos(call_args[cid].get("items", []))
+                    elif name == "plan_submit":  # the submitted plan IS the checklist
+                        todo.update_todos(self._plan_items(call_args[cid]))
             elif role == "tool":
                 cid = msg.get("tool_call_id")
                 name = call_names.get(cid, "tool")
@@ -428,9 +428,9 @@ class AhaCodeApp(App):
     async def _start_turn(self) -> None:
         """Mount a fresh turn rail and run the agent loop over the current history.
 
-        Shared by a new user message and by the plan gate's "continue" path: the
-        history there already ends with the todo_write result, so re-entering the
-        loop simply carries on from where the pause stopped it.
+        Every user message comes through here; the history already holds whatever
+        the previous turn ended on (a plan_submit result, a paused gate), so the
+        loop simply carries on from there.
         """
         container = self.query_one("#chat-container", VerticalScroll)
         # The assistant's whole reply (thinking → tools → answer) is mounted into one
@@ -461,7 +461,7 @@ class AhaCodeApp(App):
             return
         steps = [it["content"] for it in self.query_one(TodoPanel).items if it.get("content")]
         if not steps:
-            await self._say_system("실행할 계획이 없어요 — plan 모드에서 todo_write 로 계획을 먼저 세우세요.")
+            await self._say_system("실행할 계획이 없어요 — plan 모드에서 계획을 먼저 세우세요 (모델이 plan_submit 으로 제출합니다).")
             return
         # The plan's origin is the last thing the user asked — the overall task.
         task = next(
@@ -636,44 +636,24 @@ class AhaCodeApp(App):
         else:
             await self._say_system("auto-approve OFF — tools ask first.")
 
-    async def _maybe_open_plan_gate(self, items: list[dict], boxes: dict, container) -> None:
-        """Hold execution when the model lays out a fresh multi-step plan.
+    @staticmethod
+    def _plan_items(args: dict) -> list[dict]:
+        """plan_submit's steps in the shape the pinned panel takes (all pending)."""
+        return [{"content": st, "status": plan_tool.PENDING}
+                for st in args.get("steps", []) if isinstance(st, str) and st.strip()]
 
-        Each condition closes a specific hole:
-        - `boxes["gate"]`: the MAIN loop only. A sub-agent has no user to ask, and
-          pausing one would stall the parent that is blocked waiting for it.
-        - act mode: in plan mode nothing can execute, so there is nothing to hold.
-        - a step threshold: splitting a two-step plan into fresh sub-agents costs a
-          request per phase and buys nothing — the loop does it cheaper in one go.
-        - every item still `pending`: todo_write is called repeatedly to update
-          status (the tool takes the whole list each time), and a progress update is
-          not a plan awaiting approval.
-        - a fingerprint of the plan we already asked about, so re-sending the same
-          list after the user chose "continue" does not ask again.
+    async def _open_plan_gate(self, steps: list[str], summary: str, path: str, container) -> None:
+        """The model submitted a plan: hold the loop and put the decision on screen.
+
+        Opened only from the MAIN loop's plan_submit result (a sub-agent is never
+        offered the tool — it has no user to ask, and its parent is blocked on it).
+        No heuristics: the model said it is done, so this is the moment.
         """
-        steps = [it["content"] for it in items if it.get("content")]
-        min_steps = config.load().plan_gate_min_steps
-        fingerprint = tuple(steps)
-        if not (
-            boxes.get("gate")
-            and self.mode == "act"
-            and min_steps
-            and len(steps) >= min_steps
-            and all(it.get("status", "pending") == "pending" for it in items)
-            and not self._plan_gate_pending
-            and fingerprint != self._gated_plan
-        ):
-            return
         # Setting this stops the loop between turns (agent.run's should_pause), so
-        # nothing in the plan runs until a button is pressed.
+        # nothing runs until a button is pressed.
         self._plan_gate_pending = True
-        self._gated_plan = fingerprint
-        self._plan_gate = PlanGate(steps)
+        self._plan_gate = PlanGate(steps, summary=summary, path=path)
         await container.mount(self._plan_gate)
-        # Scroll the card's buttons into view, overriding the follow-output flag: the
-        # loop is now BLOCKED on one of them, so they are not optional content. The
-        # card is taller than the chat area on a short terminal, and mounting alone
-        # left it off-screen — the user saw a paused run with nothing to press.
         # Scroll the card's buttons into view, overriding the follow-output flag: the
         # loop is now BLOCKED on one of them, so they are not optional content. NOTE
         # `container` here is the turn rail, a plain Vertical — scrolling THAT does
@@ -694,20 +674,20 @@ class AhaCodeApp(App):
         """Forget the gate entirely — a different session asks about its own plans."""
         self._plan_gate_pending = False
         self._plan_gate = None
-        self._gated_plan = None
-        self._offered_plan = None
 
     @on(Button.Pressed, "#plan-gate-run")
     async def _on_plan_gate_run(self, event: Button.Pressed) -> None:
         event.stop()
-        self._settle_plan_gate("▶ 단계별 실행")
+        self._settle_plan_gate("▶ 실행")
         await self._start_plan_run()
 
     @on(Button.Pressed, "#plan-gate-continue")
     async def _on_plan_gate_continue(self, event: Button.Pressed) -> None:
+        """✎ 수정 — the plan stays on screen; the user says what to change and the
+        next turn revises it (plan_submit again replaces the plan file)."""
         event.stop()
-        self._settle_plan_gate("계속 — 한 세션에서 진행")
-        await self._start_turn()  # the paused loop picks up where it stopped
+        self._settle_plan_gate("✎ 수정 계속")
+        self.query_one("#prompt", PromptInput).focus()
 
     @property
     def view_only(self) -> bool:
@@ -740,33 +720,9 @@ class AhaCodeApp(App):
                 "read": tools.READ,
                 "glob": tools.GLOB,
                 "grep": tools.GREP,
-                "todo_write": tools.TODO_WRITE,
+                "plan_submit": tools.PLAN_SUBMIT,  # the way OUT of plan mode
             }
         return tools.registry_for(self.session_depth, config.load().subagent_depth)
-
-    def _plan_run_offer(self) -> str | None:
-        """The line that tells the user how to actually execute the plan just written.
-
-        Plan mode has no gate — the gate is an act-mode device, since in plan mode
-        nothing can run anyway — so a finished plan ends with whatever the model chose
-        to say ("승인해 주시면 바로 실행합니다"), and nothing on screen names the
-        command that would do it. The harness knows it; the model only guesses, so the
-        line is written here rather than asked for in the prompt.
-
-        Returns None when there is nothing to offer, or when this exact plan has been
-        offered already — repeating it after every turn would be noise.
-        """
-        steps = [it["content"] for it in self.query_one(TodoPanel).items if it.get("content")]
-        if not steps or self.mode != "plan":
-            return None
-        fingerprint = tuple(steps)
-        if fingerprint == self._offered_plan:
-            return None
-        self._offered_plan = fingerprint
-        return (
-            f"▶ 실행하려면 /run — {len(steps)}단계를 각각 새 컨텍스트의 서브에이전트가 "
-            "순서대로 처리합니다. (act 모드로 자동 전환)"
-        )
 
     @on(ResponseComplete)
     async def response_complete(self, event: ResponseComplete) -> None:
@@ -784,10 +740,6 @@ class AhaCodeApp(App):
         if not self._has_title and any(m.get("role") == "assistant" for m in self.session.messages):
             self._has_title = True
             self.generate_title(list(self.session.messages), self.session_path)
-        # Right under the answer, where the model just said "승인해 주시면 실행합니다".
-        offer = self._plan_run_offer()
-        if offer:
-            await self._say_system(offer)
 
     @on(PhaseComplete)
     def phase_complete(self, event: PhaseComplete) -> None:
@@ -905,10 +857,13 @@ class AhaCodeApp(App):
                 boxes["tool"].clear()
                 boxes["tool_buf"].clear()
                 self._status("● planning…  (esc to stop)")
-                # A fresh multi-step plan stops here for the user's go-ahead. This
-                # runs on the main thread while the worker blocks in call_from_thread,
-                # so the flag is set before the loop checks it again.
-                await self._maybe_open_plan_gate(items, boxes, container)
+                return
+            if event.name == "plan_submit":  # the plan goes to the panel; the gate
+                if boxes.get("gate"):        # opens when its result confirms the save
+                    self.query_one(TodoPanel).update_todos(self._plan_items(event.arguments))
+                boxes["tool"].clear()
+                boxes["tool_buf"].clear()
+                self._status("● submitting plan…  (esc to stop)")
                 return
             if event.name == "edit":  # green diff card (shared with history restore)
                 await container.mount(self._edit_card(event.arguments))
@@ -924,6 +879,16 @@ class AhaCodeApp(App):
         elif isinstance(event, ToolResult):
             if event.name == "todo_write":
                 return  # already reflected in the pinned panel
+            if event.name == "plan_submit" and not event.is_error and boxes.get("gate"):
+                # A rejected submission falls through to the error card below, so the
+                # user sees why; the model already has the reason and resubmits.
+                args = boxes.get("call_args", {}).get(event.id, {})
+                path = event.output.split(" (", 1)[0].removeprefix("Plan saved to ")
+                await self._open_plan_gate(
+                    [it["content"] for it in self._plan_items(args)],
+                    str(args.get("summary", "")).strip(), path, container,
+                )
+                return
             if event.name == "edit" and not event.is_error:
                 return  # a successful edit is already shown as the diff card
             if event.name == "task":
@@ -1090,7 +1055,7 @@ class AhaCodeApp(App):
             self.call_from_thread(card.done, tool_count)
             return result.result
 
-        return subagent.AgentContext(run_subagent=run_subagent)
+        return subagent.AgentContext(run_subagent=run_subagent, session_path=parent_path)
 
     # group="plan": Textual's @work defaults every exclusive worker to the group
     # "default", so a plan run and a chat turn were mutually exclusive — typing

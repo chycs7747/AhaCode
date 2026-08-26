@@ -666,7 +666,7 @@ async def test_plan_mode_restricts_tools_and_injects_system_prompt(monkeypatch):
 
     # read-only: the search tools are in (planning means investigating), bash is not
     assert {t["function"]["name"] for t in captured["tools"]} == {
-        "read", "glob", "grep", "todo_write"
+        "read", "glob", "grep", "plan_submit"
     }
     assert captured["messages"][0]["role"] == "system"
     assert "PLAN MODE" in captured["messages"][0]["content"]

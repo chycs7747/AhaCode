@@ -10,3 +10,4 @@ dist/
 # (config.toml may hold an API key; sessions/ holds private conversations)
 config.toml
 sessions/
+plans/

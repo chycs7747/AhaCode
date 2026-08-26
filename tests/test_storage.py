@@ -138,3 +138,24 @@ def test_header_without_relation_field_still_loads(tmp_path):
     meta = storage.read_session_meta(p)
     assert meta is not None and meta.get("relation") is None
     assert storage.build_tree([meta])[0]["id"] == p.stem
+
+
+# --- plan files --------------------------------------------------------------
+
+def test_plan_path_is_named_after_the_session(monkeypatch, tmp_path):
+    monkeypatch.setattr(storage, "PLANS_DIR", tmp_path / "plans")
+    assert storage.plan_path(tmp_path / "2026-08-26_1200.jsonl") == tmp_path / "plans" / "2026-08-26_1200.md"
+
+
+def test_write_plan_creates_the_directory_and_renders_markdown(tmp_path):
+    path = tmp_path / "plans" / "s.md"
+    storage.write_plan(path, summary="Goal", steps=["Write a.py with f()"],
+                       validation=["uv run pytest"], body="notes")
+    assert path.read_text(encoding="utf-8") == (
+        "# Goal\n\n## Steps\n\n1. [ ] Write a.py with f()\n\n"
+        "## Validation\n\n- uv run pytest\n\n## Notes\n\nnotes\n"
+    )
+
+
+def test_display_path_is_project_relative_inside_the_root():
+    assert storage.display_path(storage.PROJECT_ROOT / "plans" / "x.md") == "plans/x.md"

@@ -9,6 +9,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SESSIONS_DIR = PROJECT_ROOT / "sessions"
+# One plan file per planning session, named after it, so plan ↔ session is 1:1
+# and a later session can be handed the path alone.
+PLANS_DIR = PROJECT_ROOT / "plans"
 
 
 def new_session_path(base_dir: Path | None = None) -> Path:
@@ -204,3 +207,32 @@ def build_tree(sessions: list[dict]) -> list[dict]:
         else:
             roots.append(node)
     return roots
+
+
+def plan_path(session_path: Path) -> Path:
+    """Where the plan written in `session_path` lives: plans/{session}.md."""
+    return PLANS_DIR / f"{session_path.stem}.md"
+
+
+def display_path(path: Path) -> str:
+    """A path as the model and user should see it — project-relative when inside."""
+    try:
+        return path.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def write_plan(
+    path: Path, *, summary: str, steps: list[str], validation: list[str], body: str
+) -> None:
+    """Render a plan as Markdown and write it (whole file, last write wins — a
+    revised plan from the same session replaces the previous one)."""
+    lines = [f"# {summary or 'Plan'}", "", "## Steps", ""]
+    lines += [f"{i}. [ ] {s}" for i, s in enumerate(steps, 1)]
+    if validation:
+        lines += ["", "## Validation", ""]
+        lines += [f"- {v}" for v in validation]
+    if body:
+        lines += ["", "## Notes", "", body]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")

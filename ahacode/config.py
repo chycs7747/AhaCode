@@ -27,7 +27,6 @@ DEFAULT_COMPACT_THRESHOLD = 0.8
 DEFAULT_KEEP_RECENT_MESSAGES = 6  # newest messages always kept verbatim
 # Plan gate: in act mode, a fresh plan of at least this many steps pauses the loop
 # and asks before any of it runs. 0 disables the gate.
-DEFAULT_PLAN_GATE_MIN_STEPS = 3
 # Tool calls matching one of these run without the approval modal. Empty by
 # default: pre-approval is the user's call, never a shipped assumption.
 DEFAULT_ALLOW_RULES: tuple[str, ...] = ()
@@ -64,7 +63,6 @@ class ModelConfig:
     keep_recent_messages: int = DEFAULT_KEEP_RECENT_MESSAGES
     # In act mode, a fresh plan (todo_write) with at least this many steps pauses
     # the agent loop and asks the user before anything runs. 0 = never ask.
-    plan_gate_min_steps: int = DEFAULT_PLAN_GATE_MIN_STEPS
     # Pre-approval rules, "tool:pattern" (see permissions.py). A tuple, not a
     # list, because this dataclass is frozen and must stay hashable.
     allow_rules: tuple[str, ...] = DEFAULT_ALLOW_RULES
@@ -109,9 +107,6 @@ max_parallel_agents = {cfg.max_parallel_agents}
 # always keeping the newest keep_recent_messages untouched.
 compact_threshold = {cfg.compact_threshold}
 keep_recent_messages = {cfg.keep_recent_messages}
-# In act mode, pause and ask before running a fresh plan of this many steps or
-# more (the model lays it out with todo_write). 0 never asks.
-plan_gate_min_steps = {cfg.plan_gate_min_steps}
 # Seconds a bash command may run before it is killed (a call may ask for more).
 bash_timeout = {cfg.bash_timeout}
 
@@ -157,7 +152,6 @@ def load(path: Path | None = None) -> ModelConfig:
         context_window=int(model.get("context_window", DEFAULT_CONTEXT_WINDOW)),
         compact_threshold=float(agent.get("compact_threshold", DEFAULT_COMPACT_THRESHOLD)),
         keep_recent_messages=int(agent.get("keep_recent_messages", DEFAULT_KEEP_RECENT_MESSAGES)),
-        plan_gate_min_steps=int(agent.get("plan_gate_min_steps", DEFAULT_PLAN_GATE_MIN_STEPS)),
         allow_rules=tuple(str(r) for r in perms.get("allow", DEFAULT_ALLOW_RULES)),
         bash_timeout=int(agent.get("bash_timeout", DEFAULT_BASH_TIMEOUT)),
     )
