@@ -701,7 +701,7 @@ async def test_act_mode_exposes_all_tools(monkeypatch):
     # act mode at depth 0 also offers `task` (the main agent may spawn sub-agents;
     # subagent_depth defaults to 1, so depth 0 < 1 exposes it).
     assert {t["function"]["name"] for t in captured["tools"]} == {
-        "read", "glob", "grep", "write", "edit", "bash", "todo_write", "task"
+        "read", "glob", "grep", "write", "edit", "bash", "webfetch", "todo_write", "task"
     }
     # act mode now grounds the turn with the AhaCode system prompt (env-injected),
     # followed by the user's message; the system prompt is never stored in the session.

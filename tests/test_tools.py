@@ -147,12 +147,13 @@ def test_default_timeout_clears_this_project_s_own_test_suite():
 
 def test_registry_and_approval_flags():
     assert set(tools.REGISTRY) == {
-        "read", "glob", "grep", "write", "edit", "bash", "todo_write"
+        "read", "glob", "grep", "write", "edit", "bash", "webfetch", "todo_write"
     }
     assert tools.REGISTRY["grep"].requires_approval is False  # search is read-only
     assert tools.REGISTRY["glob"].requires_approval is False
     assert tools.REGISTRY["bash"].requires_approval is True
     assert tools.REGISTRY["read"].requires_approval is False
+    assert tools.REGISTRY["webfetch"].requires_approval is True  # reaches the network
 
 
 def test_only_pure_reads_are_parallelizable():
@@ -161,7 +162,7 @@ def test_only_pure_reads_are_parallelizable():
     proven absent, like bash) stays serial. The agent loop only takes the parallel
     path when ALL calls in a batch are parallelizable, so a lone False here forces
     the whole batch back to serial."""
-    for name in ("read", "glob", "grep"):
+    for name in ("read", "glob", "grep", "webfetch"):  # webfetch is a network read
         assert tools.REGISTRY[name].parallelizable is True, name
     for name in ("write", "edit", "bash", "todo_write"):
         assert tools.REGISTRY[name].parallelizable is False, name
@@ -170,7 +171,7 @@ def test_only_pure_reads_are_parallelizable():
 def test_specs_are_openai_function_schema():
     specs = tools.specs()
     assert {s["function"]["name"] for s in specs} == {
-        "read", "glob", "grep", "write", "edit", "bash", "todo_write"
+        "read", "glob", "grep", "write", "edit", "bash", "webfetch", "todo_write"
     }
     read_spec = next(s for s in specs if s["function"]["name"] == "read")
     assert read_spec["type"] == "function"
