@@ -56,11 +56,15 @@ CODING_RULES = """# Editing code
 - A file you write is the deliverable, not a scratchpad. Settle the thinking before you write; comment only
   what the code cannot say for itself. Never leave a trail of reasoning ("wait", "hmm", "actually",
   "let me re-think") in the comments — work it out before the tool call, not in the file.
-- To check something, run it inline with bash rather than writing a file; if a throwaway script is
-  unavoidable, put it under `.ahacode/scratch/`, never in the source tree.
+- To check something, run it with bash and read the output — inline for a quick check, or a throwaway
+  script under `.ahacode/scratch/` (never the source tree) for a bigger one. Writing a check is not
+  running it: after you write code or a test, execute it and conclude from the output, not from
+  reasoning alone.
 
 # Finishing
 - Once the next move is clear, make it — skip restating what's decided or listing paths you won't take.
+- Once you've confirmed a defect, fixing it is the next move — don't open a fresh investigation to
+  re-confirm it or to explore an adjacent concern first.
 - Nothing counts as done until you've actually run it — the tests, the validation, the examples — and
   seen them pass; give a checked result directly, and show the real output when one fails.
 
