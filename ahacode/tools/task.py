@@ -32,13 +32,17 @@ def _task(args: dict, ctx) -> str:
 TASK = Tool(
     name="task",
     description=(
-        # Conservative, decision-local guidance: bias toward solving directly.
-        # qwen never self-delegates (measured 0/120), so the real risk is a wrong
-        # delegation fragmenting one tight reasoning chain — hence "usually yourself".
-        "Delegate a self-contained subtask to a fresh sub-agent. Use ONLY when the "
-        "task spans multiple INDEPENDENT areas or files, or the scope is uncertain "
-        "and would flood your context. Prefer solving directly — usually do the "
-        "work yourself. A single, tightly-reasoned problem must NOT be delegated."
+        # Reference-style (Kilo task.txt / Claude Code): the model decides, judging
+        # independence by two axes — different files, and results that do not depend
+        # on each other. The harness supplies the parallelism (several task calls in
+        # one turn run concurrently) and this rule tells the model when to use it.
+        "Delegate a self-contained subtask to a fresh sub-agent. Use it for work that "
+        "is INDEPENDENT of your other work: a different file, and a result that does "
+        "not depend on another task's output. Launch several at once by putting "
+        "multiple task calls in a SINGLE message — they run concurrently. Never let "
+        "two tasks touch the same file, and keep dependent steps in order (do them "
+        "yourself, or one task after the previous result). In each prompt, say exactly "
+        "what to build, whether to write code or only investigate, and what to return."
     ),
     parameters={
         "type": "object",

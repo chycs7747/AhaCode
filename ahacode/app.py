@@ -1054,11 +1054,14 @@ class AhaCodeApp(App):
 
     def _make_subagent_ctx(self, parent_path, parent_depth, container, worker, approve):
         """Build the AgentContext whose run_subagent spawns a fresh child agent into a
-        nested card, run to completion HERE on the worker thread (so the parent pauses
-        until it returns — a sequential delegate → resume). A per-level factory: each
-        child is parented to THIS level (parent_path / parent_depth + 1) and mounts one
-        deeper inside this card's body, so the tree nests at ANY depth; recursion stops
-        itself — a child at the depth limit is given no task tool."""
+        nested card and runs its loop to completion. run_subagent is a blocking call,
+        but the agent loop runs several parallelizable `task` calls from one turn on a
+        thread pool (see agent.run), so two delegations in a single turn execute
+        CONCURRENTLY — each run_subagent on its own pool thread, bounded only by the
+        gateway's own concurrency gate. A per-level factory: each child is parented to
+        THIS level (parent_path / parent_depth + 1) and mounts one deeper inside this
+        card's body, so the tree nests at ANY depth; recursion stops itself — a child
+        at the depth limit is given no task tool."""
         def run_subagent(prompt: str, description: str) -> str:
             cfg = config.load()
             child_depth = parent_depth + 1

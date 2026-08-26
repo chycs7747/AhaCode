@@ -1436,6 +1436,46 @@ async def test_parallel_task_fanout(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_parallel_tasks_actually_overlap_in_time(monkeypatch):
+    """Not just spawned together — genuinely concurrent: each child holds a barrier
+    that only releases once BOTH are inside it, so the turn can only finish if the
+    two sub-agent loops ran at the same time."""
+    import threading
+
+    from ahacode.events import ToolCall
+    from ahacode.widgets.subagent_card import SubagentCard
+
+    barrier = threading.Barrier(2, timeout=3)
+    both_in = []
+
+    def scripted(messages, tools=None):
+        if messages and messages[0].get("role") == "system" and "sub-agent" in messages[0]["content"]:
+            try:
+                barrier.wait()          # blocks until the SECOND child arrives
+                both_in.append(True)
+            except threading.BrokenBarrierError:
+                pass
+            return iter([TextDelta("child result")])
+        if any(m.get("role") == "tool" for m in messages):
+            return iter([TextDelta("all done")])
+        return iter([
+            ToolCall(id="t1", name="task", arguments={"prompt": "A", "description": "a"}),
+            ToolCall(id="t2", name="task", arguments={"prompt": "B", "description": "b"}),
+        ])
+
+    monkeypatch.setattr(client, "stream_chat", scripted)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "fan out"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(both_in) == 2                       # the barrier released → both ran together
+        assert app.session.messages[-1]["content"] == "all done"
+
+
+@pytest.mark.asyncio
 async def test_grandchild_nests_under_child(monkeypatch):
     """With subagent_depth=2 a sub-agent can spawn its OWN sub-agent: the grandchild
     records depth=2 and parents to the CHILD (not the main session), its card nests
