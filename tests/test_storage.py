@@ -152,10 +152,27 @@ def test_write_plan_creates_the_directory_and_renders_markdown(tmp_path):
     storage.write_plan(path, summary="Goal", steps=["Write a.py with f()"],
                        validation=["uv run pytest"], body="notes")
     assert path.read_text(encoding="utf-8") == (
-        "# Goal\n\n## Steps\n\n1. [ ] Write a.py with f()\n\n"
+        "# Goal\n\n## Steps\n\n1. Write a.py with f()\n\n"
         "## Validation\n\n- uv run pytest\n\n## Notes\n\nnotes\n"
     )
 
 
 def test_display_path_is_project_relative_inside_the_root():
     assert storage.display_path(storage.PROJECT_ROOT / "plans" / "x.md") == "plans/x.md"
+
+
+def test_result_file_sits_beside_the_plan_and_snapshots_the_checklist(tmp_path):
+    plan = tmp_path / "plans" / "s1.md"
+    out = storage.result_path(plan)
+    assert out == tmp_path / "plans" / "s1.result.md"
+    storage.write_result(out, plan=plan, session_id="s2", complete=False, summary="halfway",
+                         items=[{"content": "a", "status": "done"}, {"content": "b", "status": "in_progress"},
+                                {"content": "c", "status": "cancelled"}, {"content": "d"}])
+    text = out.read_text(encoding="utf-8")
+    assert text.startswith("# 진행 중 2/4 — s1.md\n")
+    assert "- session: s2" in text
+    assert "☑ a\n▶ b\n✗ c\n☐ d" in text
+    assert "## Latest summary\n\nhalfway" in text
+    storage.write_result(out, plan=plan, session_id="s2", complete=True, summary="",
+                         items=[{"content": "a", "status": "done"}])
+    assert out.read_text(encoding="utf-8").startswith("# 완료 — s1.md\n")

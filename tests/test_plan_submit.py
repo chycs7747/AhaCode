@@ -74,8 +74,8 @@ def test_success_writes_the_plan_file_named_after_the_session(tmp_path):
     assert path.exists()
     text = path.read_text(encoding="utf-8")
     assert text.startswith("# Fix the parser\n")
-    assert "1. [ ] Write parser.py with parse()" in text
-    assert "2. [ ] Run pytest and confirm 12 passed" in text
+    assert "1. Write parser.py with parse()" in text
+    assert "2. Run pytest and confirm 12 passed" in text
     assert "## Validation\n\n- uv run pytest tests/test_parser.py" in text
     assert "## Notes\n\nThe old parser choked on empty lines." in text
     # the result names the file and tells the model the turn is over

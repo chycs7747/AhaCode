@@ -214,6 +214,38 @@ def plan_path(session_path: Path) -> Path:
     return PLANS_DIR / f"{session_path.stem}.md"
 
 
+def result_path(plan: Path) -> Path:
+    """The progress/result file that sits beside a plan: plans/{session}.result.md."""
+    return plan.with_name(f"{plan.stem}.result.md")
+
+
+def write_result(
+    path: Path, *, plan: Path, session_id: str, items: list[dict], summary: str, complete: bool
+) -> None:
+    """Snapshot an impl session's progress beside its plan — rewritten after every
+    turn, so the file always says where the plan stands (the checklist exactly as
+    the model declared it, plus its latest summary). Kept apart from the plan so
+    the plan stays the baseline a review compares the work against."""
+    from ahacode.tools.plan import mark  # local: storage must not import the tool layer at load
+
+    done = sum(1 for it in items if it.get("status") in ("done", "cancelled"))
+    head = "완료" if complete else f"진행 중 {done}/{len(items)}"
+    lines = [
+        f"# {head} — {plan.name}",
+        "",
+        f"- plan: {display_path(plan)}",
+        f"- session: {session_id}",
+        "",
+        "## Steps",
+        "",
+        *[f"{mark(it.get('status'))} {it.get('content', '')}" for it in items],
+    ]
+    if summary:
+        lines += ["", "## Latest summary", "", summary]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def display_path(path: Path) -> str:
     """A path as the model and user should see it — project-relative when inside."""
     try:
@@ -237,7 +269,9 @@ def write_plan(
     """Render a plan as Markdown and write it (whole file, last write wins — a
     revised plan from the same session replaces the previous one)."""
     lines = [f"# {summary or 'Plan'}", "", "## Steps", ""]
-    lines += [f"{i}. [ ] {s}" for i, s in enumerate(steps, 1)]
+    # Plain numbers, no checkboxes: the plan is the spec a review compares against
+    # and is never ticked. Progress goes to the sibling result file (write_result).
+    lines += [f"{i}. {s}" for i, s in enumerate(steps, 1)]
     if validation:
         lines += ["", "## Validation", ""]
         lines += [f"- {v}" for v in validation]

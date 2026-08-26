@@ -82,7 +82,10 @@ foldable cards you approve before they run.
   it into the checklist, and works it step by step — no per-step sub-agents,
   nothing summarised and threaded forward by hand. Stop it and it is a session
   like any other: open it and carry on. Approving a revised plan makes a new
-  sibling, never a deeper child.
+  sibling, never a deeper child. The plan file itself is never edited by the
+  run; after every turn the harness snapshots the checklist and the latest
+  summary to `plans/<session>.result.md` beside it, and says on screen whether
+  steps are still owed or the plan is complete.
 - **Sub-agents** — `task` spawns a child agent that renders into a nested,
   foldable 🤖 card and gets its own linked session file. Nesting depth is capped
   by config, a fan-out of tasks runs concurrently, and one process-wide gate

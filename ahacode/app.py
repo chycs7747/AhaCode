@@ -151,6 +151,7 @@ class AhaCodeApp(App):
         # The node's role ("main" | "impl" | "subagent" …): an impl session runs in
         # act mode with a larger turn cap, since one context carries a whole plan.
         self.session_kind = str(header.get("kind", "main"))
+        self.session_parent_id = header.get("parent_id")
 
     @dataclass
     class ResponseComplete(Message):
@@ -319,6 +320,7 @@ class AhaCodeApp(App):
         )
         self.session_depth = 0
         self.session_kind = "main"
+        self.session_parent_id = None
         self._has_title = False
         self._reset_plan_gate()
         spill.set_session(self.session_path)
@@ -336,6 +338,7 @@ class AhaCodeApp(App):
         meta = storage.read_session_meta(self.session_path) or {}
         self.session_depth = int(meta.get("depth", 0))
         self.session_kind = str(meta.get("kind", "main"))
+        self.session_parent_id = meta.get("parent_id")
         self._has_title = bool(meta.get("title"))
         self._reset_plan_gate()
         spill.set_session(self.session_path)
@@ -508,6 +511,32 @@ class AhaCodeApp(App):
         container = self.query_one("#chat-container", VerticalScroll)
         await container.mount(Chatbox(text, role="user"))
         await self._start_turn()
+
+    async def _snapshot_progress(self) -> None:
+        """Write plans/{plan}.result.md from the panel and announce the state."""
+        panel = self.query_one(TodoPanel)
+        items = list(panel.items)
+        if not items:
+            return  # nothing declared yet — the model has not mirrored the plan
+        left = panel.unfinished()
+        parent = self.session_parent_id or self.session_path.stem
+        plan = storage.plan_path(storage.SESSIONS_DIR / f"{parent}.jsonl")
+        summary = next(
+            (m["content"] for m in reversed(self.session.messages)
+             if m.get("role") == "assistant" and m.get("content")), "",
+        )
+        out = storage.result_path(plan)
+        storage.write_result(out, plan=plan, session_id=self.session_path.stem,
+                             items=items, summary=summary, complete=not left)
+        if left:
+            await self._say_system(
+                f"⏸ 미완 항목 {len(left)}개 — 이어서 하려면 입력하세요 "
+                f"(다음: {left[0].get('content', '')[:60]}) · 진행 기록 {storage.display_path(out)}"
+            )
+        else:
+            await self._say_system(
+                f"✓ 계획 완료 — {len(items)}단계 모두 처리 · 결과 {storage.display_path(out)}"
+            )
 
     def _max_turns(self) -> int:
         """An impl session carries a whole plan in one context, so it gets the
@@ -739,17 +768,13 @@ class AhaCodeApp(App):
         if not self._has_title and any(m.get("role") == "assistant" for m in self.session.messages):
             self._has_title = True
             self.generate_title(list(self.session.messages), self.session_path)
-        # An impl session exists to finish its plan. If the turn ended with steps
-        # still owed, say so — the checklist alone is easy to miss once it is folded,
+        # An impl session exists to finish its plan. After every turn, snapshot where
+        # it stands beside the plan (the checklist as the model declared it + its
+        # latest summary) and say so on screen — the folded panel is easy to miss,
         # and "finished talking" looks the same as "finished the plan" otherwise.
-        # Only a notice: carrying on is the user's call (auto-continue is not here).
+        # Only notices: carrying on is the user's call (auto-continue is not here).
         if self.session_kind == "impl" and event.messages:
-            left = self.query_one(TodoPanel).unfinished()
-            if left:
-                await self._say_system(
-                    f"⏸ 미완 항목 {len(left)}개 — 이어서 하려면 입력하세요 "
-                    f"(다음: {left[0].get('content', '')[:60]})"
-                )
+            await self._snapshot_progress()
 
     @on(ResponseFailed)
     async def response_failed(self, event: ResponseFailed) -> None:

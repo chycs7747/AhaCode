@@ -86,6 +86,11 @@ def _plan_file(app):
     return storage.PLANS_DIR / f"{app.session_path.stem}.md"
 
 
+def _plan_file_for(app):
+    """The plan an impl session was handed (named after its PARENT)."""
+    return storage.PLANS_DIR / f"{app.session_parent_id}.md"
+
+
 # --- opening ---------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -399,6 +404,11 @@ async def test_an_impl_turn_that_leaves_steps_owed_says_so(monkeypatch):
         await pilot.pause()
         said = [b._content for b in app.query(Chatbox) if b.has_class("chatbox--system")]
         assert any("미완 항목 2개" in s and "Add tests/test_solver.py" in s for s in said)
+        # the progress snapshot sits beside the PLANNING session's plan file
+        result = storage.PLANS_DIR / f"{app.session_parent_id}.result.md"
+        text = result.read_text(encoding="utf-8")
+        assert text.startswith("# 진행 중 1/3") and "▶ Add tests/test_solver.py" in text
+        assert f"- session: {app.session_path.stem}" in text
 
 
 @pytest.mark.asyncio
@@ -417,7 +427,14 @@ async def test_a_finished_plan_gets_no_owed_notice(monkeypatch):
         await pilot.pause()
         said = [b._content for b in app.query(Chatbox) if b.has_class("chatbox--system")]
         assert not any("미완 항목" in s for s in said)
+        assert any("✓ 계획 완료" in s for s in said)
         assert app.query_one(TodoPanel).has_class("todo-panel--done")
+        result = storage.PLANS_DIR / f"{app.session_parent_id}.result.md"
+        text = result.read_text(encoding="utf-8")
+        assert text.startswith("# 완료") and "## Latest summary\n\nall done" in text
+        # the plan itself was not touched: numbered steps, no checkboxes
+        plan_text = _plan_file_for(app).read_text(encoding="utf-8")
+        assert "1. Write solver.py with solve()" in plan_text and "[ ]" not in plan_text
 
 
 @pytest.mark.asyncio
