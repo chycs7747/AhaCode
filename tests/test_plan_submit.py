@@ -117,3 +117,20 @@ def test_tool_contract():
     assert set(t.parameters["required"]) == {"summary", "steps"}
     spec = tools.specs({"plan_submit": t})[0]["function"]
     assert spec["name"] == "plan_submit" and "steps" in spec["parameters"]["properties"]
+
+
+def test_steps_sent_as_a_json_string_are_recovered(tmp_path):
+    """The live break: the model JSON-encoded the steps list twice, so it arrived as
+    one string and became a 289-step plan of single characters."""
+    out = _submit(tmp_path, summary="s",
+                  steps='["Write bubble_sort.py with bubble_sort()", "Write quick_sort.py with quick_sort()"]')
+    assert "2 steps" in out
+    text = (storage.PLANS_DIR / "2026-08-26_120000.md").read_text(encoding="utf-8")
+    assert "1. Write bubble_sort.py with bubble_sort()" in text
+    assert "2. Write quick_sort.py with quick_sort()" in text
+    assert "3." not in text          # not one step per character
+
+
+def test_bare_string_steps_become_steps(tmp_path):
+    out = _submit(tmp_path, summary="s", steps=["Write a.py with f()", "Run it"])
+    assert "2 steps" in out

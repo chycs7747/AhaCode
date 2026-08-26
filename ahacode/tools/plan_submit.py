@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from ahacode import storage
 from ahacode.tools.base import Tool
-from ahacode.tools.plan import non_actionable
+from ahacode.tools.plan import coerce_items, non_actionable
 
 
 class PlanRejected(ValueError):
@@ -26,7 +26,12 @@ class PlanRejected(ValueError):
 
 
 def _clean(items) -> list[str]:
-    return [s.strip() for s in (items or []) if isinstance(s, str) and s.strip()]
+    """Steps as a plain list of strings, repairing the shapes todo_write also sees:
+    a list JSON-encoded a second time (arrives as ONE string — iterating it made a
+    289-"step" plan of single characters), or bare/typed items. Reuses coerce_items
+    so the two tools normalise identically."""
+    normalised, _ = coerce_items(items)
+    return [it["content"] for it in normalised]
 
 
 def check(steps: list[str]) -> str | None:
@@ -51,6 +56,8 @@ def note(steps: list[str]) -> str:
 def _plan_submit(args: dict, ctx) -> str:
     steps = _clean(args.get("steps"))
     problem = check(steps)
+    # steps is required and the model must send an array; if it sent something we
+    # could not turn into any step, say so rather than saving an empty plan.
     if problem:
         raise PlanRejected(problem)
     session_path = getattr(ctx, "session_path", None)
