@@ -116,3 +116,25 @@ def test_latest_session_skips_subagent(tmp_path):
     storage.write_header(sub, storage.make_header(
         sub.stem, kind="subagent", parent_id=main.stem, depth=1))
     assert storage.latest_session(base_dir=tmp_path).name == main.name
+
+
+def test_header_relation_roundtrip(tmp_path):
+    p = storage.new_session_path(base_dir=tmp_path)
+    h = storage.make_header(p.stem, kind="impl", parent_id="plan1", relation="handoff")
+    storage.write_header(p, h)
+    assert storage.read_session_meta(p)["relation"] == "handoff"
+
+
+def test_header_relation_defaults_to_none():
+    assert storage.make_header("root")["relation"] is None
+
+
+def test_header_without_relation_field_still_loads(tmp_path):
+    # A header written before the field existed: relation is simply absent.
+    p = storage.new_session_path(base_dir=tmp_path)
+    old = {k: v for k, v in storage.make_header(p.stem, kind="subagent").items()
+           if k != "relation"}
+    storage.write_header(p, old)
+    meta = storage.read_session_meta(p)
+    assert meta is not None and meta.get("relation") is None
+    assert storage.build_tree([meta])[0]["id"] == p.stem

@@ -93,18 +93,27 @@ def make_header(
     *,
     parent_id: str | None = None,
     kind: str = "main",
+    relation: str | None = None,
     depth: int = 0,
     model: str = "",
     title: str = "",
     cwd: Path | str | None = None,
 ) -> dict:
-    """Build a session header. kind is "main" | "subagent" | "fork"."""
+    """Build a session header.
+
+    kind is the node's role: "main" | "plan" | "impl" | "subagent" | "fork".
+    relation is the edge to the parent: "handoff" (control passed down a chain —
+    plan → impl; the parent stops working) or "delegate" (a task fanned out while
+    the parent waits). None for a root. depth counts delegate edges only — a
+    handoff inherits the parent's depth, so the sub-agent cap keys off it.
+    """
     return {
         "type": "header",
         "version": HEADER_VERSION,
         "id": session_id,
         "parent_id": parent_id,
         "kind": kind,
+        "relation": relation,
         "depth": depth,
         "model": model,
         "cwd": str(cwd or PROJECT_ROOT),
