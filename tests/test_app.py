@@ -1966,3 +1966,24 @@ async def test_a_stop_keeps_the_rounds_that_finished(monkeypatch):
     roles = [m["role"] for m in app.session.messages]
     assert roles == ["user", "assistant", "tool"]          # round one survived the stop
     assert not any("never kept" in (m.get("content") or "") for m in app.session.messages)
+
+
+@pytest.mark.asyncio
+async def test_the_panel_repairs_items_that_arrive_as_a_string(monkeypatch):
+    """The live regression: a stringified list drew one ☐ per character."""
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([
+        ToolCall(id="t1", name="todo_write",
+                 arguments={"items": '["Write sort.py: 버블, 삽입", "Run it"]'}),
+        TextDelta("planned"),
+    ]))
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "plan it"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        panel = app.query_one(TodoPanel)
+        assert [it["content"] for it in panel.items] == ["Write sort.py: 버블, 삽입", "Run it"]
+        assert "☐ Write sort.py: 버블, 삽입" in panel._content

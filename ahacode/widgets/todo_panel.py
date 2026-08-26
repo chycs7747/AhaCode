@@ -11,7 +11,7 @@ its JSON schema, and this view can never disagree about what a status is.
 
 from textual.widgets import Static
 
-from ahacode.tools.plan import FINISHED, mark, unfinished
+from ahacode.tools.plan import FINISHED, coerce_items, mark, unfinished
 
 
 class TodoPanel(Static):
@@ -48,7 +48,10 @@ class TodoPanel(Static):
         rewritten from it. Statuses come ONLY from the model's list: nothing in the
         harness ticks a step, so ☑ on screen always means the model declared it done.
         """
-        self.items = list(items)
+        # The one choke point for shape: every caller (live call, history replay,
+        # plan_submit's steps) passes through here, so a list that arrived as a
+        # string or as bare strings is repaired once, not per caller.
+        self.items, _ = coerce_items(items)
         self.collapsed = False  # a new or revised plan is worth seeing in full
         self._redraw()
 

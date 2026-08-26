@@ -78,3 +78,43 @@ def test_todo_write_describes_the_status_discipline():
     desc = plan.TODO_WRITE.description
     assert "never on intent" in desc and "exactly ONE in_progress" in desc
     assert "cancelled" in plan.TODO_WRITE.parameters["properties"]["items"]["items"]["properties"]["status"]["enum"]
+
+
+# --- the shape of `items` as it actually arrives -------------------------------
+
+def test_items_sent_as_a_json_string_are_recovered():
+    """Seen live: the model JSON-encoded the list twice, so `items` arrived as one
+    string and the panel drew a checklist of single characters."""
+    raw = '[{"content": "Write sort.py", "status": "done"}, {"content": "Run it"}]'
+    items, note = plan.coerce_items(raw)
+    assert [it["content"] for it in items] == ["Write sort.py", "Run it"]
+    assert items[0]["status"] == "done" and items[1]["status"] == "pending"
+    assert "string" in note
+
+
+def test_bare_strings_become_pending_items():
+    items, note = plan.coerce_items(["Write sort.py", " Run it "])
+    assert items == [{"content": "Write sort.py", "status": "pending"},
+                     {"content": "Run it", "status": "pending"}]
+    assert "objects" in note
+
+
+def test_a_string_that_is_not_json_yields_nothing_with_a_reason():
+    items, note = plan.coerce_items("just some words")
+    assert items == [] and "must be a JSON array" in note
+
+
+def test_well_formed_items_pass_through_without_a_note():
+    items, note = plan.coerce_items([{"content": "a", "status": "in_progress"}])
+    assert items == [{"content": "a", "status": "in_progress"}] and note == ""
+
+
+def test_unknown_status_is_read_as_pending():
+    items, _ = plan.coerce_items([{"content": "a", "status": "finished?"}])
+    assert items[0]["status"] == "pending"
+
+
+def test_todo_write_tells_the_model_when_it_repaired_the_shape():
+    out = plan.TODO_WRITE.execute({"items": '["Write sort.py"]'})
+    assert out.splitlines()[0] == "☐ Write sort.py"
+    assert "note:" in out

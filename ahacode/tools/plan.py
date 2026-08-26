@@ -7,6 +7,7 @@ so no ctx is needed (that seam is deferred until subagents require it)."""
 
 from __future__ import annotations
 
+import json
 import re
 
 from ahacode.tools.base import Tool
@@ -25,6 +26,39 @@ STATUS_MARKS = {
 STATUSES = tuple(STATUS_MARKS)      # the enum the tool advertises, in display order
 PENDING, IN_PROGRESS, DONE, CANCELLED = STATUSES  # named keys, so no caller spells them literally
 FINISHED = frozenset({DONE, CANCELLED})  # states that need no more work
+
+
+def coerce_items(raw) -> tuple[list[dict], str]:
+    """Normalise whatever the model sent as `items` into [{content, status}, …].
+
+    Returns (items, note). Seen in the wild: the list JSON-encoded a second time
+    (so `items` arrives as ONE string — iterating it made a checklist of single
+    characters), and bare strings instead of {content} objects. Both are
+    recovered; the note tells the model the shape it should have sent, and is
+    empty when nothing needed fixing.
+    """
+    note = ""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+            note = "items was sent as a string; send a JSON array of objects"
+        except json.JSONDecodeError:
+            return [], "items must be a JSON array of {content, status} objects"
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return [], "items must be a JSON array of {content, status} objects"
+    out: list[dict] = []
+    for it in raw:
+        if isinstance(it, str):
+            if it.strip():
+                out.append({"content": it.strip(), "status": PENDING})
+                note = note or "items held bare strings; send {content, status} objects"
+        elif isinstance(it, dict) and str(it.get("content", "")).strip():
+            status = it.get("status") or PENDING
+            out.append({**it, "content": str(it["content"]).strip(),
+                        "status": status if status in STATUS_MARKS else PENDING})
+    return out, note
 
 
 def unfinished(items: list[dict]) -> list[dict]:
@@ -94,9 +128,11 @@ def non_actionable(step: str) -> bool:
 
 
 def _todo_write(args: dict) -> str:
-    items = args.get("items", [])
+    items, note = coerce_items(args.get("items", []))
+    if not items:
+        return f"(empty plan){' — ' + note if note else ''}"
     lines = [f"{mark(it.get('status'))} {it['content']}" for it in items]
-    return "\n".join(lines) or "(empty plan)"
+    return "\n".join(lines) + (f"\n(note: {note})" if note else "")
 
 
 TODO_WRITE = Tool(
