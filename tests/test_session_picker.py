@@ -1,13 +1,13 @@
 """Deleting sessions from the picker: cascade, confirm, and the open session."""
 
 import pytest
-from textual.widgets import ListView, Static
+from textual.widgets import Button, Input, Label, ListView, Static
 
 from ahacode import client, config, storage
 from ahacode.app import AhaCodeApp
 from ahacode.events import TextDelta
 from ahacode.widgets.prompt_input import PromptInput
-from ahacode.widgets.session_picker import SessionPicker
+from ahacode.widgets.session_picker import SessionPicker, SessionRow
 
 
 @pytest.fixture(autouse=True)
@@ -117,7 +117,7 @@ async def test_the_new_row_cannot_be_deleted(tmp_path):
         await pilot.press("d")
         await pilot.press("d")
         await pilot.pause()
-        assert picker._pending is None
+        assert not any(r.armed for r in picker.query(SessionRow))
         assert isinstance(app.screen, SessionPicker)
 
 
@@ -127,14 +127,19 @@ async def test_deleting_the_open_session_moves_the_app_to_a_fresh_one(tmp_path):
     async with app.run_test() as pilot:
         current = app.session_path
         picker = await _open_picker(app, pilot)
-        picker.query_one("#picker-list", ListView).index = _row_of(picker, current.stem)
-        await pilot.press("d")
-        await pilot.press("d")
+        row = next(r for r in picker.query(SessionRow) if r.session_id == current.stem)                 # deterministic: press its button
+        row.query_one(".picker-delete", Button).press()
+        await pilot.pause()
+        row.query_one(".picker-delete", Button).press()
         await pilot.pause()
         await app.workers.wait_for_complete()
         await pilot.pause()
-        assert not current.exists()
-        assert app.session_path != current and app.session_path.exists()
+        # The app left the deleted transcript for a fresh, drivable session. (The file
+        # NAME can recur: new_session_path stamps to the second, and a mock clock makes
+        # delete+create land in the same tick — so assert freshness, not path.)
+        assert app.session.messages == [] and app.session_kind == "main"
+        assert not app.view_only
+        assert storage.read_header(app.session_path) is not None
 
 
 @pytest.mark.asyncio
@@ -168,5 +173,136 @@ async def test_a_session_whose_turn_is_running_is_not_deletable(monkeypatch, tmp
         assert "진행 중" in str(picker.query_one("#picker-title", Static).render())
         await pilot.press("escape")
         await pilot.pause()
-        app.action_stop()
-        await app.workers.wait_for_complete()
+        app.action_stop()                       # tidy up; the worker ends cancelled
+        await pilot.pause(0.1)
+
+
+# --- per-row buttons ---------------------------------------------------------------
+
+def _row(picker, sid) -> SessionRow:
+    return next(r for r in picker.query(SessionRow) if r.session_id == sid)
+
+
+@pytest.mark.asyncio
+async def test_the_row_delete_button_needs_two_clicks_and_never_opens_the_session(tmp_path):
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        _session(tmp_path, "victim", title="victim")
+        picker = await _open_picker(app, pilot)
+        row = _row(picker, "victim")
+        row.query_one(".picker-delete", Button).press()
+        await pilot.pause()
+        assert isinstance(app.screen, SessionPicker)          # a button click is not a row click
+        assert row.armed and str(row.query_one(".picker-delete", Button).label) == "확인?"
+        assert (tmp_path / "victim.jsonl").exists()
+        row.query_one(".picker-delete", Button).press()
+        await pilot.pause()
+        assert not (tmp_path / "victim.jsonl").exists()
+        assert isinstance(app.screen, SessionPicker)
+
+
+@pytest.mark.asyncio
+async def test_arming_one_row_then_another_disarms_the_first(tmp_path):
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        _session(tmp_path, "a", title="a")
+        _session(tmp_path, "b", title="b")
+        picker = await _open_picker(app, pilot)
+        _row(picker, "a").query_one(".picker-delete", Button).press()
+        await pilot.pause()
+        _row(picker, "b").query_one(".picker-delete", Button).press()
+        await pilot.pause()
+        assert not _row(picker, "a").armed and _row(picker, "b").armed
+        await pilot.press("escape")                            # withdraws b's question
+        await pilot.pause()
+        assert not _row(picker, "b").armed and isinstance(app.screen, SessionPicker)
+        assert (tmp_path / "a.jsonl").exists() and (tmp_path / "b.jsonl").exists()
+
+
+@pytest.mark.asyncio
+async def test_rename_inline_saves_on_enter(tmp_path):
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        p = _session(tmp_path, "s", title="old name")
+        picker = await _open_picker(app, pilot)
+        row = _row(picker, "s")
+        row.query_one(".picker-rename", Button).press()
+        await pilot.pause()
+        box = row.query_one(Input)
+        assert box.value == "old name" and box.has_focus
+        box.value = "new name"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, SessionPicker)          # Enter saved, did not open
+        assert storage.read_session_meta(p)["title"] == "new name"
+        assert "new name" in str(row.query_one(".picker-row-title", Label).render())
+        assert list(row.query(Input)) == []
+
+
+@pytest.mark.asyncio
+async def test_rename_esc_keeps_the_old_name(tmp_path):
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        p = _session(tmp_path, "s", title="old name")
+        picker = await _open_picker(app, pilot)
+        picker.query_one("#picker-list", ListView).index = _row_of(picker, "s")
+        await pilot.press("r")                                 # keyboard mirror of ✎
+        await pilot.pause()
+        row = _row(picker, "s")
+        row.query_one(Input).value = "typo"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, SessionPicker)          # Esc ended the rename only
+        assert storage.read_session_meta(p)["title"] == "old name"
+        assert list(row.query(Input)) == []
+
+
+@pytest.mark.asyncio
+async def test_renaming_the_open_session_updates_the_header(tmp_path):
+    from ahacode.widgets.header_bar import HeaderBar
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        current = app.session_path.stem
+        picker = await _open_picker(app, pilot)
+        row = _row(picker, current)
+        row.query_one(".picker-rename", Button).press()
+        await pilot.pause()
+        row.query_one(Input).value = "renamed here"
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("escape")                            # close the picker
+        await pilot.pause()
+        assert app.query_one(HeaderBar)._title_text == "AhaCode · renamed here"
+        assert storage.read_session_meta(app.session_path)["title"] == "renamed here"
+
+
+@pytest.mark.asyncio
+async def test_the_close_button_dismisses_the_picker(tmp_path):
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        picker = await _open_picker(app, pilot)
+        current = app.session_path
+        picker.query_one("#picker-close", Button).press()
+        await pilot.pause()
+        assert not isinstance(app.screen, SessionPicker)   # closed
+        assert app.session_path == current                 # nothing opened
+
+
+@pytest.mark.asyncio
+async def test_the_close_button_withdraws_a_pending_delete_first(tmp_path):
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        _session(tmp_path, "victim", title="victim")
+        picker = await _open_picker(app, pilot)
+        row = _row(picker, "victim")
+        row.query_one(".picker-delete", Button).press()
+        await pilot.pause()
+        assert row.armed
+        picker.query_one("#picker-close", Button).press()   # first press: withdraw
+        await pilot.pause()
+        assert not row.armed and isinstance(app.screen, SessionPicker)
+        assert (tmp_path / "victim.jsonl").exists()
+        picker.query_one("#picker-close", Button).press()   # now it closes
+        await pilot.pause()
+        assert not isinstance(app.screen, SessionPicker)

@@ -232,9 +232,24 @@ SessionPicker {
     background: $surface;
 }
 
-#picker-title {
+#picker-head {
+    height: 1;
+    margin-bottom: 1;
+}
+
+#picker-heading {
+    width: 1fr;
     text-style: bold;
     color: $accent;
+}
+
+#picker-close {
+    margin-left: 1;
+    min-width: 8;
+}
+
+#picker-title {
+    color: $text-muted;
     margin-bottom: 1;
 }
 
@@ -243,9 +258,27 @@ SessionPicker {
     max-height: 22;
 }
 
-#picker-actions {
-    height: auto;
-    margin-top: 1;
+/* One session per row: the title takes the width, the ✎ / 🗑 buttons sit at the
+   right edge one cell tall (compact), so a click on them never reaches the row. */
+.picker-row {
+    height: 1;
+}
+
+.picker-row-title {
+    width: 1fr;
+}
+
+.picker-rename-input {
+    width: 1fr;
+    height: 1;
+    border: none;
+    padding: 0;
+}
+
+.picker-rename, .picker-delete {
+    width: auto;
+    min-width: 4;
+    margin-left: 1;
 }
 
 /* Foldable reasoning block (Textual Collapsible). Blend it into the chat: no

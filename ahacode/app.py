@@ -368,6 +368,10 @@ class AhaCodeApp(App):
             self.run_worker(self._new_session(), exclusive=False)
         elif result:
             self.run_worker(self._switch_session(result), exclusive=False)
+        else:  # closed without choosing — the open session may have been renamed there
+            meta = storage.read_session_meta(self.session_path) or {}
+            self._set_header_title(meta.get("title", ""))
+            self._has_title = bool(meta.get("title"))
 
     @staticmethod
     def _edit_card(args: dict) -> Chatbox:
