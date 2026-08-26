@@ -16,6 +16,7 @@ class HeaderBar(Horizontal):
     def compose(self) -> ComposeResult:
         yield Static("AhaCode", id="session-title")
         yield Static("", id="endpoint")  # connection identity lives up here, not in the composer
+        yield Button("⚙ Agents", id="agent-settings-btn", classes="header-btn")
         yield Button("+ New", id="new-session-btn", classes="header-btn")
         yield Button("≡ Sessions", id="open-sessions-btn", classes="header-btn")
 

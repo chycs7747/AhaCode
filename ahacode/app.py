@@ -27,6 +27,7 @@ from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.header_bar import HeaderBar
+from ahacode.widgets.agent_settings import AgentSettings
 from ahacode.widgets.plan_gate import PlanGate
 from ahacode.widgets.prompt_input import PromptInput
 from ahacode.widgets.session_picker import SessionPicker
@@ -211,6 +212,29 @@ class AhaCodeApp(App):
     def _set_header_endpoint(self) -> None:
         """Reflect the current server endpoint in the top bar."""
         self.query_one(HeaderBar).set_endpoint(config.load().base_url)
+
+    @on(Button.Pressed, "#agent-settings-btn")
+    def _on_agent_settings_button(self, event: Button.Pressed) -> None:
+        event.stop()
+        cfg = config.load()
+        self.push_screen(
+            AgentSettings(cfg.max_parallel_agents, cfg.subagent_depth),
+            self._agent_settings_saved,
+        )
+
+    def _agent_settings_saved(self, result: "tuple[int, int] | None") -> None:
+        """Persist the chosen parallelism/depth and resize the client gate so the
+        very next request honours it (same path as the /model and /url commands)."""
+        if result is None:
+            return
+        from dataclasses import replace
+        max_parallel, depth = result
+        config.save(replace(config.load(), max_parallel_agents=max_parallel, subagent_depth=depth))
+        client.reset()
+        self.run_worker(
+            self._say_system(f"에이전트 설정 저장 — 최대 병렬 {max_parallel} · 깊이 {depth}"),
+            exclusive=False,
+        )
 
     @on(Button.Pressed, "#new-session-btn")
     async def _on_new_session_button(self, event: Button.Pressed) -> None:

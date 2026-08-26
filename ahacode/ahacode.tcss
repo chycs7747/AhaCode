@@ -219,6 +219,42 @@ TodoPanel.todo-panel--done {
     margin-bottom: 1;
 }
 
+AgentSettings {
+    align: center middle;
+}
+
+#agent-settings-box {
+    width: 60;
+    height: auto;
+    padding: 1 2;
+    border: round $accent;
+    background: $surface;
+}
+
+#agent-settings-title {
+    text-style: bold;
+    color: $accent;
+    margin-bottom: 1;
+}
+
+#agent-settings-hint {
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#agent-settings-box Select {
+    margin-bottom: 1;
+}
+
+#agent-settings-buttons {
+    height: auto;
+    margin-top: 1;
+}
+
+#agent-settings-buttons Button {
+    margin-right: 1;
+}
+
 SessionPicker {
     align: center middle;
 }
