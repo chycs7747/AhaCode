@@ -7,6 +7,7 @@ from textual.widgets import Button, Select
 from ahacode import client, config, storage
 from ahacode.app import AhaCodeApp
 from ahacode.events import TextDelta, ToolCall
+from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.plan_gate import PlanGate
 from ahacode.widgets.prompt_input import PromptInput
 from ahacode.widgets.subagent_card import SubagentCard
@@ -366,3 +367,64 @@ async def test_an_impl_session_gets_the_larger_turn_cap(monkeypatch):
         await pilot.pause()
     assert seen[0] == agent.DEFAULT_MAX_TURNS
     assert seen[-1] == config.load().impl_max_turns > agent.DEFAULT_MAX_TURNS
+
+
+# --- the impl turn's end: what is still owed ---------------------------------
+
+def _todo_status(*pairs, call_id="w1"):
+    return ToolCall(id=call_id, name="todo_write", arguments={
+        "items": [{"content": c, "status": st} for c, st in pairs]
+    })
+
+
+async def _approved_impl(monkeypatch, impl_turns):
+    """A plan submitted and approved; the impl session then plays `impl_turns`."""
+    _stream_turns(monkeypatch, [[_submit()], *impl_turns])
+    app = AhaCodeApp()
+    return app
+
+
+@pytest.mark.asyncio
+async def test_an_impl_turn_that_leaves_steps_owed_says_so(monkeypatch):
+    app = await _approved_impl(monkeypatch, [
+        [_todo_status(("Write solver.py with solve()", "done"), ("Add tests/test_solver.py", "in_progress"),
+               ("Run pytest and confirm 3 passed", "pending"))],
+        [TextDelta("stopping here for now")],
+    ])
+    async with app.run_test() as pilot:
+        await _plan_mode(app, pilot)
+        await _ask(pilot, app, "풀어줘")
+        app.query_one("#plan-gate-run", Button).press()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        said = [b._content for b in app.query(Chatbox) if b.has_class("chatbox--system")]
+        assert any("미완 항목 2개" in s and "Add tests/test_solver.py" in s for s in said)
+
+
+@pytest.mark.asyncio
+async def test_a_finished_plan_gets_no_owed_notice(monkeypatch):
+    """done and cancelled both count as finished — nothing is owed."""
+    app = await _approved_impl(monkeypatch, [
+        [_todo_status(("Write solver.py with solve()", "done"), ("Add tests/test_solver.py", "cancelled"),
+               ("Run pytest and confirm 3 passed", "done"))],
+        [TextDelta("all done")],
+    ])
+    async with app.run_test() as pilot:
+        await _plan_mode(app, pilot)
+        await _ask(pilot, app, "풀어줘")
+        app.query_one("#plan-gate-run", Button).press()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        said = [b._content for b in app.query(Chatbox) if b.has_class("chatbox--system")]
+        assert not any("미완 항목" in s for s in said)
+        assert app.query_one(TodoPanel).has_class("todo-panel--done")
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_session_never_gets_the_owed_notice(monkeypatch):
+    _stream_turns(monkeypatch, [[_todo_status(("a", "in_progress"), ("b", "pending"))], [TextDelta("later")]])
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await _ask(pilot, app, "해줘")                 # act, kind=main
+        said = [b._content for b in app.query(Chatbox) if b.has_class("chatbox--system")]
+        assert not any("미완 항목" in s for s in said)

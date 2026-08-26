@@ -726,6 +726,17 @@ class AhaCodeApp(App):
         if not self._has_title and any(m.get("role") == "assistant" for m in self.session.messages):
             self._has_title = True
             self.generate_title(list(self.session.messages), self.session_path)
+        # An impl session exists to finish its plan. If the turn ended with steps
+        # still owed, say so — the checklist alone is easy to miss once it is folded,
+        # and "finished talking" looks the same as "finished the plan" otherwise.
+        # Only a notice: carrying on is the user's call (auto-continue is not here).
+        if self.session_kind == "impl" and event.messages:
+            left = self.query_one(TodoPanel).unfinished()
+            if left:
+                await self._say_system(
+                    f"⏸ 미완 항목 {len(left)}개 — 이어서 하려면 입력하세요 "
+                    f"(다음: {left[0].get('content', '')[:60]})"
+                )
 
     @on(ResponseFailed)
     async def response_failed(self, event: ResponseFailed) -> None:

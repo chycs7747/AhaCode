@@ -11,7 +11,7 @@ its JSON schema, and this view can never disagree about what a status is.
 
 from textual.widgets import Static
 
-from ahacode.tools.plan import DONE, mark
+from ahacode.tools.plan import FINISHED, mark, unfinished
 
 
 class TodoPanel(Static):
@@ -22,16 +22,16 @@ class TodoPanel(Static):
         # paths) — see Chatbox for why unparsed content avoids a MarkupError crash.
         super().__init__("", markup=False)
         self._content = ""
-        self.items: list[dict] = []  # the raw plan, so /run can execute its steps
+        self.items: list[dict] = []  # the raw plan, as the model last sent it
         self.collapsed = False       # folded to one line; the plan itself is untouched
         self.display = False  # nothing to show until a plan exists
 
     def clear(self) -> None:
         """Drop the plan and hide the panel.
 
-        Not just `display = False`: `/run` executes whatever sits in `items`, so a
-        hidden-but-stale list would silently run another session's plan. The panel is
-        a view of the open session, so switching sessions must empty it too.
+        Not just `display = False`: the panel is a view of the open session, so
+        switching sessions must empty it — a hidden-but-stale list would describe
+        another session's plan the moment it was shown again.
         """
         self.items = []
         self.collapsed = False
@@ -45,28 +45,17 @@ class TodoPanel(Static):
 
         This is also the path a plan REVISED with the user takes: they discuss, the
         model calls todo_write again with the amended list, and the pinned panel is
-        rewritten from it. Statuses therefore always come from the model's list, which
-        is why complete_step() below writes into `items` rather than a side table.
+        rewritten from it. Statuses come ONLY from the model's list: nothing in the
+        harness ticks a step, so ☑ on screen always means the model declared it done.
         """
         self.items = list(items)
         self.collapsed = False  # a new or revised plan is worth seeing in full
         self._redraw()
 
-    def complete_step(self, description: str) -> bool:
-        """Tick the first not-yet-done step whose text matches `description`.
-
-        Used by /run, where the steps are carried out by code (orchestrator.run_plan)
-        rather than by the model calling todo_write again — without this the checklist
-        sat at ☐ through an entire successful run. Matching on the step TEXT, not an
-        index, is what keeps it correct when the plan was edited mid-discussion: an
-        index would tick whatever now sits in that slot. Returns whether a step matched.
-        """
-        for item in self.items:
-            if item.get("content") == description and item.get("status") != DONE:
-                item["status"] = DONE
-                self._redraw()
-                return True
-        return False
+    def unfinished(self) -> list[dict]:
+        """Steps still owed (neither done nor cancelled) — what a turn that ends
+        with the plan incomplete leaves behind."""
+        return unfinished(self.items)
 
     def set_collapsed(self, collapsed: bool) -> None:
         """Fold the plan to a single summary line, or unfold it.
@@ -90,7 +79,7 @@ class TodoPanel(Static):
         Carrying on after a stop is just typing into the impl session (the model
         holds its own context), so there is no command to name here any more.
         """
-        finished = sum(1 for it in self.items if it.get("status") == DONE)
+        finished = sum(1 for it in self.items if it.get("status") in FINISHED)
         # Kept short on purpose: Korean glyphs are two cells wide, and a folded line
         # that wraps to two rows is not folded. Measured to hold one row down to a
         # 44-column terminal.
@@ -104,7 +93,7 @@ class TodoPanel(Static):
         None (it crashes during layout, not at import — so the name looks fine until
         the app draws).
         """
-        done = bool(self.items) and all(it.get("status") == DONE for it in self.items)
+        done = bool(self.items) and not self.unfinished()
         if self.collapsed:
             self._content = "✓ Plan complete" if done else self._summary()
         else:

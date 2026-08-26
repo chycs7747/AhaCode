@@ -64,3 +64,17 @@ def test_korean_output_verbs_are_actionable(step):
 ])
 def test_non_actionable_steps_are_flagged(step):
     assert plan.non_actionable(step)
+
+
+def test_cancelled_is_a_fourth_state_and_counts_as_finished():
+    assert plan.STATUSES == ("pending", "in_progress", "done", "cancelled")
+    assert plan.mark("cancelled") == "✗"
+    items = [{"content": "a", "status": "done"}, {"content": "b", "status": "cancelled"},
+             {"content": "c", "status": "in_progress"}, {"content": "d"}]
+    assert [it["content"] for it in plan.unfinished(items)] == ["c", "d"]
+
+
+def test_todo_write_describes_the_status_discipline():
+    desc = plan.TODO_WRITE.description
+    assert "never on intent" in desc and "exactly ONE in_progress" in desc
+    assert "cancelled" in plan.TODO_WRITE.parameters["properties"]["items"]["items"]["properties"]["status"]["enum"]

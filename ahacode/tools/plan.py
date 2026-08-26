@@ -20,9 +20,16 @@ STATUS_MARKS = {
     "pending": "☐",
     "in_progress": "▶",
     "done": "☑",
+    "cancelled": "✗",   # no longer needed — distinct from done, so a plan stays honest
 }
 STATUSES = tuple(STATUS_MARKS)      # the enum the tool advertises, in display order
-PENDING, IN_PROGRESS, DONE = STATUSES  # named keys, so no caller spells them literally
+PENDING, IN_PROGRESS, DONE, CANCELLED = STATUSES  # named keys, so no caller spells them literally
+FINISHED = frozenset({DONE, CANCELLED})  # states that need no more work
+
+
+def unfinished(items: list[dict]) -> list[dict]:
+    """The items still owed: not done, not cancelled."""
+    return [it for it in items if it.get("status", PENDING) not in FINISHED]
 
 
 def mark(status: str | None) -> str:
@@ -98,10 +105,17 @@ TODO_WRITE = Tool(
         # Where the "plan first" nudge lives. Deliberately here and not in the
         # always-on system prompt: attached to the tool, the model reads it while
         # deciding to call this, instead of it biasing every atomic question.
-        "Record or update the plan as a task list. Call this to lay out the steps "
-        "before acting; send the full list each time (status: pending/in_progress/done). "
-        "If the work splits into three or more steps, lay the plan out here BEFORE "
-        "making any change."
+        # The status discipline is the model's contract with the checklist the user
+        # is watching — the panel shows exactly what the model declares, so a step
+        # marked done on intent is a lie on screen. Rules after Kilo's todowrite.
+        "Record or update the task list. Send the full list each time. If the work "
+        "splits into three or more steps, lay it out here BEFORE making any change.\n"
+        "Status rules: pending → in_progress → done, or cancelled if no longer needed. "
+        "Mark a step in_progress before starting it and keep exactly ONE in_progress "
+        "while work remains. Mark done only after the work is actually complete, "
+        "including any verification it needs — never on intent. If a step is blocked "
+        "or only partly done, leave it in_progress and add a follow-up step that "
+        "names the blocker. Update in real time; do not batch completions."
     ),
     parameters={
         "type": "object",
