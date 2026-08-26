@@ -330,9 +330,9 @@ async def test_a_subagents_plan_never_pauses_its_parent(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_reloaded_session_shows_the_submitted_plan_in_the_panel(monkeypatch):
-    """History replay treats plan_submit like the live turn did: its steps go to the
-    pinned panel, and its result stays as the card that names the file."""
+async def test_a_reloaded_session_shows_the_plan_in_the_panel_not_a_tool_card(monkeypatch):
+    """A successful plan_submit is the plan panel (and, live, the gate) — never a grey
+    tool-result card. On reload its steps refill the panel and no card is mounted."""
     _stream_turns(monkeypatch, [[_submit()]])
 
     app = AhaCodeApp()
@@ -342,8 +342,25 @@ async def test_a_reloaded_session_shows_the_submitted_plan_in_the_panel(monkeypa
         await app._render_history()
         await pilot.pause()
         assert [it["content"] for it in app.query_one(TodoPanel).items] == STEPS
+        assert [b for b in app.query(ToolResultBlock) if "plan_submit" in b.title] == []
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_submission_still_shows_its_reason_on_reload(monkeypatch):
+    """The one plan_submit that keeps a card: a rejection, so the user can still read
+    why after a reload."""
+    _stream_turns(monkeypatch, [
+        [ToolCall(id="1", name="plan_submit", arguments={"summary": "s", "steps": []})],
+        [_submit(call_id="2")],
+    ])
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await _plan_mode(app, pilot)
+        await _ask(pilot, app, "풀어줘")
+        await app._render_history()
+        await pilot.pause()
         cards = [b for b in app.query(ToolResultBlock) if "plan_submit" in b.title]
-        assert len(cards) == 1
+        assert len(cards) == 1 and "failed" in cards[0].title  # the rejection, as an error card
 
 
 @pytest.mark.asyncio

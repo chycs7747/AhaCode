@@ -251,6 +251,12 @@ class AhaCodeApp(App):
             turn.remove()
         self._turn = None
 
+    @staticmethod
+    def _is_plan_rejection(text: str) -> bool:
+        """A plan_submit result that came back refused (the model must resubmit).
+        Success starts with "Plan saved to …"; a rejection is the reason itself."""
+        return not text.startswith("Plan saved to")
+
     async def _render_history(self) -> None:
         """Clear the chat and remount the session's messages, matching the live
         rendering: each assistant turn under a .turn rail, bash/read as one titled
@@ -301,6 +307,12 @@ class AhaCodeApp(App):
                 name = call_names.get(cid, "tool")
                 if name in ("edit", "todo_write"):
                     continue  # already shown as the diff card / the pinned panel
+                if name == "plan_submit":
+                    if not self._is_plan_rejection(content):
+                        continue  # success shows as the plan panel, not a card
+                    summary = tool_summary(name, call_args.get(cid, {}))
+                    await turn.mount(ToolResultBlock(name, content, True, summary=summary))
+                    continue
                 summary = tool_summary(name, call_args.get(cid, {}))
                 await turn.mount(ToolResultBlock(name, content, summary=summary))
         # A turn whose every block went somewhere else (a lone todo_write → the panel)
