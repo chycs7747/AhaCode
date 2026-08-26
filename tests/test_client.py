@@ -73,6 +73,22 @@ def test_two_tool_calls_by_index():
     ]
 
 
+def test_unparseable_arguments_become_a_call_carrying_the_error():
+    """Malformed argument JSON is NOT dropped: it comes back as a ToolCall with
+    parse_error set and empty arguments, so the loop can feed an error result back
+    and the model resends it — dropping it could end the turn on an empty response."""
+    chunks = [
+        _chunk(_delta(tool_calls=[_frag(0, id="d", name="bash",
+                                        arguments='{"command": [not json')]),
+               finish_reason="tool_calls"),
+    ]
+    calls = [e for e in client._iter_events(chunks) if isinstance(e, ToolCall)]
+    assert len(calls) == 1
+    assert calls[0].id == "d" and calls[0].name == "bash"
+    assert calls[0].arguments == {}
+    assert calls[0].parse_error  # non-empty reason, so the gate turns it into an error
+
+
 def test_length_truncation_skips_partial_tool_call():
     chunks = [
         _chunk(_delta(tool_calls=[_frag(0, id="c", name="read", arguments='{"path": "aha')]),

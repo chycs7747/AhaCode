@@ -40,11 +40,17 @@ class ToolCall:
     Reassembled inside client.py from streamed fragments (the arguments arrive
     as JSON pieces spread across many chunks). `arguments` is already parsed
     into a dict by the time the UI/agent sees it.
+
+    `parse_error` is set when the model's argument JSON could not be parsed: the
+    call is emitted anyway (with empty arguments) so the loop can feed an error
+    result back and let the model resend it, instead of silently dropping the call
+    — a dropped call can leave a turn with no tool call, which reads as "done".
     """
 
     id: str
     name: str
     arguments: dict
+    parse_error: str | None = None
 
 
 @dataclass

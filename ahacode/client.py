@@ -178,7 +178,14 @@ def _iter_events(chunks: Iterable) -> Iterator[Event]:
         try:
             arguments = json.loads(slot["args"] or "{}")
         except json.JSONDecodeError:
-            yield TextDelta(f"\n[tool call '{slot['name']}' had unparseable arguments — skipped]")
+            # Don't drop it. A dropped call can leave the turn with no tool call at
+            # all, which the agent loop reads as "final answer" and stops mid-task
+            # (measured: a local model emitting a malformed call twice ended the run
+            # each time). Emit the call carrying the parse failure so the loop feeds
+            # an error result back and the model resends it — the same way an
+            # execution error is surfaced, not a silent skip.
+            yield ToolCall(id=slot["id"], name=slot["name"], arguments={},
+                           parse_error="arguments were not valid JSON")
             continue
         yield ToolCall(id=slot["id"], name=slot["name"], arguments=arguments)
 

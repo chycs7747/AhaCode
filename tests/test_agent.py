@@ -137,6 +137,25 @@ def test_a_batch_mixing_a_writer_falls_back_to_serial():
     assert threads["read"] == main and threads["write"] == main  # both serial, no worker pool
 
 
+def test_a_malformed_tool_call_is_reported_back_and_the_loop_continues():
+    """A tool call whose arguments did not parse must not end the run. The loop
+    feeds an error result back (so the model can resend) and keeps going, instead
+    of reading the empty turn as a final answer and stopping mid-task."""
+    emitted = []
+    turns = [
+        [ToolCall(id="1", name="read", arguments={},
+                  parse_error="arguments were not valid JSON")],
+        [TextDelta("resent and done")],
+    ]
+    new = agent.run([{"role": "user", "content": "x"}], emit=emitted.append,
+                    stream=make_stream(turns), registry=registry())
+    result = next(e for e in emitted if isinstance(e, ToolResult))
+    assert result.is_error and "valid JSON" in result.output  # the failure is fed back
+    # the run did NOT stop on the bad call: a second turn ran and produced the answer
+    assert [m["role"] for m in new] == ["assistant", "tool", "assistant"]
+    assert new[-1]["content"] == "resent and done"
+
+
 def test_unknown_tool_is_error():
     emitted = []
     turns = [[ToolCall(id="1", name="nope", arguments={})], [TextDelta("ok")]]

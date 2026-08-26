@@ -62,7 +62,16 @@ def _tool_message(call_id: str, output: str) -> dict:
 def _gate_tool(call: ToolCall, registry: dict, approve: ApproveFn | None):
     """Approval/safety phase — runs SEQUENTIALLY so approval modals never race.
     Returns the Tool to execute, or a blocking ToolResult (unknown / dangerous /
-    denied) that skips execution."""
+    denied / unparseable) that skips execution."""
+    # The model's argument JSON did not parse. Feed the failure back as a result so
+    # the model resends the call, instead of the loop stopping on an empty turn.
+    if call.parse_error:
+        return ToolResult(
+            call.id, call.name,
+            f"{call.parse_error}: the call did not run. Resend it as a real tool "
+            "call with valid JSON arguments (not a text block).",
+            is_error=True,
+        )
     tool = registry.get(call.name)
     if tool is None:
         return ToolResult(call.id, call.name, f"unknown tool: {call.name}", is_error=True)
