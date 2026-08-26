@@ -2027,3 +2027,53 @@ async def test_the_panel_repairs_items_that_arrive_as_a_string(monkeypatch):
         panel = app.query_one(TodoPanel)
         assert [it["content"] for it in panel.items] == ["Write sort.py: 버블, 삽입", "Run it"]
         assert "☐ Write sort.py: 버블, 삽입" in panel._content
+
+
+# --- resume: repairing an interrupted turn -----------------------------------
+
+@pytest.mark.asyncio
+async def test_switching_into_an_interrupted_session_fills_dangling_calls(monkeypatch):
+    """A session whose last turn ended with unanswered tool_calls (Stop/Ctrl+D mid-tool)
+    is repaired on open: each dangling call gets a synthetic result and a note tells the
+    model it was interrupted — so its next turn is API-valid and knows to reassess."""
+    from ahacode.widgets.prompt_input import PromptInput
+
+    # a fresh drivable session with a dangling tool call persisted
+    other = storage.new_session_path()
+    storage.write_header(other, storage.make_header(other.stem, kind="main"))
+    for m in [
+        {"role": "user", "content": "read it"},
+        {"role": "assistant", "tool_calls": [
+            {"id": "x1", "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
+    ]:
+        storage.append_message(other, m)
+
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("ok")]))
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await app._switch_session(other.stem)
+        await pilot.pause()
+        # the dangling call now has a synthetic tool result, then an interrupt note
+        roles = [m["role"] for m in app.session.messages]
+        assert roles == ["user", "assistant", "tool", "user"]
+        assert app.session.messages[2]["tool_call_id"] == "x1"
+        assert "Interrupted" in app.session.messages[2]["content"]
+        assert "interrupted" in app.session.messages[3]["content"].lower()
+        # persisted, so reopening finds nothing dangling
+        assert storage.dangling_tool_call_ids(storage.load_messages(other)) == []
+
+
+@pytest.mark.asyncio
+async def test_a_clean_session_is_not_touched_on_open(monkeypatch):
+    """No dangling calls → no repair messages appended."""
+    other = storage.new_session_path()
+    storage.write_header(other, storage.make_header(other.stem, kind="main"))
+    for m in [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]:
+        storage.append_message(other, m)
+
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("ok")]))
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await app._switch_session(other.stem)
+        await pilot.pause()
+        assert [m["role"] for m in app.session.messages] == ["user", "assistant"]

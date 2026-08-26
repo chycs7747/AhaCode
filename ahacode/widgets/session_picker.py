@@ -24,6 +24,8 @@ from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 from ahacode import storage
 
 _ICON = {"main": "🧠", "impl": "🛠", "subagent": "🤖", "fork": "🌿"}
+# The edge to the parent: → control handed down a chain, ⑂ a task fanned out.
+_EDGE = {"handoff": "→", "delegate": "⑂"}
 # Two authored lines (own full-width Static, below the header row) so the guide
 # never wraps mid-phrase against the close button.
 _HINT = (
@@ -60,7 +62,9 @@ class SessionRow(ListItem):
         title = self.node.get("title") or self.node["id"]
         model = self.node.get("model") or "?"
         icon = _ICON.get(self.node.get("kind", "main"), "•")
-        return f"{indent}{icon} {title}   · {model}"
+        edge = _EDGE.get(self.node.get("relation"), "")  # roots have none
+        edge = f"{edge} " if edge else ""
+        return f"{indent}{edge}{icon} {title}   · {model}"
 
     def refresh_title(self) -> None:
         self.query_one(".picker-row-title", Label).update(self._text())

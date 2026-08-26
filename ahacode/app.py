@@ -191,6 +191,8 @@ class AhaCodeApp(App):
         self._set_header_endpoint()
         await self._render_history()
         self._reflect_view_only()  # resumed session is a main one, but stay correct
+        if not self.view_only:
+            await self._repair_interrupted()  # startup resume of an interrupted session
         # Follow the stream only while pinned to the bottom: watch the scroller's
         # scroll_y and re-derive the flag. Our own scroll_end lands exactly at the
         # bottom (flag stays on); a user scroll-up drops below it (flag off, sticky).
@@ -391,12 +393,43 @@ class AhaCodeApp(App):
         self._reflect_view_only()
         if self.session_kind == "impl":
             self._set_mode("act")  # an impl session exists to act; planning is its parent's
+        if not self.view_only:
+            await self._repair_interrupted()  # a turn cut off mid-tool: fill + note
         if self.view_only:  # opened a sub-agent transcript — announce it's read-only
             await self._say_system(
                 f"🔒 보기 전용 — 서브에이전트가 자동 생성한 기록(깊이 {self.session_depth})입니다. "
                 "읽기만 가능해요. /new 로 새 세션을 시작하세요."
             )
         self._status("")
+
+    async def _repair_interrupted(self) -> None:
+        """A session whose last turn was cut off mid-tool (Stop / Ctrl+D while a tool
+        ran) ends with tool_calls that never got results. The API demands a result for
+        every call, so before this session can take another turn we fill each dangling
+        call with a synthetic result and add one note telling the model it was
+        interrupted — reassess the real state, don't trust a half-finished summary.
+        Repairs are appended and persisted, so the fix is one-time (reopening a
+        repaired session finds nothing dangling)."""
+        dangling = storage.dangling_tool_call_ids(self.session.messages)
+        if not dangling:
+            return
+        for call_id in dangling:
+            msg = {"role": "tool", "tool_call_id": call_id,
+                   "content": "Interrupted: this tool call did not complete."}
+            self.session.messages.append(msg)
+            storage.append_message(self.session_path, msg)
+        note = {
+            "role": "user",
+            "content": (
+                "[system] The previous turn was interrupted before it finished. The "
+                "project may have changed on disk — re-check the actual state (files, "
+                "tests) and bring the plan's checklist into line with it before "
+                "continuing. If the last step did not complete, redo it."
+            ),
+        }
+        self.session.messages.append(note)
+        storage.append_message(self.session_path, note)
+        await self._say_system("↻ 이전 턴이 중단됐어요 — 상태를 다시 확인하고 이어갑니다.")
 
     def _open_picker(self) -> None:
         """The picker needs to know which session is open (deleting it must move

@@ -190,3 +190,46 @@ def test_latest_session_resumes_into_an_impl_session(tmp_path):
     storage.write_header(sub, storage.make_header(
         sub.stem, kind="subagent", relation="delegate", parent_id=impl.stem, depth=1))
     assert storage.latest_session(base_dir=tmp_path) == impl
+
+
+# --- resume: lineage leaf and interrupted repair -----------------------------
+
+def test_active_leaf_follows_handoff_not_delegate():
+    sessions = [
+        {"id": "plan", "parent_id": None, "relation": None},
+        {"id": "impl", "parent_id": "plan", "relation": "handoff"},
+        {"id": "sub", "parent_id": "impl", "relation": "delegate"},   # a task, not the lineage
+    ]
+    assert storage.active_leaf("plan", sessions) == "impl"     # skips the delegate child
+    assert storage.active_leaf("impl", sessions) == "impl"     # no handoff child of its own
+    assert storage.active_leaf("sub", sessions) == "sub"
+
+
+def test_active_leaf_takes_the_newest_handoff_sibling():
+    sessions = [
+        {"id": "plan", "parent_id": None, "relation": None},
+        {"id": "2026-08-26_100000", "parent_id": "plan", "relation": "handoff"},
+        {"id": "2026-08-26_110000", "parent_id": "plan", "relation": "handoff"},  # a re-approval
+    ]
+    assert storage.active_leaf("plan", sessions) == "2026-08-26_110000"
+
+
+def test_dangling_tool_call_ids_finds_the_unanswered_ones():
+    messages = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "tool_calls": [
+            {"id": "a", "function": {"name": "read", "arguments": "{}"}},
+            {"id": "b", "function": {"name": "read", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "a", "content": "done"},   # a answered, b not
+    ]
+    assert storage.dangling_tool_call_ids(messages) == ["b"]
+
+
+def test_no_dangling_when_every_call_is_answered():
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "a", "function": {"name": "read", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "a", "content": "done"},
+        {"role": "assistant", "content": "all set"},
+    ]
+    assert storage.dangling_tool_call_ids(messages) == []
