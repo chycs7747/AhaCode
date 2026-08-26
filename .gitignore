@@ -6,8 +6,6 @@ __pycache__/
 dist/
 *.egg-info/
 
-# User data in the project root — never commit
-# (config.toml may hold an API key; sessions/ holds private conversations)
-config.toml
-sessions/
-plans/
+# All app-generated data — never commit. One hidden folder holds config.toml
+# (may carry an API key), sessions/ (private conversations), plans/, and scratch/.
+.ahacode/

@@ -1,12 +1,13 @@
-"""User configuration — config.toml in the project root, created on first load."""
+"""User configuration — config.toml under ./.ahacode/, created on first load."""
 
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-# <project root>/config.toml — next to pyproject.toml, kept out of git.
+# ./.ahacode/config.toml — grouped with sessions/ and plans/ under the one hidden
+# folder, kept out of git. save() mkdirs the parent, so first run creates it.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = PROJECT_ROOT / "config.toml"
+CONFIG_PATH = PROJECT_ROOT / ".ahacode" / "config.toml"
 
 DEFAULT_BASE_URL = "http://localhost:9000/v1"
 DEFAULT_MODEL = "qwen38"

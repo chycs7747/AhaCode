@@ -1,6 +1,8 @@
 """JSONL session storage — one file per session, one message per line, append-only.
 
-Sessions live under the project root (./sessions/), kept out of git.
+All generated data lives under one hidden folder, ./.ahacode/ (sessions, plans,
+scratch, and config.toml), kept out of git as a single entry. A dot-prefixed name
+also means walk.py skips it for free — private transcripts never turn up in a search.
 """
 
 import datetime
@@ -9,10 +11,16 @@ import shutil
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SESSIONS_DIR = PROJECT_ROOT / "sessions"
+# Every file the app generates lives under here, so the project root stays clean and
+# .gitignore needs one line. On-demand mkdir (below) creates the subdirs as needed.
+AHACODE_DIR = PROJECT_ROOT / ".ahacode"
+SESSIONS_DIR = AHACODE_DIR / "sessions"
 # One plan file per planning session, named after it, so plan ↔ session is 1:1
 # and a later session can be handed the path alone.
-PLANS_DIR = PROJECT_ROOT / "plans"
+PLANS_DIR = AHACODE_DIR / "plans"
+# Throwaway verification scripts (oracles, one-off checks) go here, never in the
+# source tree — the write tool creates it on first use.
+SCRATCH_DIR = AHACODE_DIR / "scratch"
 
 
 def new_session_path(base_dir: Path | None = None) -> Path:
