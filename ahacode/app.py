@@ -1147,6 +1147,7 @@ class AhaCodeApp(App):
             child_path = storage.new_session_path()
             storage.write_header(child_path, storage.make_header(
                 child_path.stem, parent_id=parent_path.stem, kind="subagent",
+                relation="delegate",  # a task fan-out — the ⑂ edge in the session tree
                 depth=child_depth, model=cfg.name, title=(description or prompt)[:40],
             ))
             card = SubagentCard(description or "task", cfg.name)

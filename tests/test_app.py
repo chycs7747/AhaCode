@@ -1333,6 +1333,7 @@ async def test_task_tool_spawns_subagent(monkeypatch):
         subs = [h for h in headers if h and h.get("kind") == "subagent"]
         assert len(subs) == 1
         assert subs[0]["depth"] == 1 and subs[0]["parent_id"] is not None
+        assert subs[0]["relation"] == "delegate"   # a task fan-out — the ⑂ tree edge
 
         # 3) at depth 1 (== subagent_depth) the child has no task tool -> cannot recurse
         assert "task" not in tools.registry_for(subs[0]["depth"], config.load().subagent_depth)
