@@ -221,7 +221,9 @@ class AhaCodeApp(App):
         cfg = config.load()
         self.push_screen(
             AgentSettings(cfg.max_parallel_agents, cfg.subagent_depth,
-                          cfg.context_window, cfg.compact_threshold),
+                          cfg.context_window, cfg.compact_threshold,
+                          cfg.plan_thinking_budget, cfg.impl_thinking_budget,
+                          cfg.subagent_thinking_budget),
             self._agent_settings_saved,
         )
 
@@ -235,13 +237,19 @@ class AhaCodeApp(App):
             config.load(),
             max_parallel_agents=result.max_parallel, subagent_depth=result.depth,
             context_window=result.context_window, compact_threshold=result.compact_threshold,
+            plan_thinking_budget=result.plan_thinking, impl_thinking_budget=result.impl_thinking,
+            subagent_thinking_budget=result.subagent_thinking,
         ))
         client.reset()
         window = "압축 끔" if result.context_window == 0 else f"{result.context_window // 1024}K"
+        def think(v):
+            return "전역" if v is None else f"{v // 1024}K"
         self.run_worker(
             self._say_system(
                 f"설정 저장 — 최대 병렬 {result.max_parallel} · 깊이 {result.depth} · "
-                f"컨텍스트 {window} · 압축 {int(result.compact_threshold * 100)}%"
+                f"컨텍스트 {window} · 압축 {int(result.compact_threshold * 100)}% · "
+                f"사고 plan {think(result.plan_thinking)}/impl {think(result.impl_thinking)}/"
+                f"sub {think(result.subagent_thinking)}"
             ),
             exclusive=False,
         )
@@ -1203,18 +1211,22 @@ class AhaCodeApp(App):
             self.session_path, self.session_depth, container, worker, approve
         )
 
+        # The turn's mode picks its thinking budget (config.thinking_budget_for):
+        # plan thinks deep, impl shallow, a plain act turn uses the global.
+        turn_mode = "plan" if self.mode == "plan" else ("impl" if self.session_kind == "impl" else None)
         try:
-            new_messages = agent.run(
-                messages,
-                emit=emit,
-                is_cancelled=lambda: worker.is_cancelled,
-                approve=approve,                    # bash and friends are confirmed first
-                registry=self._registry_for_mode(),  # plan mode = read-only subset
-                ctx=ctx,                            # task delegates through this
-                max_turns=self._max_turns(),        # larger for an impl session
-                prompt_tokens=self._last_prompt_tokens,  # measured, for compaction
-                should_pause=lambda: self._plan_gate_pending,  # the plan gate
-            )
+            with client.mode(turn_mode):
+                new_messages = agent.run(
+                    messages,
+                    emit=emit,
+                    is_cancelled=lambda: worker.is_cancelled,
+                    approve=approve,                    # bash and friends are confirmed first
+                    registry=self._registry_for_mode(),  # plan mode = read-only subset
+                    ctx=ctx,                            # task delegates through this
+                    max_turns=self._max_turns(),        # larger for an impl session
+                    prompt_tokens=self._last_prompt_tokens,  # measured, for compaction
+                    should_pause=lambda: self._plan_gate_pending,  # the plan gate
+                )
         except Exception as exc:
             # Server 500, timeout, connection refused... all become a bubble, not a crash.
             summary = f"{type(exc).__name__}: {exc}"[:300]

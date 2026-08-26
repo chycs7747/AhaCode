@@ -2,11 +2,34 @@ import json
 import threading
 import time
 from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 
 from openai import OpenAI
 
 from ahacode import config, prompts
 from ahacode.events import Event, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, Usage
+
+# The mode of the turn currently being sent, per THREAD — so plan/impl/sub-agent
+# each pick their own thinking budget (config.thinking_budget_for). Thread-local
+# because parallel sub-agents run on separate pool threads; the context manager
+# saves and restores, so a sub-agent run on the SAME thread as its parent (the
+# sequential path) leaves the parent's mode intact when it returns.
+_mode = threading.local()
+
+
+def current_mode() -> str | None:
+    return getattr(_mode, "value", None)
+
+
+@contextmanager
+def mode(name: str | None):
+    """Set the active mode for stream_chat/complete calls on this thread."""
+    prev = getattr(_mode, "value", None)
+    _mode.value = name
+    try:
+        yield
+    finally:
+        _mode.value = prev
 
 # The UI never sees provider-specific shapes: this module converts them into the
 # canonical events in events.py. A plain turn emits TextDelta / ThinkingDelta;
@@ -196,8 +219,9 @@ def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterat
     else:
         if cfg.reasoning_effort:
             extra["reasoning_effort"] = cfg.reasoning_effort
-        if cfg.thinking_token_budget:
-            extra["thinking_token_budget"] = cfg.thinking_token_budget
+        budget = cfg.thinking_budget_for(current_mode())
+        if budget:
+            extra["thinking_token_budget"] = budget
     # Sampling rides the SAME branch: the mode was just decided above, and the two
     # profiles differ, so deciding it twice is how they would drift apart.
     sample_kwargs, sample_extra = sampling_for(cfg.name, no_think=no_think)

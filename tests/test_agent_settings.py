@@ -28,7 +28,8 @@ def isolated_environment(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_button_opens_the_modal_seeded_from_config():
     config.save(replace(config.DEFAULTS, max_parallel_agents=8, subagent_depth=1,
-                        context_window=32768, compact_threshold=0.8))
+                        context_window=32768, compact_threshold=0.8,
+                        plan_thinking_budget=8192, impl_thinking_budget=None))
     app = AhaCodeApp()
     async with app.run_test() as pilot:
         await pilot.click("#agent-settings-btn")
@@ -38,6 +39,8 @@ async def test_button_opens_the_modal_seeded_from_config():
         assert app.screen.query_one("#agent-depth", Select).value == 1
         assert app.screen.query_one("#agent-window", Select).value == 32768
         assert app.screen.query_one("#agent-threshold", Select).value == 0.8
+        assert app.screen.query_one("#agent-think-plan", Select).value == 8192
+        assert app.screen.query_one("#agent-think-impl", Select).value == -1  # None → 전역 sentinel
 
 
 @pytest.mark.asyncio
@@ -54,6 +57,8 @@ async def test_saving_persists_and_resizes_the_gate(monkeypatch):
         app.screen.query_one("#agent-depth", Select).value = 2
         app.screen.query_one("#agent-window", Select).value = 16384
         app.screen.query_one("#agent-threshold", Select).value = 0.9
+        app.screen.query_one("#agent-think-plan", Select).value = 8192
+        app.screen.query_one("#agent-think-subagent", Select).value = 1024
         await pilot.pause()
         app.screen.query_one("#agent-settings-save", Button).press()
         await pilot.pause()
@@ -63,6 +68,8 @@ async def test_saving_persists_and_resizes_the_gate(monkeypatch):
         cfg = config.load()
         assert cfg.max_parallel_agents == 1 and cfg.subagent_depth == 2
         assert cfg.context_window == 16384 and cfg.compact_threshold == 0.9
+        assert cfg.plan_thinking_budget == 8192 and cfg.subagent_thinking_budget == 1024
+        assert cfg.impl_thinking_budget is None                      # left at 전역
         assert resized                                               # the gate was reset
 
 

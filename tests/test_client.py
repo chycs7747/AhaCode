@@ -277,3 +277,47 @@ def test_complete_also_pins_its_sampling(monkeypatch):
     assert client.complete([{"role": "user", "content": "title this"}]) == "t"
     assert seen["temperature"] == 0.7          # a title is not a thinking task
     assert seen["extra_body"]["top_k"] == 20
+
+
+def test_stream_chat_uses_the_active_mode_thinking_budget(monkeypatch):
+    """The mode context picks the per-mode budget: plan deep, impl shallow, and it
+    restores on exit so nesting (a sub-agent inside an impl turn) is correct."""
+    from dataclasses import replace
+    from ahacode import client, config
+
+    config.save(replace(config.DEFAULTS, thinking_token_budget=4096,
+                        plan_thinking_budget=8192, impl_thinking_budget=2048,
+                        subagent_thinking_budget=1024))
+    client.reset()
+
+    seen = []
+
+    class FakeStream:
+        def __enter__(self): return iter([])
+        def __exit__(self, *a): return False
+
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kw):
+                    seen.append((kw.get("extra_body") or {}).get("thinking_token_budget"))
+                    return FakeStream()
+
+    monkeypatch.setattr(client, "_ensure_client", lambda: (FakeClient(), config.load()))
+
+    def budget_under(mode):
+        seen.clear()
+        with client.mode(mode):
+            list(client.stream_chat([{"role": "user", "content": "hi"}]))
+        return seen[0]
+
+    assert budget_under("plan") == 8192
+    assert budget_under("impl") == 2048
+    assert budget_under("subagent") == 1024
+    assert budget_under(None) == 4096          # a plain act turn → global
+
+    # nesting restores: impl outside, subagent inside, impl again after
+    with client.mode("impl"):
+        assert budget_under("subagent") == 1024
+        assert client.current_mode() == "impl"

@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from ahacode import agent, prompts
+from ahacode import agent, client, prompts
 from ahacode.events import Event
 from ahacode.prompts import SUBAGENT_SYSTEM  # re-exported for callers/tests
 
@@ -84,16 +84,20 @@ def run(
     # produced, never the live list. The caller writes this to the child's session
     # file, which must stay complete even when the request in flight was compacted.
     live = list(seed)
-    produced = agent.run(
-        live,
-        emit=emit,
-        approve=approve,
-        stream=stream,
-        registry=registry,
-        ctx=ctx,
-        is_cancelled=is_cancelled,
-        max_turns=max_turns,
-        summarize=summarize,
-    )
+    # A sub-agent's turns take the "subagent" thinking budget. Thread-local + the
+    # context manager: on the sequential path this runs on the parent's worker
+    # thread, and restores the parent's mode ("impl") when it returns.
+    with client.mode("subagent"):
+        produced = agent.run(
+            live,
+            emit=emit,
+            approve=approve,
+            stream=stream,
+            registry=registry,
+            ctx=ctx,
+            is_cancelled=is_cancelled,
+            max_turns=max_turns,
+            summarize=summarize,
+        )
     messages = [*seed, *produced]
     return SubagentResult(messages=messages, result=_final_text(messages))

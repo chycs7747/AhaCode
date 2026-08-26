@@ -53,6 +53,13 @@ class ModelConfig:
     # OpenAI-style hint, ignored by servers that don't map it.
     thinking_token_budget: int = DEFAULT_THINKING_TOKEN_BUDGET
     reasoning_effort: str = DEFAULT_REASONING_EFFORT
+    # Per-mode thinking budget overrides. None (the default) = use the global
+    # thinking_token_budget above; a value lets plan think deep while impl and
+    # sub-agents think shallow. Only the budget varies by mode — NOT the model
+    # (switching models reloads the gateway's vLLM container, minutes each time).
+    plan_thinking_budget: int | None = None
+    impl_thinking_budget: int | None = None
+    subagent_thinking_budget: int | None = None
     # When True, turns whose last message is a tool result are sent with thinking
     # disabled (enable_thinking=False), so the model executes instead of re-thinking.
     no_think_after_tools: bool = DEFAULT_NO_THINK_AFTER_TOOLS
@@ -72,6 +79,17 @@ class ModelConfig:
     # for more (up to bash.MAX_TIMEOUT) when it knows it will be slow.
     bash_timeout: int = DEFAULT_BASH_TIMEOUT
 
+    def thinking_budget_for(self, mode: str | None) -> int:
+        """The reasoning-token cap for this kind of turn: the mode's override if it
+        set one, otherwise the global budget. mode is "plan" | "impl" | "subagent"
+        | None (a plain act turn uses the global)."""
+        override = {
+            "plan": self.plan_thinking_budget,
+            "impl": self.impl_thinking_budget,
+            "subagent": self.subagent_thinking_budget,
+        }.get(mode)
+        return self.thinking_token_budget if override is None else override
+
 
 DEFAULTS = ModelConfig(
     base_url=DEFAULT_BASE_URL,
@@ -79,6 +97,20 @@ DEFAULTS = ModelConfig(
     api_key=DEFAULT_API_KEY,
     timeout=DEFAULT_TIMEOUT,
 )
+
+
+def _opt_int(value) -> int | None:
+    """A per-mode override: an int, or None when the key is absent/blank (= global)."""
+    return None if value in (None, "") else int(value)
+
+
+def _mode_budget_lines(cfg: ModelConfig) -> str:
+    """Render only the per-mode budgets the user actually set, so the default file
+    stays clean. Absent = the mode follows the global thinking_token_budget."""
+    rows = [("plan", cfg.plan_thinking_budget), ("impl", cfg.impl_thinking_budget),
+            ("subagent", cfg.subagent_thinking_budget)]
+    out = [f"{name}_thinking_budget = {val}" for name, val in rows if val is not None]
+    return ("\n" + "\n".join(out)) if out else ""
 
 
 def _render(cfg: ModelConfig) -> str:
@@ -104,6 +136,8 @@ context_window = {cfg.context_window}  # the model's context window in tokens; 0
 subagent_depth = {cfg.subagent_depth}
 # Turn cap for a session carrying out an approved plan (an ordinary turn has 10).
 impl_max_turns = {cfg.impl_max_turns}
+# Per-mode reasoning-token cap (optional). Absent = the mode uses the global
+# thinking_token_budget above. Lets plan think deep, impl / sub-agents shallow.{_mode_budget_lines(cfg)}
 # Max concurrent requests to the gateway across all agents (the single-GPU backend
 # saturates around here; higher just queues and adds latency).
 max_parallel_agents = {cfg.max_parallel_agents}
@@ -150,6 +184,9 @@ def load(path: Path | None = None) -> ModelConfig:
         timeout=float(model.get("timeout", DEFAULT_TIMEOUT)),
         subagent_depth=int(agent.get("subagent_depth", DEFAULT_SUBAGENT_DEPTH)),
         impl_max_turns=int(agent.get("impl_max_turns", DEFAULT_IMPL_MAX_TURNS)),
+        plan_thinking_budget=_opt_int(agent.get("plan_thinking_budget")),
+        impl_thinking_budget=_opt_int(agent.get("impl_thinking_budget")),
+        subagent_thinking_budget=_opt_int(agent.get("subagent_thinking_budget")),
         max_parallel_agents=int(agent.get("max_parallel_agents", DEFAULT_MAX_PARALLEL_AGENTS)),
         thinking_token_budget=int(model.get("thinking_token_budget", DEFAULT_THINKING_TOKEN_BUDGET)),
         reasoning_effort=str(model.get("reasoning_effort", DEFAULT_REASONING_EFFORT)),

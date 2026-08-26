@@ -88,3 +88,13 @@ def test_context_window_zero_survives_a_roundtrip(tmp_path):
     path = tmp_path / "config.toml"
     config.save(replace(config.load(path), context_window=0), path)
     assert config.load(path).context_window == 0
+
+
+def test_thinking_budget_falls_back_to_global_then_per_mode():
+    from dataclasses import replace
+    c = replace(config.DEFAULTS, thinking_token_budget=4096,
+                plan_thinking_budget=8192, impl_thinking_budget=2048)
+    assert c.thinking_budget_for("plan") == 8192       # override
+    assert c.thinking_budget_for("impl") == 2048       # override
+    assert c.thinking_budget_for("subagent") == 4096   # unset → global
+    assert c.thinking_budget_for(None) == 4096         # plain act turn → global

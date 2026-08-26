@@ -227,6 +227,7 @@ AgentSettings {
     width: 60;
     height: auto;
     max-height: 90%;
+    overflow-y: auto;
     padding: 1 2;
     border: round $accent;
     background: $surface;
