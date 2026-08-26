@@ -64,13 +64,20 @@ def load_messages(path: Path) -> list[dict]:
     return out
 
 
-def latest_session(base_dir: Path | None = None) -> Path | None:
-    """Most recent MAIN session to resume on startup, or None.
+# Session kinds the user drives (and so may be resumed into on startup). A
+# sub-agent or fork transcript is machine-authored and view-only.
+RESUMABLE_KINDS = frozenset({"main", "impl"})
 
+
+def latest_session(base_dir: Path | None = None) -> Path | None:
+    """Most recent session the user was driving, to resume on startup, or None.
+
+    An impl session counts: after a Ctrl+D mid-plan the newest file IS the impl
+    session, and reopening its planning parent instead would invite "이어서 해"
+    in plan mode — which cannot act and would spawn a fresh sibling instead.
     Skips sub-agent (and fork) sessions: those are spawned by an agent as children,
-    not conversations the user opened. A sub-agent session is depth-gated out of the
-    `task` tool, so silently resuming into one (it may well be the newest file) makes
-    delegation look broken. Legacy headerless files count as main and stay resumable.
+    not conversations the user opened, and are depth-gated out of the `task` tool.
+    Legacy headerless files count as main and stay resumable.
     """
     base_dir = base_dir or SESSIONS_DIR
     if not base_dir.exists():
@@ -78,7 +85,7 @@ def latest_session(base_dir: Path | None = None) -> Path | None:
     # File names are timestamps, so reverse order == newest first.
     for path in sorted(base_dir.glob("*.jsonl"), reverse=True):
         header = read_header(path)
-        if header is None or header.get("kind") == "main":
+        if header is None or header.get("kind") in RESUMABLE_KINDS:
             return path
     return None
 

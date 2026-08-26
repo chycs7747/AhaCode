@@ -176,3 +176,17 @@ def test_result_file_sits_beside_the_plan_and_snapshots_the_checklist(tmp_path):
     storage.write_result(out, plan=plan, session_id="s2", complete=True, summary="",
                          items=[{"content": "a", "status": "done"}])
     assert out.read_text(encoding="utf-8").startswith("# 완료 — s1.md\n")
+
+
+def test_latest_session_resumes_into_an_impl_session(tmp_path):
+    """After Ctrl+D mid-plan the newest file is the impl session — reopen THAT, not
+    its planning parent (where "이어서 해" cannot act)."""
+    plan = tmp_path / "2026-08-26_100000.jsonl"
+    storage.write_header(plan, storage.make_header(plan.stem, kind="main"))
+    impl = tmp_path / "2026-08-26_100100.jsonl"
+    storage.write_header(impl, storage.make_header(
+        impl.stem, kind="impl", relation="handoff", parent_id=plan.stem))
+    sub = tmp_path / "2026-08-26_100200.jsonl"
+    storage.write_header(sub, storage.make_header(
+        sub.stem, kind="subagent", relation="delegate", parent_id=impl.stem, depth=1))
+    assert storage.latest_session(base_dir=tmp_path) == impl
