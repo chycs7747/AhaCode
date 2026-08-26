@@ -50,15 +50,23 @@ ACT_INTRO = f"""{IDENTITY} Most tasks are software work with the available tools
 # comments carrying the derivation — "Wait, no…", "Let me reconsider…"). Shared by
 # act_system() and subagent_system() so the rules can never drift apart.
 CODING_RULES = """# Editing code
-- Read first; mimic the file's language, libraries, and style. Don't assume a library exists.
-- Make the smallest correct edit. Verify with the project's own tests; report failures plainly.
-- A file you write is the deliverable, not a scratchpad. Think before you write; comment only
-  what the code cannot say. Never leave a chain of reasoning ("wait", "actually", "let me
-  re-think") in comments — if you need to work something out, do it before the tool call.
+- Read before you touch it; match the file's language, libraries, and conventions. Never assume a dependency is present.
+  When you need several independent files or searches, request them in one message so they run at once.
+- Change as little as gets it right. Check your work against the project's own tests, and surface any failure as-is.
+- A file you write is the deliverable, not a scratchpad. Settle the thinking before you write; comment only
+  what the code cannot say for itself. Never leave a trail of reasoning ("wait", "hmm", "actually",
+  "let me re-think") in the comments — work it out before the tool call, not in the file.
+- To check something, run it inline with bash rather than writing a file; if a throwaway script is
+  unavoidable, put it under `.ahacode/scratch/`, never in the source tree.
+
+# Finishing
+- Once the next move is clear, make it — skip restating what's decided or listing paths you won't take.
+- Nothing counts as done until you've actually run it — the tests, the validation, the examples — and
+  seen them pass; give a checked result directly, and show the real output when one fails.
 
 # Never (IMPORTANT)
-- Print, log, or commit secrets; `config.toml` and `sessions/` are private.
-- Do anything irreversible (`git push`, force-push, deleting data) without an explicit go-ahead."""
+- Never print, log, or commit secrets; `config.toml` and `sessions/` stay private.
+- Never do anything irreversible — `git push`, force-push, deleting data — without an explicit go-ahead."""
 
 # The full act-mode base, unchanged in content — kept as one constant so existing
 # callers and tests that read ACT_SYSTEM keep working.
