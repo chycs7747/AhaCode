@@ -45,6 +45,16 @@ def test_actionable_steps_pass(step):
 
 
 @pytest.mark.parametrize("step", [
+    # The rejection that cost three planning turns: these all ended in print/출력.
+    "main()에서 결과를 표로 출력한다",
+    "알고리즘별 소요시간 테이블을 print",
+    "결과를 results.json에 저장",
+])
+def test_korean_output_verbs_are_actionable(step):
+    assert not plan.non_actionable(step)
+
+
+@pytest.mark.parametrize("step", [
     # The exact step that produced 366 comment lines of derivation.
     "Algorithm: find root, compute subtree sums; answer(k) = min over X of max(X, ...)",
     "Performance: n=10,000 nodes, depth-10,000 one-sided chain",

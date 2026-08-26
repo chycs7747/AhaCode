@@ -385,6 +385,11 @@ class AhaCodeApp(App):
     async def user_submitted(self, event: PromptInput.Submitted) -> None:
         text = event.text.strip()
         if not text:
+            # An empty Enter while the gate is open is the keyboard's ▶: the card
+            # is the only thing waiting, and it says so.
+            if self._plan_gate_pending:
+                self._settle_plan_gate("▶ 실행 (Enter)")
+                await self._start_plan_run()
             return
         # PromptInput clears itself on submit.
 
@@ -397,10 +402,11 @@ class AhaCodeApp(App):
             )
             return
 
-        # A message typed while the gate is open answers it: the user moved on, so
-        # the plan is not executed and the paused loop is not resumed.
+        # Text typed while the gate is open is feedback on the plan (the Roo /
+        # Claude Code convention): the card settles as "revise", the plan is not
+        # executed, and the message goes to the model, which revises and resubmits.
         if self._plan_gate_pending:
-            self._settle_plan_gate("다른 지시로 진행")
+            self._settle_plan_gate("✎ 수정 계속")
 
         if text.startswith("/"):
             # Slash commands configure the app; they never reach the LLM

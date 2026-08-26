@@ -6,8 +6,10 @@ of guessing from the shape of a todo list. The harness — not the model — wri
 the plan file (plans/{session}.md) from the tool's arguments, so there is nothing
 to verify on disk: a successful call IS the file.
 
-Validation happens on the arguments and is reported back as the tool's error
-result, in words the model can act on (which step, and why it is not a step).
+Only an EMPTY plan is refused. Steps that do not read as executable are accepted
+and named in the result as a note: the check is a word-list heuristic, and as a
+hard gate it rejected a perfectly good Korean step three times in a row (it ended
+in "print"). The human reading the gate card is the real validator.
 Offered in plan mode only; a sub-agent never sees it — approval is the root
 session's to ask for.
 """
@@ -28,17 +30,22 @@ def _clean(items) -> list[str]:
 
 
 def check(steps: list[str]) -> str | None:
-    """Why `steps` is not an acceptable plan, or None if it is."""
+    """Why `steps` cannot be accepted at all, or None if it can."""
     if not steps:
         return "steps is empty. Lay out the executable steps of the plan."
-    vague = [(i, s) for i, s in enumerate(steps, 1) if non_actionable(s)]
-    if vague:
-        listed = "; ".join(f"step {i} '{s[:60]}'" for i, s in vague)
-        return (
-            f"{listed} is not executable. Each step must start with an imperative "
-            "verb and name a concrete artifact or checkable outcome."
-        )
     return None
+
+
+def note(steps: list[str]) -> str:
+    """A soft warning naming steps that may not be executable ("" if none)."""
+    vague = [(i, s) for i, s in enumerate(steps, 1) if non_actionable(s)]
+    if not vague:
+        return ""
+    listed = "; ".join(f"step {i} '{s[:60]}'" for i, s in vague)
+    return (
+        f" Note: {listed} may not be executable — a step usually starts with an "
+        "imperative verb and names a concrete artifact or checkable outcome."
+    )
 
 
 def _plan_submit(args: dict, ctx) -> str:
@@ -58,8 +65,8 @@ def _plan_submit(args: dict, ctx) -> str:
         body=str(args.get("body", "")).strip(),
     )
     return (
-        f"Plan saved to {storage.display_path(path)} ({len(steps)} steps). "
-        "Planning is complete — stop here and wait for the user's decision."
+        f"Plan saved to {storage.display_path(path)} ({len(steps)} steps)."
+        f"{note(steps)} Planning is complete — stop here and wait for the user's decision."
     )
 
 

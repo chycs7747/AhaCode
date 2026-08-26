@@ -112,7 +112,7 @@ async def test_a_rejected_submission_does_not_open_the_gate(monkeypatch):
     """A plan the harness refuses goes back to the model as an error result; the
     gate opens only for the corrected resubmission."""
     calls = _stream_turns(monkeypatch, [
-        [_submit("Algorithm: subtree sums", call_id="1")],   # a topic, not a step
+        [ToolCall(id="1", name="plan_submit", arguments={"summary": "s", "steps": []})],
         [_submit(*STEPS, call_id="2")],
         [TextDelta("never sent")],
     ])
@@ -125,7 +125,7 @@ async def test_a_rejected_submission_does_not_open_the_gate(monkeypatch):
         assert app._plan_gate_pending is True
         assert len(calls) == 2
         first_result = app.session.messages[2]
-        assert first_result["role"] == "tool" and "PlanRejected: step 1" in first_result["content"]
+        assert first_result["role"] == "tool" and "PlanRejected: steps is empty" in first_result["content"]
         # the refusal is visible to the user too, as an error card
         assert any("plan_submit" in b.title for b in app.query(ToolResultBlock))
         assert app.query_one(PlanGate).steps == STEPS
@@ -198,9 +198,10 @@ async def test_revise_button_settles_without_resuming(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_typing_instead_of_choosing_dismisses_the_gate(monkeypatch):
-    """A new instruction answers the gate: the plan is dropped, not executed."""
-    _stream_turns(monkeypatch, [[_submit()], [TextDelta("ok, different thing")]])
+async def test_typing_while_the_gate_is_open_is_revision_feedback(monkeypatch):
+    """Text is never an approval (Roo / Claude Code): the card settles as 수정, the
+    plan is not executed, and the message reaches the model as feedback."""
+    calls = _stream_turns(monkeypatch, [[_submit()], [TextDelta("revised")]])
 
     app = AhaCodeApp()
     async with app.run_test() as pilot:
@@ -208,11 +209,32 @@ async def test_typing_instead_of_choosing_dismisses_the_gate(monkeypatch):
         await _ask(pilot, app, "풀어줘")
         assert app._plan_gate_pending is True
 
-        await _ask(pilot, app, "아니 그냥 이거 알려줘")
+        await _ask(pilot, app, "승인")            # even this — the model answers by resubmitting
         assert app._plan_gate_pending is False
         assert list(app.query(SubagentCard)) == []
+        gate = list(app.query(PlanGate))[0]
+        assert gate.has_class("plan-gate--settled")
+        assert "수정" in str(gate.query_one(".plan-gate-title").render())
+        assert calls[1][-1] == "user" and app.session.messages[-1]["content"] == "revised"
+
+
+@pytest.mark.asyncio
+async def test_empty_enter_while_the_gate_is_open_approves(monkeypatch):
+    """The keyboard's ▶: nothing typed, Enter — the card is the only thing waiting."""
+    _stream_turns(monkeypatch, [[_submit()]] + [[TextDelta(f"phase {i}")] for i in range(10)])
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.auto_approve = True
+        await _plan_mode(app, pilot)
+        await _ask(pilot, app, "풀어줘")
+        assert app._plan_gate_pending is True
+
+        await _ask(pilot, app, "")
+        assert app._plan_gate_pending is False
+        assert app.mode == "act"
+        assert len(app.query(SubagentCard)) == 3
         assert list(app.query(PlanGate))[0].has_class("plan-gate--settled")
-        assert app.session.messages[-1]["content"] == "ok, different thing"
 
 
 @pytest.mark.asyncio

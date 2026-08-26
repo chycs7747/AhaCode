@@ -21,7 +21,8 @@ class PromptInput(TextArea):
 
     @dataclass
     class Submitted(Message):
-        """Posted when the user presses Enter with non-empty text."""
+        """Posted on Enter / Send. text may be empty: a bare Enter is the app's to
+        interpret (it answers an open plan gate; otherwise it is ignored)."""
 
         text: str
 
@@ -34,8 +35,8 @@ class PromptInput(TextArea):
     def submit(self) -> None:
         """Send the current text (used by Enter and the composer's Send button)."""
         text = self.text.strip()
+        self.post_message(self.Submitted(text))
         if text:
-            self.post_message(self.Submitted(text))
             self.clear()
 
     async def _on_key(self, event: events.Key) -> None:

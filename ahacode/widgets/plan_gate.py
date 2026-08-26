@@ -41,6 +41,7 @@ class PlanGate(Vertical):
         body = "\n".join(f"  {i}. {s}" for i, s in enumerate(self.steps, 1))
         if self.path:
             body += f"\n  📄 {self.path}"
+        body += "\n  승인: ▶ 또는 빈 입력에 Enter · 수정: 바꿀 점을 그냥 입력"
         yield Static(body, classes="plan-gate-steps", markup=False)
         with Horizontal(classes="plan-gate-buttons"):
             yield Button("▶ 실행 (/run)", variant="success", id="plan-gate-run")

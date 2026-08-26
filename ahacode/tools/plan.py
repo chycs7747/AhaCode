@@ -51,7 +51,8 @@ validate verify wire write
 
 # Korean is verb-final: the step ends in the action ("solution() 작성", "예시 4개 검증").
 _KO_TAIL = re.compile(
-    r"(작성|구현|실행|검증|확인|측정|수정|추가|삭제|제거|정리|테스트|분석|비교|배포|생성|변경|리팩터|정의)"
+    r"(작성|구현|실행|검증|확인|측정|수정|추가|삭제|제거|정리|테스트|분석|비교|배포|생성|변경|리팩터|정의"
+    r"|출력|print|반환|저장|계산|호출|등록|설치|적용|표시|기록|로드)"
     r"(하기|하라|한다|해라|할 것)?\s*[.!]?$"
 )
 _HANGUL = re.compile(r"[가-힣]")

@@ -34,27 +34,31 @@ def test_blank_steps_count_as_empty(tmp_path):
         _submit(tmp_path, summary="s", steps=["  ", ""])
 
 
-def test_non_executable_step_is_named_with_its_number(tmp_path):
-    with pytest.raises(plan_submit.PlanRejected) as exc:
-        _submit(tmp_path, summary="s", steps=[
-            "Write solver.py with solve()",
-            "Algorithm: subtree sums via DFS",     # a topic, not an action
-            "Run the 4 examples and confirm 40/14/27/9",
-        ])
-    msg = str(exc.value)
-    assert "step 2" in msg and "Algorithm" in msg
-    assert "step 1" not in msg and "step 3" not in msg
+def test_non_executable_step_is_accepted_with_a_note(tmp_path):
+    """The executability check is a heuristic, so it warns instead of refusing —
+    as a hard gate it rejected a valid Korean step three times (it ended in print)."""
+    out = _submit(tmp_path, summary="s", steps=[
+        "Write solver.py with solve()",
+        "Algorithm: subtree sums via DFS",     # a topic, not an action
+        "Run the 4 examples and confirm 40/14/27/9",
+    ])
+    assert out.startswith("Plan saved to")
+    assert "Note: step 2 'Algorithm" in out
+    assert "step 1" not in out and "step 3" not in out
+    assert (storage.PLANS_DIR / "2026-08-26_120000.md").exists()
 
 
 def test_a_rejection_writes_nothing(tmp_path):
     with pytest.raises(plan_submit.PlanRejected):
-        _submit(tmp_path, summary="s", steps=["Algorithm: idea"])
+        _submit(tmp_path, summary="s", steps=[])
     assert not (storage.PLANS_DIR).exists()
 
 
-def test_check_is_reusable_without_a_context():
+def test_check_and_note_are_reusable_without_a_context():
     assert plan_submit.check([]) is not None
-    assert plan_submit.check(["Write x.py with main()"]) is None
+    assert plan_submit.check(["Algorithm: idea"]) is None       # accepted…
+    assert "step 1" in plan_submit.note(["Algorithm: idea"])   # …with a note
+    assert plan_submit.note(["Write x.py with main()"]) == ""
 
 
 # --- success: the file is the plan -----------------------------------------------

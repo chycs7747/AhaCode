@@ -83,7 +83,14 @@ PLAN_SYSTEM = (
     "confirm 40/14/27/9\"). A step that only states a fact, a formula, or an idea "
     "is not a step — do that thinking now, and let the plan carry only the doing.\n"
     "plan_submit ends your planning turn. Call it once the plan is complete and no "
-    "question is left open — not before, and not again unless the user asks for changes."
+    "question is left open — not before, and not again unless the user asks for changes.\n"
+    "Submitting IS how you ask for approval: never ask whether to submit, and never end "
+    "a turn with the plan in prose. If the plan is ready, call plan_submit; if it is "
+    "not, ask the one specific question that blocks it.\n"
+    "You never carry the plan out yourself. If the user approves, says to proceed, or "
+    "asks to run it, call plan_submit again (unchanged if nothing changed) — that puts "
+    "the approval buttons on screen. Never start investigating or working in response "
+    "to an approval."
 )
 
 # A worker sub-agent's framing. Deliberately short: it inherits the same tools, so
