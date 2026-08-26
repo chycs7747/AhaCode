@@ -27,7 +27,7 @@ from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.header_bar import HeaderBar
-from ahacode.widgets.agent_settings import AgentSettings
+from ahacode.widgets.agent_settings import AgentSettings, AgentSettingsResult
 from ahacode.widgets.plan_gate import PlanGate
 from ahacode.widgets.prompt_input import PromptInput
 from ahacode.widgets.session_picker import SessionPicker
@@ -218,21 +218,29 @@ class AhaCodeApp(App):
         event.stop()
         cfg = config.load()
         self.push_screen(
-            AgentSettings(cfg.max_parallel_agents, cfg.subagent_depth),
+            AgentSettings(cfg.max_parallel_agents, cfg.subagent_depth,
+                          cfg.context_window, cfg.compact_threshold),
             self._agent_settings_saved,
         )
 
-    def _agent_settings_saved(self, result: "tuple[int, int] | None") -> None:
-        """Persist the chosen parallelism/depth and resize the client gate so the
-        very next request honours it (same path as the /model and /url commands)."""
+    def _agent_settings_saved(self, result: "AgentSettingsResult | None") -> None:
+        """Persist the chosen parallelism/depth/context settings and resize the
+        client gate so the very next request honours them (same path as /model)."""
         if result is None:
             return
         from dataclasses import replace
-        max_parallel, depth = result
-        config.save(replace(config.load(), max_parallel_agents=max_parallel, subagent_depth=depth))
+        config.save(replace(
+            config.load(),
+            max_parallel_agents=result.max_parallel, subagent_depth=result.depth,
+            context_window=result.context_window, compact_threshold=result.compact_threshold,
+        ))
         client.reset()
+        window = "압축 끔" if result.context_window == 0 else f"{result.context_window // 1024}K"
         self.run_worker(
-            self._say_system(f"에이전트 설정 저장 — 최대 병렬 {max_parallel} · 깊이 {depth}"),
+            self._say_system(
+                f"설정 저장 — 최대 병렬 {result.max_parallel} · 깊이 {result.depth} · "
+                f"컨텍스트 {window} · 압축 {int(result.compact_threshold * 100)}%"
+            ),
             exclusive=False,
         )
 

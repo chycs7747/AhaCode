@@ -194,7 +194,8 @@ context_window = 32768       # your model's window, in tokens; 0 disables compac
 [agent]
 subagent_depth = 1        # generations of sub-agents that may nest (0 = none)
 max_parallel_agents = 8   # cap on concurrent requests (1 = serialise sub-agents)
-# Both are also editable live from the ⚙ Agents button in the header — set
+# max_parallel_agents, subagent_depth, context_window and compact_threshold are
+# also editable live from the ⚙ Agents button in the header — set
 # max_parallel_agents to 1 to keep a single GPU from being double-loaded.
 compact_threshold = 0.8   # condense once a request reaches this fraction of the window
 keep_recent_messages = 6  # newest messages always kept verbatim

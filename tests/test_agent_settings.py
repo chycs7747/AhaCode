@@ -8,7 +8,7 @@ from textual.widgets import Button, Select
 from ahacode import client, config, storage
 from ahacode.app import AhaCodeApp
 from ahacode.events import TextDelta
-from ahacode.widgets.agent_settings import AgentSettings
+from ahacode.widgets.agent_settings import AgentSettings, AgentSettingsResult
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +27,8 @@ def isolated_environment(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_button_opens_the_modal_seeded_from_config():
-    config.save(replace(config.DEFAULTS, max_parallel_agents=8, subagent_depth=1))
+    config.save(replace(config.DEFAULTS, max_parallel_agents=8, subagent_depth=1,
+                        context_window=32768, compact_threshold=0.8))
     app = AhaCodeApp()
     async with app.run_test() as pilot:
         await pilot.click("#agent-settings-btn")
@@ -35,6 +36,8 @@ async def test_button_opens_the_modal_seeded_from_config():
         assert isinstance(app.screen, AgentSettings)
         assert app.screen.query_one("#agent-parallel", Select).value == 8
         assert app.screen.query_one("#agent-depth", Select).value == 1
+        assert app.screen.query_one("#agent-window", Select).value == 32768
+        assert app.screen.query_one("#agent-threshold", Select).value == 0.8
 
 
 @pytest.mark.asyncio
@@ -49,6 +52,8 @@ async def test_saving_persists_and_resizes_the_gate(monkeypatch):
         await pilot.pause()
         app.screen.query_one("#agent-parallel", Select).value = 1     # serialise
         app.screen.query_one("#agent-depth", Select).value = 2
+        app.screen.query_one("#agent-window", Select).value = 16384
+        app.screen.query_one("#agent-threshold", Select).value = 0.9
         await pilot.pause()
         app.screen.query_one("#agent-settings-save", Button).press()
         await pilot.pause()
@@ -57,6 +62,7 @@ async def test_saving_persists_and_resizes_the_gate(monkeypatch):
         assert not isinstance(app.screen, AgentSettings)             # closed
         cfg = config.load()
         assert cfg.max_parallel_agents == 1 and cfg.subagent_depth == 2
+        assert cfg.context_window == 16384 and cfg.compact_threshold == 0.9
         assert resized                                               # the gate was reset
 
 
@@ -81,3 +87,15 @@ def test_max_parallel_one_serialises_the_client_gate():
     client.reset()
     gate = client._ensure_gate()
     assert gate._initial_value == 1
+
+
+@pytest.mark.asyncio
+async def test_a_hand_set_window_snaps_to_the_nearest_option():
+    """A context_window edited by hand to an off-list value still lands on a real
+    Select option rather than leaving it blank."""
+    config.save(replace(config.DEFAULTS, context_window=30000))     # not a listed value
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.click("#agent-settings-btn")
+        await pilot.pause()
+        assert app.screen.query_one("#agent-window", Select).value == 32768  # nearest
