@@ -516,7 +516,8 @@ async def test_worker_error_becomes_a_bubble_not_a_crash(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stream_is_closed_when_cancelled(monkeypatch):
-    """Sending a new message must close the previous (cancelled) stream."""
+    """Stopping a turn must release its stream (close the generator), and the next
+    message after that gets a fresh one."""
     closed = []
     def slow(messages, tools=None):
         try:
@@ -532,11 +533,15 @@ async def test_stream_is_closed_when_cancelled(monkeypatch):
         await pilot.press("a")
         await pilot.press("enter")
         await pilot.pause(0.1)
-        await pilot.press("b")   # cancels the first worker
+        await pilot.press("escape")   # stop the first turn
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(closed) == 1       # the cancelled stream was released
+        await pilot.press("b")
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
-    assert len(closed) == 2  # both streams released, including the cancelled one
+    assert len(closed) == 2  # both streams released
 
 
 @pytest.mark.asyncio
@@ -1899,3 +1904,65 @@ async def test_stop_folds_the_pinned_plan_without_losing_it(monkeypatch):
         assert len(panel.items) == 3          # the plan itself is intact
         panel.on_click()                       # click to unfold
         assert not panel.collapsed and "☑ Write solver.py" in panel._content
+
+
+# --- one turn at a time ------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_typing_while_a_turn_streams_is_refused_and_kept(monkeypatch):
+    """A message typed mid-turn is neither sent nor allowed to cancel the turn: it
+    stays in the composer and the user is told how to stop."""
+    from textual.worker import WorkerState
+
+    def slow(messages, tools=None):
+        for _ in range(60):
+            time.sleep(0.02)
+            yield TextDelta("x")
+
+    monkeypatch.setattr(client, "stream_chat", slow)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "go"
+        await pilot.press("enter")
+        for _ in range(50):
+            w = getattr(app, "_response_worker", None)
+            if w is not None and w.is_running:
+                break
+            await pilot.pause(0.02)
+        worker = app._response_worker
+        app.query_one("#prompt", PromptInput).text = "그리고 이것도"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert worker.state is not WorkerState.CANCELLED          # the turn went on
+        assert app.query_one("#prompt", PromptInput).text == "그리고 이것도"  # kept
+        said = [b._content for b in app.query(Chatbox) if b.has_class("chatbox--system")]
+        assert any("진행 중" in s for s in said)
+        await pilot.press("escape")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert [m["role"] for m in app.session.messages] == ["user"]   # only one turn was ever sent
+
+
+@pytest.mark.asyncio
+async def test_a_stop_keeps_the_rounds_that_finished(monkeypatch):
+    """Stopping mid-turn persists the completed assistant+tool rounds, so the model
+    resumes from a transcript that knows what it already did."""
+    calls = iter(range(100))
+
+    def fake_stream(messages, tools=None):
+        n = next(calls)
+        if n == 0:
+            return iter([ToolCall(id="t1", name="read", arguments={"path": "conftest.py"})])
+        app.call_from_thread(app.action_stop)   # Stop lands during the second round
+        return iter([TextDelta("never kept")])
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", PromptInput).text = "read it"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    roles = [m["role"] for m in app.session.messages]
+    assert roles == ["user", "assistant", "tool"]          # round one survived the stop
+    assert not any("never kept" in (m.get("content") or "") for m in app.session.messages)

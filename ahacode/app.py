@@ -390,6 +390,19 @@ class AhaCodeApp(App):
             return
         # PromptInput clears itself on submit.
 
+        # One turn at a time. A message typed while a turn streams used to CANCEL it
+        # (exclusive worker) and drop the work in flight — and, once plan runs lived
+        # in a second worker, ran alongside it and interleaved two conversations in
+        # one transcript. Now the message is refused, kept in the composer, and the
+        # user is told how to stop. Slash commands included: /new or /sessions
+        # mid-turn would move session_path out from under the worker's persist.
+        if self._anything_running():
+            self.query_one("#prompt", PromptInput).text = text  # not lost, not sent
+            await self._say_system(
+                "⏳ 진행 중이라 보내지 않았어요 — 멈추려면 Stop(Esc), 끝나면 그대로 Enter."
+            )
+            return
+
         # A sub-agent session is view-only: refuse new turns, but let slash commands
         # through so /new and /sessions stay as keyboard escape hatches.
         if self.view_only and not text.startswith("/"):
@@ -1084,7 +1097,12 @@ class AhaCodeApp(App):
             summary = f"{type(exc).__name__}: {exc}"[:300]
             self.post_message(self.ResponseFailed(summary))
             return
-        if worker.is_cancelled:  # cancelled mid-run: don't persist a partial turn
+        if worker.is_cancelled:
+            # Stopped: keep every message that FINISHED (the loop only returns whole
+            # assistant+tool rounds; the round in flight is dropped), so the transcript
+            # the model resumes from knows what it already did. That is the resume
+            # policy every reference lands on — continue the context, never restart.
+            self.post_message(self.ResponseComplete(new_messages, "■ stopped", stats["last_prompt"]))
             return
         self.post_message(self.ResponseComplete(
             new_messages, self._format_stats(stats), stats["last_prompt"]
