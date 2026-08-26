@@ -33,10 +33,10 @@ class AgentSettingsResult:
     The three thinking budgets are int | None — None means "follow the global"."""
 
     __slots__ = ("max_parallel", "depth", "context_window", "compact_threshold",
-                 "plan_thinking", "impl_thinking", "subagent_thinking")
+                 "plan_thinking", "impl_thinking", "subagent_thinking", "no_think_after_tools")
 
     def __init__(self, max_parallel, depth, context_window, compact_threshold,
-                 plan_thinking, impl_thinking, subagent_thinking):
+                 plan_thinking, impl_thinking, subagent_thinking, no_think_after_tools):
         self.max_parallel = max_parallel
         self.depth = depth
         self.context_window = context_window
@@ -44,6 +44,7 @@ class AgentSettingsResult:
         self.plan_thinking = plan_thinking
         self.impl_thinking = impl_thinking
         self.subagent_thinking = subagent_thinking
+        self.no_think_after_tools = no_think_after_tools
 
 
 # Bounds match the measured knee (≤8 concurrent) and the tree design (depth 0–3).
@@ -59,6 +60,11 @@ _THRESHOLD = [("70%", 0.7), ("80%", 0.8), ("90%", 0.9), ("95%", 0.95)]
 _GLOBAL = -1
 _THINK = [("전역", _GLOBAL), ("1K", 1024), ("2K", 2048), ("4K", 4096),
           ("8K", 8192), ("16K", 16384)]
+# Whether a turn that just got a tool result also thinks. 켬 = it thinks (analyses
+# the result, capped by the budget); 끔 = it skips thinking and just acts, which
+# stops a local model re-deliberating every turn. The stored flag is the inverse
+# (no_think_after_tools), so 켬 maps to False and 끔 to True.
+_AFTER_TOOLS = [("켬 (사고함)", False), ("끔 (사고 안 함)", True)]
 
 
 def _nearest(options, value):
@@ -79,7 +85,7 @@ class AgentSettings(ModalScreen["AgentSettingsResult | None"]):
     BINDINGS = [("escape", "cancel", "Close")]
 
     def __init__(self, max_parallel, depth, context_window, compact_threshold,
-                 plan_thinking, impl_thinking, subagent_thinking) -> None:
+                 plan_thinking, impl_thinking, subagent_thinking, no_think_after_tools) -> None:
         super().__init__()
         self._max_parallel = max_parallel
         self._depth = depth
@@ -88,6 +94,7 @@ class AgentSettings(ModalScreen["AgentSettingsResult | None"]):
         self._plan = _think_value(plan_thinking)
         self._impl = _think_value(impl_thinking)
         self._subagent = _think_value(subagent_thinking)
+        self._no_think = no_think_after_tools
 
     def compose(self) -> ComposeResult:
         with Vertical(id="agent-settings-box"):
@@ -112,6 +119,8 @@ class AgentSettings(ModalScreen["AgentSettingsResult | None"]):
             yield Select(_THINK, value=self._impl, allow_blank=False, id="agent-think-impl")
             yield Label("사고 예산 · subagent")
             yield Select(_THINK, value=self._subagent, allow_blank=False, id="agent-think-subagent")
+            yield Label("도구 결과 후 사고")
+            yield Select(_AFTER_TOOLS, value=self._no_think, allow_blank=False, id="agent-after-tools")
             with Horizontal(id="agent-settings-buttons"):
                 yield Button("저장", variant="success", id="agent-settings-save")
                 yield Button("취소", id="agent-settings-cancel")
@@ -131,6 +140,7 @@ class AgentSettings(ModalScreen["AgentSettingsResult | None"]):
             plan_thinking=self._think("plan"),
             impl_thinking=self._think("impl"),
             subagent_thinking=self._think("subagent"),
+            no_think_after_tools=bool(self.query_one("#agent-after-tools", Select).value),
         ))
 
     @on(Button.Pressed, "#agent-settings-cancel")

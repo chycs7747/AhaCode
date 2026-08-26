@@ -8,10 +8,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config.toml"
 
-DEFAULT_BASE_URL = "http://127.0.0.1:8078/v1"
-DEFAULT_MODEL = "qwen38-nvfp4"
+DEFAULT_BASE_URL = "http://localhost:9000/v1"
+DEFAULT_MODEL = "qwen38"
 DEFAULT_API_KEY = "EMPTY"
-DEFAULT_TIMEOUT = 60.0
+DEFAULT_TIMEOUT = 900.0
 DEFAULT_SUBAGENT_DEPTH = 1  # generations of sub-agents that may nest (0 = none)
 DEFAULT_IMPL_MAX_TURNS = 30  # turn cap for a session carrying out a whole plan
 DEFAULT_MAX_PARALLEL_AGENTS = 8  # cap on concurrent gateway requests (measured knee)

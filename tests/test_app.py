@@ -277,7 +277,7 @@ async def test_endpoint_shows_in_header_not_the_composer(fake_llm):
     async with app.run_test() as pilot:
         await pilot.pause()
         shown = app.query_one(HeaderBar)._endpoint_text
-        assert "127.0.0.1:" in shown       # compact host:port
+        assert "localhost:9000" in shown  # compact host:port (drops scheme, /v1)
         assert "http://" not in shown and not shown.endswith("/v1")  # scheme/suffix stripped
         assert not app.query_one(ModelBar).query("#endpoint")        # gone from the footer
 

@@ -32,10 +32,10 @@ def _task(args: dict, ctx) -> str:
 TASK = Tool(
     name="task",
     description=(
-        # Reference-style (Kilo task.txt / Claude Code): the model decides, judging
-        # independence by two axes — different files, and results that do not depend
-        # on each other. The harness supplies the parallelism (several task calls in
-        # one turn run concurrently) and this rule tells the model when to use it.
+        # The model decides, judging independence by two axes — different files, and
+        # results that do not depend on each other. The harness supplies the
+        # parallelism (several task calls in one turn run concurrently) and this
+        # rule tells the model when to use it.
         "Delegate a self-contained subtask to a fresh sub-agent. Use it for work that "
         "is INDEPENDENT of your other work: a different file, and a result that does "
         "not depend on another task's output. Launch several at once by putting "

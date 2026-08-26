@@ -81,8 +81,8 @@ def _tool_unescape(s: str) -> str:
 def _render_tool_stream(name: str, args: str) -> str:
     """Live label for a streaming tool call whose args JSON may be incomplete.
 
-    write is shown as a path header + streamed content (the roo trick: pull known
-    fields out early); every other tool shows its raw accumulating args.
+    write is shown as a path header + streamed content (pull known fields out
+    early); every other tool shows its raw accumulating args.
     """
     if name == "write":
         m = re.search(r'"path"\s*:\s*"((?:[^"\\]|\\.)*)"', args)
@@ -223,7 +223,7 @@ class AhaCodeApp(App):
             AgentSettings(cfg.max_parallel_agents, cfg.subagent_depth,
                           cfg.context_window, cfg.compact_threshold,
                           cfg.plan_thinking_budget, cfg.impl_thinking_budget,
-                          cfg.subagent_thinking_budget),
+                          cfg.subagent_thinking_budget, cfg.no_think_after_tools),
             self._agent_settings_saved,
         )
 
@@ -239,6 +239,7 @@ class AhaCodeApp(App):
             context_window=result.context_window, compact_threshold=result.compact_threshold,
             plan_thinking_budget=result.plan_thinking, impl_thinking_budget=result.impl_thinking,
             subagent_thinking_budget=result.subagent_thinking,
+            no_think_after_tools=result.no_think_after_tools,
         ))
         client.reset()
         window = "압축 끔" if result.context_window == 0 else f"{result.context_window // 1024}K"
@@ -249,7 +250,8 @@ class AhaCodeApp(App):
                 f"설정 저장 — 최대 병렬 {result.max_parallel} · 깊이 {result.depth} · "
                 f"컨텍스트 {window} · 압축 {int(result.compact_threshold * 100)}% · "
                 f"사고 plan {think(result.plan_thinking)}/impl {think(result.impl_thinking)}/"
-                f"sub {think(result.subagent_thinking)}"
+                f"sub {think(result.subagent_thinking)} · 도구후사고 "
+                f"{'끔' if result.no_think_after_tools else '켬'}"
             ),
             exclusive=False,
         )
@@ -518,9 +520,9 @@ class AhaCodeApp(App):
             )
             return
 
-        # Text typed while the gate is open is feedback on the plan (the Roo /
-        # Claude Code convention): the card settles as "revise", the plan is not
-        # executed, and the message goes to the model, which revises and resubmits.
+        # Text typed while the gate is open is feedback on the plan: the card settles
+        # as "revise", the plan is not executed, and the message goes to the model,
+        # which revises and resubmits.
         if self._plan_gate_pending:
             self._settle_plan_gate("✎ 수정 계속")
 

@@ -143,7 +143,7 @@ TODO_WRITE = Tool(
         # deciding to call this, instead of it biasing every atomic question.
         # The status discipline is the model's contract with the checklist the user
         # is watching — the panel shows exactly what the model declares, so a step
-        # marked done on intent is a lie on screen. Rules after Kilo's todowrite.
+        # marked done on intent is a lie on screen.
         "Record or update the task list. Send the full list each time. If the work "
         "splits into three or more steps, lay it out here BEFORE making any change.\n"
         "Status rules: pending → in_progress → done, or cancelled if no longer needed. "
