@@ -40,4 +40,5 @@ READ = Tool(
         "required": ["path"],
     },
     execute=_read,
+    parallelizable=True,  # pure read, no side effects — safe to batch in one turn
 )

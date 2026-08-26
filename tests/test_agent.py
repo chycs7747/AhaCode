@@ -70,6 +70,73 @@ def test_bash_runs_when_approved():
     assert result.output == "ran:ls" and not result.is_error
 
 
+def test_a_batch_of_pure_reads_runs_in_parallel():
+    """Several independent reads in one assistant message execute concurrently. Each
+    tool blocks on a shared barrier that only releases once BOTH are inside it, so
+    the turn can finish only if the two ran at the same time — a serial path would
+    deadlock the first call until it times out."""
+    import threading
+
+    barrier = threading.Barrier(2, timeout=3)
+    threads: dict[str, str] = {}
+
+    def blocking(name):
+        def run(a):
+            barrier.wait()  # proceeds only when the second parallel call arrives
+            threads[name] = threading.current_thread().name
+            return f"{name}:ok"
+        return run
+
+    reg = {
+        "read": Tool("read", "", {}, execute=blocking("read"), parallelizable=True),
+        "grep": Tool("grep", "", {}, execute=blocking("grep"), parallelizable=True),
+    }
+    turns = [
+        [ToolCall(id="1", name="read", arguments={"path": "a"}),
+         ToolCall(id="2", name="grep", arguments={"pattern": "x"})],
+        [TextDelta("done")],
+    ]
+    emitted = []
+    agent.run([{"role": "user", "content": "x"}], emit=emitted.append,
+              stream=make_stream(turns), registry=reg)
+
+    results = [e for e in emitted if isinstance(e, ToolResult)]
+    assert [r.output for r in results] == ["read:ok", "grep:ok"]  # both released, in call order
+    assert not any(r.is_error for r in results)
+    # ran off the calling thread, on two distinct workers
+    assert threads["read"] != threads["grep"]
+
+
+def test_a_batch_mixing_a_writer_falls_back_to_serial():
+    """The all()-parallelizable guard: one non-parallelizable call in the batch
+    forces the WHOLE batch onto the serial path, so nothing races a side effect.
+    Proven by thread identity — serial execution stays on the calling thread."""
+    import threading
+
+    threads: dict[str, str] = {}
+
+    def record(name):
+        def run(a):
+            threads[name] = threading.current_thread().name
+            return f"{name}:ok"
+        return run
+
+    reg = {
+        "read": Tool("read", "", {}, execute=record("read"), parallelizable=True),
+        "write": Tool("write", "", {}, execute=record("write")),  # parallelizable=False
+    }
+    turns = [
+        [ToolCall(id="1", name="read", arguments={"path": "a"}),
+         ToolCall(id="2", name="write", arguments={"path": "b"})],
+        [TextDelta("done")],
+    ]
+    agent.run([{"role": "user", "content": "x"}], emit=lambda e: None,
+              stream=make_stream(turns), registry=reg)
+
+    main = threading.current_thread().name
+    assert threads["read"] == main and threads["write"] == main  # both serial, no worker pool
+
+
 def test_unknown_tool_is_error():
     emitted = []
     turns = [[ToolCall(id="1", name="nope", arguments={})], [TextDelta("ok")]]

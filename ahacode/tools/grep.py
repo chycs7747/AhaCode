@@ -81,4 +81,5 @@ GREP = Tool(
         "required": ["pattern"],
     },
     execute=_grep,
+    parallelizable=True,  # pure read, no side effects — safe to batch in one turn
 )

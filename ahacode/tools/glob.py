@@ -51,4 +51,5 @@ GLOB = Tool(
         "required": ["pattern"],
     },
     execute=_glob,
+    parallelizable=True,  # pure read, no side effects — safe to batch in one turn
 )

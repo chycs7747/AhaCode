@@ -155,6 +155,18 @@ def test_registry_and_approval_flags():
     assert tools.REGISTRY["read"].requires_approval is False
 
 
+def test_only_pure_reads_are_parallelizable():
+    """The safety envelope for one-turn tool batching: the pure reads may run
+    concurrently, everything that touches the filesystem (or whose effects can't be
+    proven absent, like bash) stays serial. The agent loop only takes the parallel
+    path when ALL calls in a batch are parallelizable, so a lone False here forces
+    the whole batch back to serial."""
+    for name in ("read", "glob", "grep"):
+        assert tools.REGISTRY[name].parallelizable is True, name
+    for name in ("write", "edit", "bash", "todo_write"):
+        assert tools.REGISTRY[name].parallelizable is False, name
+
+
 def test_specs_are_openai_function_schema():
     specs = tools.specs()
     assert {s["function"]["name"] for s in specs} == {
