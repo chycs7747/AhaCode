@@ -1826,6 +1826,42 @@ async def test_a_stopped_plan_keeps_the_phases_that_finished(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_the_stop_button_stops_a_running_plan(monkeypatch):
+    """The composer button reads ■ Stop during a plan run, and must act like it —
+    it used to check only the chat worker and fell through to an empty Send."""
+    from textual.widgets import Button
+
+    from ahacode.widgets.todo_panel import TodoPanel
+
+    calls = iter(range(100))
+
+    def fake_stream(messages, tools=None):
+        n = next(calls)
+        if n == 1:  # phase two is under way -> the user clicks the button
+            app.call_from_thread(app.query_one("#send-btn", Button).press)
+        return iter([TextDelta(f"phase {n}")])
+
+    monkeypatch.setattr(client, "stream_chat", fake_stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app.session.add_user("solve it")
+        app.query_one(TodoPanel).update_todos([
+            {"content": "Write solver.py"},
+            {"content": "Run the examples"},
+            {"content": "Report the timings"},
+        ])
+        app.auto_approve = True
+        app.query_one("#prompt", PromptInput).text = "/run"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._plan_worker.is_cancelled
+        answers = [m["content"] for m in app.session.messages if m["role"] == "assistant"]
+        assert not any(a.startswith("## Report the timings") for a in answers)
+        assert app.query_one("#send-btn", Button).label.plain == "↑ Send"
+
+
+@pytest.mark.asyncio
 async def test_a_chat_turn_does_not_cancel_a_running_plan(monkeypatch):
     """The exclusive-group collision: both workers defaulted to group 'default', so
     typing anything killed the run. They must live in separate groups."""

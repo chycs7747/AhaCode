@@ -238,11 +238,20 @@ class AhaCodeApp(App):
     @on(Button.Pressed, "#send-btn")
     def _on_send_button(self, event: Button.Pressed) -> None:
         event.stop()
-        worker = getattr(self, "_response_worker", None)
-        if worker is not None and worker.is_running:
-            self.action_stop()  # the button doubles as Stop while a turn streams
+        # The button doubles as Stop while ANYTHING runs — a chat turn or a plan run
+        # (they live in different worker groups; see action_stop). Checking only the
+        # chat worker left the button labelled ■ Stop but acting as Send during a
+        # plan run, so pressing it did nothing visible.
+        if self._anything_running():
+            self.action_stop()
         else:
             self.query_one("#prompt", PromptInput).submit()
+
+    def _anything_running(self) -> bool:
+        return any(
+            getattr(self, attr, None) is not None and getattr(self, attr).is_running
+            for attr in ("_response_worker", "_plan_worker")
+        )
 
     def _set_send_running(self, running: bool) -> None:
         """Flip the composer button between Send (idle) and Stop (streaming)."""
