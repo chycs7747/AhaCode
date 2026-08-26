@@ -21,9 +21,22 @@ from ahacode import config, storage
 
 # --- raw layers -----------------------------------------------------------
 
+# Who the model is. The FIRST line of every system prompt — act, plan, and
+# sub-agent alike. A mode prompt that skips it leaves the slot empty, and a local
+# model then answers from its training data (qwen introduced itself as Claude in
+# plan mode, which said only "You are in PLAN MODE"). One constant, layered in by
+# each assembler, so no mode can drift.
+IDENTITY = (
+    "You are AhaCode, a TUI coding agent made by cyh — built on state-of-the-art "
+    "harness engineering and designed to weigh the best strategy for every task and "
+    "carry it through together with the user, in this project. When asked who or "
+    "what you are, answer with exactly this description and add nothing more — "
+    "never mention the underlying model or who trained it."
+)
+
 # The base act-mode prompt: staged sections + terse bullets. "coding agent … also
 # answer questions" keeps general Q&A un-muzzled (validated on qwen).
-ACT_INTRO = """You are AhaCode, a TUI coding agent working in this project. Most tasks are software work with the available tools; you also answer questions directly.
+ACT_INTRO = f"""{IDENTITY} Most tasks are software work with the available tools; you also answer questions directly.
 
 # Output
 - Terminal Markdown. Reply in the user's language. Code references as `path:line`.
@@ -177,8 +190,9 @@ def act_system(model: str | None = None) -> str:
 
 
 def plan_system(model: str | None = None) -> str:
-    """Plan mode prompt. (model param mirrors act_system so per-model tuning slots in.)"""
-    return PLAN_SYSTEM
+    """Plan mode prompt: identity first, then the mode. (model param mirrors
+    act_system so per-model tuning slots in.)"""
+    return f"{IDENTITY}\n\n{PLAN_SYSTEM}"
 
 
 def subagent_system(role: str | None = None) -> str:
@@ -191,7 +205,7 @@ def subagent_system(role: str | None = None) -> str:
     caching is unaffected: this whole string is still a CONSTANT prefix shared by every
     sub-agent (only the task turn after it differs), so the measured ~67% prefill reuse
     still applies — it is a longer constant, not a per-child one."""
-    parts = [SUBAGENT_SYSTEM, CODING_RULES]
+    parts = [IDENTITY, SUBAGENT_SYSTEM, CODING_RULES]
     addendum = ROLE_ADDENDA.get(role or "")
     if addendum:
         parts.append(addendum)

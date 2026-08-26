@@ -62,7 +62,9 @@ def test_subagent_role_addendum_layers_in(monkeypatch):
     with_role = prompts.subagent_system("debug")
     assert prompts.SUBAGENT_SYSTEM in with_role and "DEBUG_ADDENDUM" in with_role
     # no role -> framing + the shared coding rules, no addendum
-    assert prompts.subagent_system() == f"{prompts.SUBAGENT_SYSTEM}\n\n{prompts.CODING_RULES}"
+    assert prompts.subagent_system() == (
+        f"{prompts.IDENTITY}\n\n{prompts.SUBAGENT_SYSTEM}\n\n{prompts.CODING_RULES}"
+    )
 
 
 def test_subagent_inherits_the_coding_rules():
@@ -99,7 +101,7 @@ def test_plan_system_demands_executable_steps():
 
 
 def test_plan_and_title_are_stable():
-    assert prompts.plan_system() == prompts.PLAN_SYSTEM
+    assert prompts.plan_system() == f"{prompts.IDENTITY}\n\n{prompts.PLAN_SYSTEM}"
     assert "PLAN MODE" in prompts.plan_system()
     assert prompts.title_system() == prompts.TITLE_SYSTEM
 
@@ -107,3 +109,12 @@ def test_plan_and_title_are_stable():
 def test_subagent_module_reexports_the_prompt():
     # subagent.run(system=SUBAGENT_SYSTEM) must resolve to the prompts constant.
     assert subagent.SUBAGENT_SYSTEM is prompts.SUBAGENT_SYSTEM
+
+
+
+def test_every_system_prompt_opens_with_the_same_identity():
+    """The regression: plan mode said only "You are in PLAN MODE", and the local model
+    filled the blank from its training data ("I am Claude, made by Anthropic")."""
+    for out in (prompts.act_system(), prompts.plan_system(), prompts.subagent_system()):
+        assert out.startswith(prompts.IDENTITY)
+    assert "AhaCode" in prompts.IDENTITY and "cyh" in prompts.IDENTITY
