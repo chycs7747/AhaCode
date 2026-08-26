@@ -410,12 +410,18 @@ class AhaCodeApp(App):
         interrupted — reassess the real state, don't trust a half-finished summary.
         Repairs are appended and persisted, so the fix is one-time (reopening a
         repaired session finds nothing dangling)."""
-        dangling = storage.dangling_tool_call_ids(self.session.messages)
+        dangling = storage.dangling_tool_calls(self.session.messages)
         if not dangling:
             return
-        for call_id in dangling:
-            msg = {"role": "tool", "tool_call_id": call_id,
-                   "content": "Interrupted: this tool call did not complete."}
+        for call in dangling:
+            # Name WHICH call was cut off, not just that one was: the tool plus its
+            # subject (bash → command, read/write → path), so three bash calls that
+            # ran at once stay distinguishable in the transcript. tool_summary is the
+            # same IN-line the result card shows.
+            subject = tool_summary(call["name"], call["arguments"])
+            what = f"`{call['name']}` ({subject})" if subject else f"`{call['name']}`"
+            msg = {"role": "tool", "tool_call_id": call["id"],
+                   "content": f"Interrupted: the {what} call did not complete."}
             self.session.messages.append(msg)
             storage.append_message(self.session_path, msg)
         note = {

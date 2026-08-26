@@ -2057,7 +2057,9 @@ async def test_switching_into_an_interrupted_session_fills_dangling_calls(monkey
         roles = [m["role"] for m in app.session.messages]
         assert roles == ["user", "assistant", "tool", "user"]
         assert app.session.messages[2]["tool_call_id"] == "x1"
+        # the result names WHICH tool was cut off (bare id says nothing)
         assert "Interrupted" in app.session.messages[2]["content"]
+        assert "`read`" in app.session.messages[2]["content"]
         assert "interrupted" in app.session.messages[3]["content"].lower()
         # persisted, so reopening finds nothing dangling
         assert storage.dangling_tool_call_ids(storage.load_messages(other)) == []
@@ -2077,3 +2079,28 @@ async def test_a_clean_session_is_not_touched_on_open(monkeypatch):
         await app._switch_session(other.stem)
         await pilot.pause()
         assert [m["role"] for m in app.session.messages] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_parallel_dangling_calls_are_each_named_by_their_command(monkeypatch):
+    """Three bash calls interrupted at once each get a result naming its own command,
+    so a bare id is never the only way to tell them apart."""
+    other = storage.new_session_path()
+    storage.write_header(other, storage.make_header(other.stem, kind="impl", relation="handoff", parent_id="p"))
+    for m in [
+        {"role": "user", "content": "build all"},
+        {"role": "assistant", "tool_calls": [
+            {"id": "b1", "type": "function", "function": {"name": "bash", "arguments": '{"command": "python build_a.py"}'}},
+            {"id": "b2", "type": "function", "function": {"name": "bash", "arguments": '{"command": "python build_b.py"}'}},
+        ]},
+    ]:
+        storage.append_message(other, m)
+
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("ok")]))
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await app._switch_session(other.stem)
+        await pilot.pause()
+        results = {m["tool_call_id"]: m["content"] for m in app.session.messages if m.get("role") == "tool"}
+        assert "python build_a.py" in results["b1"]
+        assert "python build_b.py" in results["b2"]

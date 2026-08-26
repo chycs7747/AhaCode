@@ -242,15 +242,30 @@ def active_leaf(session_id: str, sessions: list[dict]) -> str:
         current = max(children, key=lambda s: s["id"])["id"]  # id is a timestamp
 
 
-def dangling_tool_call_ids(messages: list[dict]) -> list[str]:
-    """tool_call ids the last assistant turn issued but that never got a result — the
-    mark of a turn cut off mid-tool (a Stop or Ctrl+D while a tool was running). The
-    API requires a result for every tool_call, so a resume must fill these in."""
+def dangling_tool_calls(messages: list[dict]) -> list[dict]:
+    """The last assistant turn's tool calls that never got a result — the mark of a
+    turn cut off mid-tool (a Stop or Ctrl+D while a tool ran). Each is returned with
+    its id, name and parsed arguments, so a resume can fill a result AND name which
+    call it was (a bare id says nothing when three bash calls ran at once). The API
+    requires a result for every tool_call, so these must be filled before continuing."""
     answered = {m.get("tool_call_id") for m in messages if m.get("role") == "tool"}
     last = next((m for m in reversed(messages) if m.get("role") == "assistant"), None)
-    if not last:
-        return []
-    return [c["id"] for c in (last.get("tool_calls") or []) if c["id"] not in answered]
+    out: list[dict] = []
+    for c in (last.get("tool_calls") or []) if last else []:
+        if c["id"] in answered:
+            continue
+        fn = c.get("function", {})
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            args = {}
+        out.append({"id": c["id"], "name": fn.get("name", "tool"), "arguments": args})
+    return out
+
+
+def dangling_tool_call_ids(messages: list[dict]) -> list[str]:
+    """Just the ids of dangling_tool_calls (kept for callers that only need them)."""
+    return [c["id"] for c in dangling_tool_calls(messages)]
 
 
 def build_tree(sessions: list[dict]) -> list[dict]:
