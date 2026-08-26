@@ -13,6 +13,7 @@ DEFAULT_MODEL = "qwen38-nvfp4"
 DEFAULT_API_KEY = "EMPTY"
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_SUBAGENT_DEPTH = 1  # generations of sub-agents that may nest (0 = none)
+DEFAULT_IMPL_MAX_TURNS = 30  # turn cap for a session carrying out a whole plan
 DEFAULT_MAX_PARALLEL_AGENTS = 8  # cap on concurrent gateway requests (measured knee)
 DEFAULT_THINKING_TOKEN_BUDGET = 4096  # per-turn reasoning-token cap; 0 = unbounded
 DEFAULT_REASONING_EFFORT = "medium"   # OpenAI-style hint (low|medium|high|xhigh)
@@ -61,8 +62,9 @@ class ModelConfig:
     context_window: int = DEFAULT_CONTEXT_WINDOW
     compact_threshold: float = DEFAULT_COMPACT_THRESHOLD
     keep_recent_messages: int = DEFAULT_KEEP_RECENT_MESSAGES
-    # In act mode, a fresh plan (todo_write) with at least this many steps pauses
-    # the agent loop and asks the user before anything runs. 0 = never ask.
+    # Turn cap for an impl session (one continuous context carrying out a whole
+    # plan) — larger than an ordinary turn's, which answers one message.
+    impl_max_turns: int = DEFAULT_IMPL_MAX_TURNS
     # Pre-approval rules, "tool:pattern" (see permissions.py). A tuple, not a
     # list, because this dataclass is frozen and must stay hashable.
     allow_rules: tuple[str, ...] = DEFAULT_ALLOW_RULES
@@ -100,6 +102,8 @@ context_window = {cfg.context_window}  # the model's context window in tokens; 0
 # How many generations of sub-agents may nest. 1 = the main agent may spawn
 # sub-agents, but those sub-agents cannot spawn their own (no grandchildren).
 subagent_depth = {cfg.subagent_depth}
+# Turn cap for a session carrying out an approved plan (an ordinary turn has 10).
+impl_max_turns = {cfg.impl_max_turns}
 # Max concurrent requests to the gateway across all agents (the single-GPU backend
 # saturates around here; higher just queues and adds latency).
 max_parallel_agents = {cfg.max_parallel_agents}
@@ -145,6 +149,7 @@ def load(path: Path | None = None) -> ModelConfig:
         api_key=model.get("api_key", DEFAULT_API_KEY),
         timeout=float(model.get("timeout", DEFAULT_TIMEOUT)),
         subagent_depth=int(agent.get("subagent_depth", DEFAULT_SUBAGENT_DEPTH)),
+        impl_max_turns=int(agent.get("impl_max_turns", DEFAULT_IMPL_MAX_TURNS)),
         max_parallel_agents=int(agent.get("max_parallel_agents", DEFAULT_MAX_PARALLEL_AGENTS)),
         thinking_token_budget=int(model.get("thinking_token_budget", DEFAULT_THINKING_TOKEN_BUDGET)),
         reasoning_effort=str(model.get("reasoning_effort", DEFAULT_REASONING_EFFORT)),

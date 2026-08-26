@@ -69,18 +69,20 @@ foldable cards you approve before they run.
 - **Plan mode** — a read-only mode (`read`/`glob`/`grep` + `plan_submit`) where
   the model investigates, settles questions with you, and ends its turn by
   *submitting* the plan. The harness writes it to `plans/<session>.md` and fills
-  the pinned checklist from it; a plan whose steps are not executable is refused
-  with the reason, and the model resubmits.
+  the pinned checklist from it; an empty plan is refused, and steps that do not
+  read as executable come back noted for the model to reconsider.
 - **A plan gate** — `plan_submit` is the trigger: the loop stops *between turns*
   with the plan on screen and asks ▶ 실행 or ✎ 수정. No heuristics about step
   counts — the model said it is done, and the pause is a harness decision, not a
   prompt asking nicely. Choosing 수정 keeps you in plan mode; your next message
   revises the plan and it is submitted again.
-- **`/run` executes that plan structurally** — each step is handed to its own
-  fresh sub-agent, in order, with only the previous steps' concise *results*
-  threaded forward, then one final pass combines them into a single answer.
-  Splitting the work is a decision made by the harness, not by the model. It is
-  execution, so it switches the session to act mode.
+- **Approval hands the plan to a child session** — ▶ (or an empty Enter) opens
+  a new session parented to the planning one, in act mode, seeded with a single
+  message naming the plan file. One continuous context reads the plan, mirrors
+  it into the checklist, and works it step by step — no per-step sub-agents,
+  nothing summarised and threaded forward by hand. Stop it and it is a session
+  like any other: open it and carry on. Approving a revised plan makes a new
+  sibling, never a deeper child.
 - **Sub-agents** — `task` spawns a child agent that renders into a nested,
   foldable 🤖 card and gets its own linked session file. Nesting depth is capped
   by config, a fan-out of tasks runs concurrently, and one process-wide gate
@@ -151,7 +153,6 @@ and are not recorded in your session.
 | `/model <name>` | Switch model (persisted; the dropdown under the prompt does the same) |
 | `/url <base_url>` | Switch endpoint (persisted) |
 | `/think <n>` \| `/think off` | Per-turn reasoning budget in tokens |
-| `/run` | Execute the current plan — each step in its own fresh sub-agent (switches to act) |
 | `/new` | Start a new session |
 | `/sessions` | Open the session tree and switch |
 | `/help` | List available commands |
@@ -233,7 +234,6 @@ ahacode/
 │                     # results back → until a turn has no tool calls
 ├── context.py        # prune, then condense, before the history outgrows the window
 ├── subagent.py       # one delegated task as a fresh child loop (sub-agent-as-a-tool)
-├── orchestrator.py   # /run: a plan's steps executed as sub-agents, in order
 ├── prompts.py        # system prompts, assembled per mode/model
 ├── render.py         # widget-free previews (diffs, syntax) shared by chat + modal
 ├── tools/

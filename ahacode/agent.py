@@ -23,6 +23,10 @@ EmitFn = Callable[[Event], None]
 ApproveFn = Callable[[ToolCall], bool]
 
 
+# Tool-call rounds one user message may take before the tool-free wrap-up turn.
+DEFAULT_MAX_TURNS = 10
+
+
 def _compaction_note(done: context.Compaction) -> str:
     """What to tell the user about a compaction. Losing history silently is the bad
     failure mode — they should know why the agent may have forgotten something."""
@@ -104,7 +108,7 @@ def run(
     stream: StreamFn | None = None,
     registry: dict | None = None,
     ctx: object | None = None,  # opaque bag for wants_ctx tools (task → sub-agents)
-    max_turns: int = 10,
+    max_turns: int = DEFAULT_MAX_TURNS,
     summarize: context.SummarizeFn | None = None,
     prompt_tokens: int | None = None,
     should_pause: Callable[[], bool] | None = None,

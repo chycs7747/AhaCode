@@ -222,6 +222,15 @@ def display_path(path: Path) -> str:
         return str(path)
 
 
+def plan_title(path: Path) -> str:
+    """The plan's summary line ("# …"), for naming the session that carries it out."""
+    try:
+        first = path.read_text(encoding="utf-8").splitlines()[0]
+    except (OSError, IndexError):
+        return ""
+    return first.removeprefix("#").strip()
+
+
 def write_plan(
     path: Path, *, summary: str, steps: list[str], validation: list[str], body: str
 ) -> None:

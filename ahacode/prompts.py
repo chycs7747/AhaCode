@@ -66,11 +66,12 @@ ACT_SYSTEM = f"{ACT_INTRO}\n\n{CODING_RULES}"
 
 # Plan mode: read-only, produce a plan rather than act.
 #
-# The "every step is executable" rule is load-bearing, not style. Each step of a plan
-# is later handed to a FRESH sub-agent by orchestrator.run_plan, and a sub-agent can
-# only finish a step by using a tool. Hand it a step with no artifact ("Algorithm:
-# find root, compute subtree sums …") and it reaches for the only tool that accepts
-# free text — `write` — and files its derivation as source comments. Design belongs
+# The "every step is executable" rule is load-bearing, not style. The plan is later
+# worked step by step by an impl session that can only finish a step by using a
+# tool. Hand it a step with no artifact ("Algorithm: find root, compute subtree
+# sums …") and it reaches for the only tool that accepts free text — `write` — and
+# files its derivation as source comments (measured, back when each step went to a
+# fresh sub-agent; the pull is the same in one context). Design belongs
 # in THIS turn's reasoning, where a thinking channel exists; the plan carries only
 # what a tool can carry out.
 PLAN_SYSTEM = (
@@ -92,6 +93,29 @@ PLAN_SYSTEM = (
     "the approval buttons on screen. Never start investigating or working in response "
     "to an approval."
 )
+
+# The first user turn of an impl session — the child a plan is handed to. Kept in
+# the USER message, not the system prompt, because it is specific to this one
+# session (the plan path) while the system prompt is the constant every session
+# shares (and the gateway's prefix cache reuses). Shape after hmm-code's
+# plan-handoff prompt: read the file, mirror it into todo_write, work it
+# one-by-one, and never grow beyond it. The escape hatch is text — the model has
+# no way to switch modes, so a real gap is reported, not improvised around.
+HANDOFF_PROMPT = """You are in an implementation session, handed off from an approved plan. Edit, write and bash tools are available.
+
+A plan was saved at {path}. Read it first, then call todo_write with one item per plan step. Work through them one-by-one, marking in_progress before starting each and done immediately after finishing.
+
+Do not re-plan, expand scope, refactor adjacent code, or add features the plan did not ask for.
+
+If the plan has a real gap — a missing step, a contradiction with the code, a wrong path — stop and report the gap as text instead of improvising. The user will revise the plan.
+
+When every step is done and the plan's validation passes, finish with a concise summary of what was done and how it was verified."""
+
+
+def handoff_prompt(plan_path: str) -> str:
+    """The seed message of an impl session: the plan's path, and how to work it."""
+    return HANDOFF_PROMPT.format(path=plan_path)
+
 
 # A worker sub-agent's framing. Deliberately short: it inherits the same tools, so
 # it only needs to know its job is one delegated task and to end with a

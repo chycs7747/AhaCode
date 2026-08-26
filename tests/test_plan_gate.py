@@ -2,7 +2,7 @@
 user decides — run it, or keep revising."""
 
 import pytest
-from textual.widgets import Select
+from textual.widgets import Button, Select
 
 from ahacode import client, config, storage
 from ahacode.app import AhaCodeApp
@@ -148,15 +148,17 @@ async def test_act_mode_todo_write_never_gates(monkeypatch):
 # --- the two ways out ------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_run_button_delegates_each_step_and_switches_to_act(monkeypatch):
-    """▶ 실행 hands the plan to the structural runner and flips the bar to act."""
-    _stream_turns(monkeypatch, [[_submit()]] + [[TextDelta(f"phase {i}")] for i in range(10)])
+async def test_run_button_hands_the_plan_to_a_child_impl_session(monkeypatch):
+    """▶ 실행 opens a HANDOFF child: same depth, parented to the planning session,
+    in act mode, seeded with one user message naming the plan file — and the whole
+    plan runs in that one context (no per-step sub-agents)."""
+    calls = _stream_turns(monkeypatch, [[_submit()], [TextDelta("did it all")]])
 
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        app.auto_approve = True  # sub-agents act; skip the modal
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
+        parent = app.session_path
         assert app._plan_gate_pending is True
 
         await pilot.click("#plan-gate-run", offset=_INSIDE)
@@ -164,10 +166,55 @@ async def test_run_button_delegates_each_step_and_switches_to_act(monkeypatch):
         await pilot.pause()
 
         assert app._plan_gate_pending is False
-        assert app.mode == "act"
-        assert len(app.query(SubagentCard)) == 3      # one fresh sub-agent per step
-        assert app.session.messages[-1]["role"] == "assistant"
-        assert app.query_one(PlanGate).has_class("plan-gate--settled")
+        assert app.mode == "act" and app.session_kind == "impl"
+        assert app.session_path != parent
+        header = storage.read_header(app.session_path)
+        assert header["kind"] == "impl" and header["relation"] == "handoff"
+        assert header["parent_id"] == parent.stem and header["depth"] == 0
+        assert header["title"] == "Solve it"                 # named after the plan
+        # the seed is one user turn naming the plan file, then the model's own work
+        assert app.session.messages[0]["role"] == "user"
+        assert f"plans/{parent.stem}.md" in app.session.messages[0]["content"]
+        assert app.session.messages[-1]["content"] == "did it all"
+        assert list(app.query(SubagentCard)) == []
+        # the impl turn ran under the act prompt, not the planner's
+        assert "PLAN MODE" not in calls[1][0] if isinstance(calls[1][0], str) else True
+
+
+@pytest.mark.asyncio
+async def test_approving_a_revised_plan_makes_a_sibling_not_a_deeper_child(monkeypatch):
+    """Revise → resubmit → approve again: the second impl session is parented to the
+    SAME planning session (a sibling of the first), never nested under it."""
+    _stream_turns(monkeypatch, [
+        [_submit()], [TextDelta("v1 done")],
+        [_submit("Write b.py with g()", summary="v2")], [TextDelta("v2 done")],
+    ])
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await _plan_mode(app, pilot)
+        await _ask(pilot, app, "풀어줘")
+        planner = app.session_path.stem
+        await pilot.click("#plan-gate-run", offset=_INSIDE)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        first = app.session_path.stem
+
+        await app._switch_session(planner)        # back to the planning session
+        await pilot.pause()
+        await _plan_mode(app, pilot)
+        app.query_one("#prompt", PromptInput).focus()  # Enter must reach the prompt
+        await _ask(pilot, app, "b.py 하나로 줄여")   # revise → resubmit → new gate
+        app.query_one("#plan-gate-run", Button).press()  # may sit below the viewport
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        second = app.session_path.stem
+
+        assert first != second
+        assert storage.read_header(app.session_path)["parent_id"] == planner
+        tree = storage.build_tree(storage.list_sessions())
+        root = next(n for n in tree if n["id"] == planner)
+        assert sorted(c["id"] for c in root["children"]) == sorted([first, second])
 
 
 @pytest.mark.asyncio
@@ -221,20 +268,18 @@ async def test_typing_while_the_gate_is_open_is_revision_feedback(monkeypatch):
 @pytest.mark.asyncio
 async def test_empty_enter_while_the_gate_is_open_approves(monkeypatch):
     """The keyboard's ▶: nothing typed, Enter — the card is the only thing waiting."""
-    _stream_turns(monkeypatch, [[_submit()]] + [[TextDelta(f"phase {i}")] for i in range(10)])
+    _stream_turns(monkeypatch, [[_submit()], [TextDelta("done")]])
 
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        app.auto_approve = True
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
         assert app._plan_gate_pending is True
 
         await _ask(pilot, app, "")
         assert app._plan_gate_pending is False
-        assert app.mode == "act"
-        assert len(app.query(SubagentCard)) == 3
-        assert list(app.query(PlanGate))[0].has_class("plan-gate--settled")
+        assert app.mode == "act" and app.session_kind == "impl"
+        assert list(app.query(PlanGate)) == []          # the child is a fresh view
 
 
 @pytest.mark.asyncio
@@ -293,3 +338,31 @@ async def test_a_reloaded_session_shows_the_submitted_plan_in_the_panel(monkeypa
         assert [it["content"] for it in app.query_one(TodoPanel).items] == STEPS
         cards = [b for b in app.query(ToolResultBlock) if "plan_submit" in b.title]
         assert len(cards) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_impl_session_gets_the_larger_turn_cap(monkeypatch):
+    """One context carries a whole plan, so it may take impl_max_turns tool rounds;
+    an ordinary turn keeps the default."""
+    from ahacode import agent
+
+    seen = []
+    real_run = agent.run
+
+    def spy(messages, **kw):
+        seen.append(kw.get("max_turns"))
+        return real_run(messages, **kw)
+
+    monkeypatch.setattr(agent, "run", spy)
+    _stream_turns(monkeypatch, [[TextDelta("hi")], [_submit()], [TextDelta("done")]])
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await _ask(pilot, app, "안녕")                 # an ordinary act turn
+        await _plan_mode(app, pilot)
+        await _ask(pilot, app, "풀어줘")
+        app.query_one("#plan-gate-run", Button).press()  # may sit below the viewport
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert seen[0] == agent.DEFAULT_MAX_TURNS
+    assert seen[-1] == config.load().impl_max_turns > agent.DEFAULT_MAX_TURNS
