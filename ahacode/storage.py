@@ -5,6 +5,7 @@ Sessions live under the project root (./sessions/), kept out of git.
 
 import datetime
 import json
+import shutil
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -189,6 +190,34 @@ def list_sessions(base_dir: Path | None = None) -> list[dict]:
         read_session_meta(path) or _legacy_header(path)
         for path in sorted(base_dir.glob("*.jsonl"))
     ]
+
+
+def descendants(session_id: str, sessions: list[dict]) -> list[str]:
+    """`session_id` and every session below it (children, grandchildren…), BFS.
+    A parent never stores a child list, so this walks parent_id pointers."""
+    by_parent: dict[str | None, list[str]] = {}
+    for s in sessions:
+        by_parent.setdefault(s.get("parent_id"), []).append(s["id"])
+    out, queue = [], [session_id]
+    while queue:
+        sid = queue.pop(0)
+        out.append(sid)
+        queue.extend(by_parent.get(sid, []))
+    return out
+
+
+def delete_session(session_id: str, base_dir: Path | None = None) -> list[str]:
+    """Delete a session and everything that hangs off it: its descendants (a child
+    transcript without its parent is noise), each one's spilled tool output, and
+    the plan / result files named after it. Returns the ids removed."""
+    base_dir = base_dir or SESSIONS_DIR
+    ids = descendants(session_id, list_sessions(base_dir))
+    for sid in ids:
+        (base_dir / f"{sid}.jsonl").unlink(missing_ok=True)
+        shutil.rmtree(base_dir / f"{sid}-out", ignore_errors=True)
+        for extra in (PLANS_DIR / f"{sid}.md", PLANS_DIR / f"{sid}.result.md"):
+            extra.unlink(missing_ok=True)
+    return ids
 
 
 def build_tree(sessions: list[dict]) -> list[dict]:

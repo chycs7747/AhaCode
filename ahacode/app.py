@@ -220,7 +220,7 @@ class AhaCodeApp(App):
     @on(Button.Pressed, "#open-sessions-btn")
     def _on_open_sessions_button(self, event: Button.Pressed) -> None:
         event.stop()
-        self.push_screen(SessionPicker(), self._session_picked)
+        self._open_picker()
 
     @on(Button.Pressed, "#send-btn")
     def _on_send_button(self, event: Button.Pressed) -> None:
@@ -354,6 +354,14 @@ class AhaCodeApp(App):
             )
         self._status("")
 
+    def _open_picker(self) -> None:
+        """The picker needs to know which session is open (deleting it must move
+        the app off the file first) and whether its turn is running (then it is
+        not deletable at all)."""
+        current = self.session_path.stem
+        locked = current if self._anything_running() else None
+        self.push_screen(SessionPicker(current=current, locked=locked), self._session_picked)
+
     def _session_picked(self, result: str | None) -> None:
         """SessionPicker dismissed — run the switch/new as an async worker."""
         if result == "new":
@@ -428,7 +436,7 @@ class AhaCodeApp(App):
                 await self._new_session()
                 return
             if text == "/sessions":
-                self.push_screen(SessionPicker(), self._session_picked)
+                self._open_picker()
                 return
             await self._say_system(self._handle_command(text))
             return

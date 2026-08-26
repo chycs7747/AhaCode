@@ -243,6 +243,11 @@ SessionPicker {
     max-height: 22;
 }
 
+#picker-actions {
+    height: auto;
+    margin-top: 1;
+}
+
 /* Foldable reasoning block (Textual Collapsible). Blend it into the chat: no
    panel chrome, a muted italic title, and drop the inner bubble's left border
    since the Collapsible already provides the visual nesting. */
