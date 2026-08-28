@@ -14,6 +14,8 @@ the child's full transcript is one click away (Claude Code's collapsed-subtask l
 
 from __future__ import annotations
 
+import time
+
 from textual.containers import Vertical
 from textual.widgets import Collapsible
 
@@ -24,6 +26,9 @@ class SubagentCard(Collapsible):
     def __init__(self, description: str, model: str) -> None:
         self._desc = description
         self._model = model
+        self._t0 = time.monotonic()
+        self._elapsed = 0
+        self._done = False
         # The child's events mount into this container (via the app's _render_event).
         self._body = Vertical(classes="subagent-body")
         super().__init__(self._body, title=self._label(), collapsed=False)
@@ -31,10 +36,24 @@ class SubagentCard(Collapsible):
 
     def _label(self, *, done: bool = False, tools: int = 0) -> str:
         base = f"🤖 task · {self._desc} · {self._model}"
-        if not done:
-            return base
-        chip = f"✓ {tools}개 도구" if tools else "✓ 완료"
-        return f"{base} · {chip}"
+        if done:
+            chip = f"✓ {tools}개 도구" if tools else "✓ 완료"
+            return f"{base} · {chip} · {self._elapsed}초"
+        return f"{base} · {self._elapsed}초" if self._elapsed else base
+
+    def tick(self) -> None:
+        """Count up while the child works.
+
+        Each card carries its own clock because a fan-out runs several at once and
+        the single status line cannot speak for all of them — and a card that sits
+        there unchanged for two minutes is indistinguishable from one that is stuck.
+        """
+        if self._done:
+            return
+        seconds = int(time.monotonic() - self._t0)
+        if seconds != self._elapsed:  # only touch the reactive when the number moves
+            self._elapsed = seconds
+            self.title = self._label()
 
     @property
     def body(self) -> Vertical:
@@ -43,5 +62,7 @@ class SubagentCard(Collapsible):
     def done(self, tool_count: int = 0) -> None:
         """Child finished — show a ✓ chip and fold the card. Collapsible.title is a
         reactive, so assigning it re-renders the header (_watch_title)."""
+        self._done = True
+        self._elapsed = int(time.monotonic() - self._t0)
         self.title = self._label(done=True, tools=tool_count)
         self.collapsed = True

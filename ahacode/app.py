@@ -136,6 +136,9 @@ class AhaCodeApp(App):
         # bool, so no lock is needed.
         self._plan_gate_pending = False
         self._plan_gate: PlanGate | None = None
+        # Tools this session's own loop is running: call id -> (name, started at).
+        # Sub-agent tools are deliberately absent — they report in their own card.
+        self._running_tools: dict[str, tuple[str, float]] = {}
         latest = storage.latest_session()
         if latest:  # resume the most recent session
             self.session_path = latest
@@ -192,6 +195,9 @@ class AhaCodeApp(App):
     async def on_mount(self) -> None:
         """Restore saved history as chat bubbles (Compose runs before Mount)."""
         self.console.push_theme(MARKDOWN_THEME)  # soften Rich Markdown colours
+        # One slow tick for the whole app: it writes nothing while nothing is running,
+        # so an idle session costs no repaints (see _tick_progress).
+        self.set_interval(1.0, self._tick_progress)
         meta = storage.read_session_meta(self.session_path) or {}
         self._set_header_title(meta.get("title", ""))
         self._set_header_endpoint()
@@ -1051,6 +1057,11 @@ class AhaCodeApp(App):
             boxes["answer"] = None
             # Remember the call's input so the result card can title itself with it.
             boxes.setdefault("call_args", {})[event.id] = event.arguments
+            # Only this loop's own tools drive the status line. A sub-agent reports
+            # inside its card, and with several running in parallel their tools would
+            # otherwise take turns overwriting each other in the one status line.
+            if boxes.get("gate"):
+                self._running_tools[event.id] = (event.name, time.monotonic())
             if event.name == "todo_write":  # goes to the pinned panel, not a bubble
                 items = event.arguments.get("items", [])
                 # Only THIS session's own loop owns the pinned plan. A sub-agent runs
@@ -1082,6 +1093,7 @@ class AhaCodeApp(App):
             boxes["tool_buf"].clear()
             self._status(f"● running {event.name}…  (esc to stop)")
         elif isinstance(event, ToolResult):
+            self._running_tools.pop(event.id, None)
             if event.name == "todo_write":
                 return  # already reflected in the pinned panel
             if event.name == "plan_submit" and not event.is_error and boxes.get("gate"):
@@ -1127,6 +1139,28 @@ class AhaCodeApp(App):
             return
         self.copy_to_clipboard(text)
         self.notify("답변을 클립보드에 복사했어요.", timeout=2)
+
+    def _tick_progress(self) -> None:
+        """Once a second, say how long the running work has been running.
+
+        A status line reading `running bash…` that never changes is the same picture
+        as a frozen app, which is how a 120-second test run and a real deadlock came
+        to look alike. The number is the whole difference: it says the app is alive
+        and roughly how patient to be. Sub-agent cards carry their own, because with
+        several running in parallel the one status line cannot speak for all of them.
+        """
+        for card in list(self.query(SubagentCard)):
+            card.tick()
+        if not self._running_tools:
+            return  # nothing to time; leave whatever status is up alone
+        now = time.monotonic()
+        oldest = min(self._running_tools.values(), key=lambda v: v[1])
+        seconds = int(now - oldest[1])
+        if len(self._running_tools) > 1:
+            self._status(f"● 도구 {len(self._running_tools)}개 실행 중… "
+                         f"{seconds}초  (esc to stop)")
+        else:
+            self._status(f"● running {oldest[0]}… {seconds}초  (esc to stop)")
 
     def _force_exit(self) -> None:  # seam: tests replace this rather than dying
         os._exit(0)
