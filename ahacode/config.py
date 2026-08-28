@@ -32,7 +32,12 @@ DEFAULT_MODEL = "qwen3.8-flash-next"
 DEFAULT_API_KEY = "EMPTY"
 DEFAULT_TIMEOUT = 900.0
 DEFAULT_SUBAGENT_DEPTH = 1  # generations of sub-agents that may nest (0 = none)
-DEFAULT_IMPL_MAX_TURNS = 30  # turn cap for a session carrying out a whole plan
+DEFAULT_IMPL_MAX_TURNS = 30  # turn cap for a session carrying out a whole plan; 0 = uncapped
+# An impl session that still has unfinished steps carries on by itself. It gives up
+# after this many turns in a row that finish nothing — a stall is what a round count
+# was really trying to catch, and it catches it without cutting work that IS moving.
+# 0 turns auto-continue off (the old behaviour: ask after every turn).
+DEFAULT_AUTO_CONTINUE_STALL = 3
 DEFAULT_MAX_PARALLEL_AGENTS = 8  # cap on concurrent gateway requests (measured knee)
 DEFAULT_THINKING_TOKEN_BUDGET = 4096  # per-turn reasoning-token cap; 0 = unbounded
 DEFAULT_REASONING_EFFORT = "medium"   # OpenAI-style hint (low|medium|high|xhigh)
@@ -91,6 +96,9 @@ class ModelConfig:
     # Turn cap for an impl session (one continuous context carrying out a whole
     # plan) — larger than an ordinary turn's, which answers one message.
     impl_max_turns: int = DEFAULT_IMPL_MAX_TURNS
+    # Turns in a row an impl session may finish no step before it stops continuing
+    # by itself. 0 = no auto-continue.
+    auto_continue_stall: int = DEFAULT_AUTO_CONTINUE_STALL
     # Pre-approval rules, "tool:pattern" (see permissions.py). A tuple, not a
     # list, because this dataclass is frozen and must stay hashable.
     allow_rules: tuple[str, ...] = DEFAULT_ALLOW_RULES
@@ -154,7 +162,11 @@ context_window = {cfg.context_window}  # the model's context window in tokens; 0
 # sub-agents, but those sub-agents cannot spawn their own (no grandchildren).
 subagent_depth = {cfg.subagent_depth}
 # Turn cap for a session carrying out an approved plan (an ordinary turn has 10).
+# 0 = uncapped; the stall detector below is then what ends a run that goes nowhere.
 impl_max_turns = {cfg.impl_max_turns}
+# An impl session with unfinished steps continues on its own. It stops after this
+# many turns in a row that complete no step. 0 = never continue by itself.
+auto_continue_stall = {cfg.auto_continue_stall}
 # Per-mode reasoning-token cap (optional). Absent = the mode uses the global
 # thinking_token_budget above. Lets plan think deep, impl / sub-agents shallow.{_mode_budget_lines(cfg)}
 # Max concurrent requests to the gateway across all agents (the single-GPU backend
@@ -254,4 +266,7 @@ def _build(data: dict) -> ModelConfig:
         keep_recent_messages=int(agent.get("keep_recent_messages", DEFAULT_KEEP_RECENT_MESSAGES)),
         allow_rules=tuple(str(r) for r in perms.get("allow", DEFAULT_ALLOW_RULES)),
         bash_timeout=int(agent.get("bash_timeout", DEFAULT_BASH_TIMEOUT)),
+        auto_continue_stall=int(
+            agent.get("auto_continue_stall", DEFAULT_AUTO_CONTINUE_STALL)
+        ),
     )

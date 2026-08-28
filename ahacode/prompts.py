@@ -150,6 +150,13 @@ MAX_TURNS_PROMPT = (
 
 # The reduce step for /run: combine the phases' concise results into one answer.
 # Given only the results (not each phase's reasoning), the context stays small.
+CONTINUE_PROMPT = (
+    "Continue with the plan. Work on the next unfinished step in the checklist, and "
+    "mark steps done with todo_write as you complete them. If a step turns out to be "
+    "blocked or already satisfied, say so and move on to the next one rather than "
+    "repeating work you have already done."
+)
+
 SYNTHESIS_SYSTEM = (
     "You are AhaCode finishing a task that was carried out in phases. You are given "
     "the original task and the concise result of each completed phase. Combine them "
@@ -265,6 +272,17 @@ def title_system() -> str:
 def max_turns_prompt() -> str:
     """The user turn injected to force a tool-free wrap-up when the loop hits its cap."""
     return MAX_TURNS_PROMPT
+
+
+def continue_prompt() -> str:
+    """The user turn injected to carry an impl session on by itself.
+
+    Deliberately says nothing about WHAT to do: the plan is already in the session
+    and the checklist is already on screen, so restating the task here would only
+    compete with them. It re-establishes that the run is still going and that the
+    next unfinished step is the subject.
+    """
+    return CONTINUE_PROMPT
 
 
 def compact_system() -> str:

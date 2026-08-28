@@ -11,6 +11,7 @@ time), and the LLM/tools are injectable for offline tests.
 from __future__ import annotations
 
 import difflib
+import itertools
 import json
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -257,7 +258,14 @@ def run(
         messages.append(msg)
         appended.append(msg)
 
-    for _ in range(max_turns):
+    # max_turns <= 0 means no cap. The cap exists to stop a runaway loop, but on a
+    # session carrying out a plan it was stopping ORDINARY work: one measured turn
+    # spent all 30 rounds and 25 minutes and finished 0 of 3 steps, so every turn
+    # ended in the wrap-up below instead of at a completed step. Uncapped, the
+    # backstop moves to the caller, which can see something the round counter never
+    # could — whether the checklist is actually advancing (see app._auto_continue).
+    rounds = itertools.count() if max_turns <= 0 else range(max_turns)
+    for _ in rounds:
         if is_cancelled():
             break
         # A pause is NOT a cancellation: something outside the loop (the plan gate)

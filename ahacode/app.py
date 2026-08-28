@@ -148,6 +148,12 @@ class AhaCodeApp(App):
         # it. A loop that runs several rounds is still one question, so it is cleared
         # after the first write rather than repeated above every round.
         self._turn_question = ""
+        # Auto-continue's stall detector: steps finished as of the last turn, and how
+        # many turns in a row have added none. Progress is measured on the checklist
+        # because it is the only thing here that says whether the work MOVED, as
+        # opposed to how much of it there was (see _auto_continue).
+        self._done_steps = 0
+        self._stalled = 0
         latest = storage.latest_session()
         if latest:  # resume the most recent session
             self.session_path = latest
@@ -258,6 +264,7 @@ class AhaCodeApp(App):
             name=result.model, timeout=result.timeout,
             max_parallel_agents=result.max_parallel, subagent_depth=result.depth,
             impl_max_turns=result.impl_max_turns,
+            auto_continue_stall=result.auto_continue_stall,
             context_window=result.context_window, compact_threshold=result.compact_threshold,
             keep_recent_messages=result.keep_recent,
             thinking_token_budget=result.thinking_budget,
@@ -644,6 +651,10 @@ class AhaCodeApp(App):
         self.session.add_user(text)
         storage.append_message(self.session_path, {"role": "user", "content": text})
         self._turn_question = text
+        # A typed instruction is a fresh start: whatever the run was stuck on, the
+        # user has now said something about it, so the previous turns of no progress
+        # should not count against the turns that follow.
+        self._stalled = 0
 
         self._follow_output = True  # a new turn re-pins to the bottom to show the reply
         container = self.query_one("#chat-container", VerticalScroll)
@@ -783,6 +794,54 @@ class AhaCodeApp(App):
             await self._say_system(
                 f"✓ 계획 완료 — {len(items)}단계 모두 처리 · 결과 {storage.display_path(out)}"
             )
+
+    async def _auto_continue(self) -> None:
+        """Carry an impl session on to its next turn without being asked.
+
+        A plan is a list of steps, and a turn was ending after every one of them —
+        the loop stopped, wrote its progress, and waited for someone to type. That
+        is fine when a turn finishes a step; it is not when the turn ended because
+        it ran out of rounds, which is what was actually happening (one measured
+        turn: 30 rounds, 25 minutes, 0 of 3 steps done, then a request to continue).
+
+        What ends a run is a stall, not a count. Rounds and turns both measure how
+        hard the model is working; only the checklist measures whether the work is
+        getting anywhere, and that is the thing worth stopping on. Steps still
+        completing means carry on however long it takes; N turns in a row
+        completing nothing means stop and say so — the run is going in circles, and
+        another turn of it costs GPU time to produce the same nothing.
+        """
+        cfg = config.load()
+        if not cfg.auto_continue_stall:
+            return  # switched off: the old ask-every-turn behaviour
+        if self._plan_gate_pending or getattr(self, "_stopping", False):
+            return  # something is already waiting on the user; do not talk over it
+        panel = self.query_one(TodoPanel)
+        left = panel.unfinished()
+        if not panel.items or not left:
+            return  # no checklist to judge progress by, or the plan is finished
+        done = len(panel.items) - len(left)
+        # Strictly greater: a turn that completes nothing is a stall even if it
+        # produced text, tool calls, and a confident summary — all of which the
+        # stalling turns did produce.
+        self._stalled = 0 if done > self._done_steps else self._stalled + 1
+        self._done_steps = done
+        if self._stalled >= cfg.auto_continue_stall:
+            await self._say_system(
+                f"⏹ {self._stalled}턴 연속으로 완료된 단계가 없어 자동 진행을 멈췄습니다 "
+                f"({done}/{len(panel.items)} 완료). 막힌 곳을 보고 직접 지시해 주세요."
+            )
+            return
+        await self._say_system(
+            f"▶ 자동 진행 {done}/{len(panel.items)} 완료 · 다음: "
+            f"{left[0].get('content', '')[:60]} (Esc 로 중지)"
+        )
+        text = prompts.continue_prompt()
+        self.session.add_user(text)
+        storage.append_message(self.session_path, {"role": "user", "content": text})
+        self._turn_question = f"(자동 진행) 다음: {left[0].get('content', '')[:60]}"
+        self._follow_output = True
+        await self._start_turn()
 
     def _max_turns(self) -> int:
         """An impl session carries a whole plan in one context, so it gets the
@@ -1057,6 +1116,7 @@ class AhaCodeApp(App):
         # Only notices: carrying on is the user's call (auto-continue is not here).
         if self.session_kind == "impl" and event.messages:
             await self._snapshot_progress()
+            await self._auto_continue()
 
     @on(ResponseFailed)
     async def response_failed(self, event: ResponseFailed) -> None:

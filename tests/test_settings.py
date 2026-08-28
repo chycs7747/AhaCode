@@ -99,6 +99,7 @@ async def test_saving_persists_every_pane_and_resets_the_client(monkeypatch):
         s.query_one("#settings-think-plan", Select).value = 8192
         s.query_one("#settings-think-subagent", Select).value = 1024
         s.query_one("#settings-after-tools", Select).value = False
+        s.query_one("#settings-stall", Select).value = 5
         await pilot.pause()
         s.query_one("#settings-save", Button).press()
         await pilot.pause()
@@ -117,7 +118,21 @@ async def test_saving_persists_every_pane_and_resets_the_client(monkeypatch):
         assert cfg.plan_thinking_budget == 8192 and cfg.subagent_thinking_budget == 1024
         assert cfg.impl_thinking_budget is None              # left at 전역
         assert cfg.no_think_after_tools is False
+        assert cfg.auto_continue_stall == 5
         assert reset                                         # client + gate rebuilt
+
+
+@pytest.mark.asyncio
+async def test_the_window_picker_offers_what_the_server_can_hold():
+    """The picker stopped at 128K while the gateway advertises max_model_len
+    524288, so the windows worth choosing could not be chosen. A setting that has
+    to be hand-written into TOML is a setting the screen does not really have."""
+    from ahacode.widgets.settings import _IMPL_TURNS, _WINDOW
+
+    windows = [v for _, v in _WINDOW]
+    assert 196608 in windows and 262144 in windows
+    # ...and a plan run can be told to stop counting rounds at all.
+    assert 0 in [v for _, v in _IMPL_TURNS]
 
 
 @pytest.mark.asyncio

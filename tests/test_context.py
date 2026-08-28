@@ -1,6 +1,8 @@
 """Context-window management: when to condense, where it is safe to cut, and that
 the transcript on disk stays complete when the in-flight copy is compacted."""
 
+import re
+
 import pytest
 
 from ahacode import agent, config, context, subagent
@@ -291,6 +293,66 @@ def test_the_phase_closes_even_when_summarizing_fails(monkeypatch):
             summarize=boom,
         )
     assert _phases(events) == [(agent.COMPACTING, False), (agent.COMPACTING, True)]
+
+
+# --- what the summarizer is actually shown ---------------------------------
+
+def _long_session(turns: int = 40, rounds: int = 8) -> list[dict]:
+    msgs = [{"role": "system", "content": "sys"}]
+    for t in range(turns):
+        msgs.append({"role": "user", "content": f"[TURN {t}] next thing"})
+        for r in range(rounds):
+            msgs.append({"role": "assistant", "content": f"[TURN {t} R{r}] working"})
+            msgs.append({"role": "tool", "tool_call_id": f"{t}-{r}",
+                         "content": f"[TURN {t} R{r}] " + "output " * 250})
+    return msgs
+
+
+def test_the_budget_follows_the_window():
+    """A flat cap was survivable at 32K and ruinous above it — the stretch grows
+    with the window but the budget did not."""
+    small = context.transcript_budget(_cfg(context_window=32768))
+    large = context.transcript_budget(_cfg(context_window=262144))
+    assert small >= context._MIN_TRANSCRIPT_CHARS
+    assert large > small * 4
+    assert large <= context._MAX_TRANSCRIPT_CHARS
+
+
+def test_every_turn_reaches_the_summarizer():
+    """The real defect: filling from the oldest end and stopping at the cap meant
+    a 663-message stretch was summarized from its first three turns and nothing
+    else. Coverage of the whole stretch is the thing being bought here — detail
+    per message is what pays for it."""
+    msgs = _long_session()
+    split = context.find_split(msgs, keep_recent=6)
+    older = msgs[1:split]
+    rendered = context.render_transcript(
+        older, context.transcript_budget(_cfg(context_window=262144)))
+    seen = {int(t) for t in re.findall(r"\[TURN (\d+)", rendered)}
+    # Derived from the stretch, not hardcoded: find_split keeps the newest turns
+    # verbatim, so which ones are condensed is its business, not this test's.
+    present = {int(t) for m in older
+               for t in re.findall(r"\[TURN (\d+)", str(m.get("content") or ""))}
+    assert seen == present, f"only turns {sorted(seen)} of {len(present)} survived"
+
+
+def test_a_budget_too_small_for_the_stretch_keeps_both_ends():
+    """When even the per-message floor will not fit, the middle goes — not the
+    end. Where the session STANDS lives at the end of it."""
+    msgs = _long_session()
+    split = context.find_split(msgs, keep_recent=6)
+    older = msgs[1:split]
+    rendered = context.render_transcript(older, budget=8_000)
+    turns = [int(t) for t in re.findall(r"\[TURN (\d+)", rendered)]
+    present = sorted({int(t) for m in older
+                      for t in re.findall(r"\[TURN (\d+)", str(m.get("content") or ""))})
+    assert turns, "nothing survived at all"
+    assert min(turns) == present[0] and max(turns) == present[-1]
+    assert "omitted from the middle" in rendered
+
+
+def test_an_empty_stretch_renders_nothing():
+    assert context.render_transcript([]) == ""
 
 
 # --- prune: the cheap pass, and the only one a sub-agent can use ------------

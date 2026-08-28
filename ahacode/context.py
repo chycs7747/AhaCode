@@ -49,7 +49,30 @@ class Compaction:
 # definition large, so summarizing it verbatim would hit the same wall it is meant
 # to avoid. Long messages are elided in the middle, keeping both ends.
 _MAX_MESSAGE_CHARS = 1200
-_MAX_TRANSCRIPT_CHARS = 24_000
+# ...but a message has to be worth reading. Below this an entry says nothing the
+# summary can use, so coverage stops being the thing worth buying.
+_MIN_MESSAGE_CHARS = 200
+# The transcript budget is a SHARE OF THE WINDOW, not a constant. It used to be a
+# flat 24,000 characters, which was survivable at a 32K window and quietly ruinous
+# above it: at 256K the stretch being condensed measured 795,118 characters and the
+# summarizer saw 23,740 of them — 3%, all from the oldest end, the other 97%
+# replaced by one "omitted" marker. That is not summarizing a session, it is
+# deleting it and writing a note about the beginning.
+_TRANSCRIPT_WINDOW_SHARE = 0.35
+_CHARS_PER_TOKEN = 3            # matches estimate_tokens' deliberate pessimism
+_MIN_TRANSCRIPT_CHARS = 24_000  # the old constant, now the floor rather than the cap
+_MAX_TRANSCRIPT_CHARS = 300_000  # bounds the one summarizing call's own prefill
+
+
+def transcript_budget(cfg: config.ModelConfig | None = None) -> int:
+    """How much of the condensed stretch the summarizer may be shown.
+
+    Scaled to the window because that is what decides both halves of the trade:
+    a larger window means a larger stretch to cover AND more room to cover it in.
+    """
+    cfg = cfg or config.load()
+    share = int(cfg.context_window * _CHARS_PER_TOKEN * _TRANSCRIPT_WINDOW_SHARE)
+    return max(_MIN_TRANSCRIPT_CHARS, min(_MAX_TRANSCRIPT_CHARS, share))
 
 
 def estimate_tokens(messages: list[dict]) -> int:
@@ -90,23 +113,55 @@ def find_split(messages: list[dict], keep_recent: int) -> int:
     return 0
 
 
-def render_transcript(messages: list[dict]) -> str:
-    """Flatten messages into the plain transcript handed to the summarizer."""
-    parts: list[str] = []
-    total = 0
-    for msg in messages:
-        body = str(msg.get("content") or "")
-        for call in msg.get("tool_calls") or []:
-            fn = call.get("function", {})
-            body += f"\n[called {fn.get('name')} {fn.get('arguments', '')}]"
-        body = elide(body, _MAX_MESSAGE_CHARS)
-        line = f"{msg.get('role')}: {body}"
-        if total + len(line) > _MAX_TRANSCRIPT_CHARS:
-            parts.append("…[earlier messages omitted]…")
+def _render_one(msg: dict, per_message: int) -> str:
+    body = str(msg.get("content") or "")
+    for call in msg.get("tool_calls") or []:
+        fn = call.get("function", {})
+        body += f"\n[called {fn.get('name')} {fn.get('arguments', '')}]"
+    return f"{msg.get('role')}: {elide(body, per_message)}"
+
+
+def render_transcript(messages: list[dict], budget: int | None = None) -> str:
+    """Flatten messages into the plain transcript handed to the summarizer.
+
+    The budget is spent ACROSS the stretch rather than along it. Filling from the
+    oldest end and stopping at the cap is what turned a 663-message stretch into a
+    summary of its first three turns: every message after the budget ran out was
+    dropped, including the recent work that decided where the session actually
+    stood. Sharing the budget out per message costs detail in each one and buys
+    coverage of all of them, which is the right trade for something whose only job
+    is to keep the model from re-deciding what it already decided.
+    """
+    if not messages:
+        return ""
+    budget = transcript_budget() if budget is None else budget
+    per = min(_MAX_MESSAGE_CHARS, max(_MIN_MESSAGE_CHARS, budget // len(messages)))
+    lines = [_render_one(m, per) for m in messages]
+    if sum(len(line) for line in lines) <= budget:
+        return "\n\n".join(lines)
+
+    # Still over, because the floor on per-message detail beat the share-out: the
+    # stretch has more messages than the budget has room for even at 200 chars
+    # each. Keep BOTH ends — how the work started and where it stands — and say
+    # plainly that the middle is gone, rather than ending mid-session in silence.
+    half = budget // 2
+    head, used = [], 0
+    for line in lines:
+        if used + len(line) > half:
             break
-        parts.append(line)
-        total += len(line)
-    return "\n\n".join(parts)
+        head.append(line)
+        used += len(line)
+    tail, used = [], 0
+    for line in reversed(lines[len(head):]):
+        if used + len(line) > half:
+            break
+        tail.append(line)
+        used += len(line)
+    tail.reverse()
+    dropped = len(lines) - len(head) - len(tail)
+    if not dropped:
+        return "\n\n".join([*head, *tail])
+    return "\n\n".join([*head, f"…[{dropped} messages omitted from the middle]…", *tail])
 
 
 def llm_summarize(messages: list[dict]) -> str:

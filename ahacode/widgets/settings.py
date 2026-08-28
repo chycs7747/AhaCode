@@ -41,7 +41,7 @@ class SettingsResult:
     "follow the global budget"."""
 
     __slots__ = ("base_url", "api_key", "model", "timeout",
-                 "max_parallel", "depth", "impl_max_turns",
+                 "max_parallel", "depth", "impl_max_turns", "auto_continue_stall",
                  "context_window", "compact_threshold", "keep_recent",
                  "thinking_budget", "reasoning_effort",
                  "plan_thinking", "impl_thinking", "subagent_thinking",
@@ -52,7 +52,7 @@ class SettingsResult:
                  context_window, compact_threshold, keep_recent,
                  thinking_budget, reasoning_effort,
                  plan_thinking, impl_thinking, subagent_thinking,
-                 no_think_after_tools):
+                 no_think_after_tools, auto_continue_stall):
         self.base_url = base_url
         self.api_key = api_key
         self.model = model
@@ -60,6 +60,7 @@ class SettingsResult:
         self.max_parallel = max_parallel
         self.depth = depth
         self.impl_max_turns = impl_max_turns
+        self.auto_continue_stall = auto_continue_stall
         self.context_window = context_window
         self.compact_threshold = compact_threshold
         self.keep_recent = keep_recent
@@ -82,10 +83,18 @@ _TIMEOUT = [("30s", 30.0), ("60s", 60.0), ("120s", 120.0), ("300s", 300.0),
 _PARALLEL = [(f"{n}  ({'직렬' if n == 1 else '병렬 ' + str(n)})", n) for n in range(1, 9)]
 _DEPTH = [("0  (위임 끔)", 0), ("1  (기본)", 1), ("2", 2), ("3", 3)]
 # Turn cap for a session carrying out a whole plan — larger than an ordinary turn's.
-_IMPL_TURNS = [("10", 10), ("20", 20), ("30  (기본)", 30), ("50", 50)]
-# Common local context windows; 0 turns compaction off entirely.
+# 0 removes it: the stall detector below is then the only thing that ends a run,
+# which is the right backstop but the only one, so it is not the default.
+_IMPL_TURNS = [("0  (무제한)", 0), ("10", 10), ("20", 20), ("30  (기본)", 30),
+               ("50", 50), ("100", 100)]
+# Turns in a row that finish no step before auto-continue gives up.
+_STALL = [("0  (자동 진행 끔)", 0), ("2", 2), ("3  (기본)", 3), ("5", 5), ("10", 10)]
+# Common local context windows; 0 turns compaction off entirely. The large end is
+# for servers that advertise it (this gateway's max_model_len is 512K) — but the KV
+# cache is what actually holds it, and it is shared with every parallel sub-agent,
+# so the biggest window is not always the fastest one.
 _WINDOW = [("0  (압축 끔)", 0), ("8K", 8192), ("16K", 16384), ("32K", 32768),
-           ("64K", 65536), ("128K", 131072)]
+           ("64K", 65536), ("128K", 131072), ("192K", 196608), ("256K", 262144)]
 # The fraction of the window at which the oldest stretch is condensed.
 _THRESHOLD = [("70%", 0.7), ("80%", 0.8), ("90%", 0.9), ("95%", 0.95)]
 # Newest messages always kept verbatim when the oldest are summarised.
@@ -189,6 +198,13 @@ class Settings(ModalScreen["SettingsResult | None"]):
             yield Label("계획 실행 세션 턴 상한")
             yield Select(_IMPL_TURNS, value=_nearest(_IMPL_TURNS, cfg.impl_max_turns),
                          allow_blank=False, id="settings-impl-turns")
+            yield Label("자동 진행 중단 (완료 없는 턴)")
+            yield Select(_STALL, value=_nearest(_STALL, cfg.auto_continue_stall),
+                         allow_blank=False, id="settings-stall")
+            yield Label(
+                "계획 실행 세션은 미완 단계가 남아 있으면 스스로 다음 턴을 시작합니다. "
+                "단계가 하나도 완료되지 않은 턴이 이만큼 연속되면 멈추고 알려줍니다.",
+                classes="settings-hint")
 
     def _context_pane(self, cfg) -> ComposeResult:
         with VerticalScroll(id="settings-pane-context"):
@@ -292,6 +308,7 @@ class Settings(ModalScreen["SettingsResult | None"]):
             max_parallel=int(self._value("parallel")),
             depth=int(self._value("depth")),
             impl_max_turns=int(self._value("impl-turns")),
+            auto_continue_stall=int(self._value("stall")),
             context_window=int(self._value("window")),
             compact_threshold=float(self._value("threshold")),
             keep_recent=int(self._value("keep-recent")),
