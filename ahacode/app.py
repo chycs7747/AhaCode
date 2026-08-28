@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import threading
 import time
@@ -62,6 +63,11 @@ MARKDOWN_THEME = Theme(
 )
 
 _ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}
+
+# How long a quit waits for an orderly shutdown before leaving anyway. Long enough
+# for Textual to restore the terminal and for an in-flight one-line append to the
+# session file to land; short enough that a wedged worker is not the user's problem.
+QUIT_GRACE_SECONDS = 1.5
 
 
 def _tool_unescape(s: str) -> str:
@@ -1121,6 +1127,38 @@ class AhaCodeApp(App):
             return
         self.copy_to_clipboard(text)
         self.notify("답변을 클립보드에 복사했어요.", timeout=2)
+
+    def _force_exit(self) -> None:  # seam: tests replace this rather than dying
+        os._exit(0)
+
+    async def action_quit(self) -> None:
+        """Quit means quit, whatever a worker is stuck on.
+
+        Textual tears the UI down promptly, but the process then waits for its
+        threads, and a worker blocked on a socket read holds that up for as long as
+        the request timeout allows — fifteen minutes with the shipped default.
+        Nothing the user can press reaches a blocked read: the stop is cooperative
+        and only checked between events, so Ctrl+D looked as ignored as Esc did.
+
+        Closing the response would unblock this one read, and the next kind of stuck
+        call would bring the bug straight back. So: ask the workers to stop, leave
+        the terminal restored the normal way, and after a grace period long enough
+        for an in-flight append to the session file to land, go without waiting for
+        anyone. When shutdown works — which is nearly always — the process is gone
+        before the timer fires and none of this runs.
+        """
+        self._stopping = True
+        worker = getattr(self, "_response_worker", None)
+        if worker is not None and worker.is_running:
+            worker.cancel()
+        # Headless means run_test: there is no terminal being held hostage, and the
+        # process to leave would be the test runner's. The backstop is for a real
+        # session, where a wedged worker is the user's problem.
+        if not self.is_headless:
+            leave = threading.Timer(QUIT_GRACE_SECONDS, self._force_exit)
+            leave.daemon = True  # never the reason the process stays up
+            leave.start()
+        self.exit()
 
     def action_stop(self) -> None:
         """Cancel whatever is in flight (cooperative — the loops check is_cancelled).

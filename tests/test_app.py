@@ -1574,6 +1574,44 @@ async def test_subagent_session_opens_read_only(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_quit_does_not_wait_for_a_wedged_worker(monkeypatch, fake_llm):
+    """A worker blocked on a socket read cannot see a cooperative stop, and the
+    process will not end while it lives — so Ctrl+D looked as ignored as Esc did.
+    Quit leaves on its own schedule."""
+    import ahacode.app as app_mod
+
+    monkeypatch.setattr(app_mod, "QUIT_GRACE_SECONDS", 0.05)
+    left = []
+    monkeypatch.setattr(AhaCodeApp, "_force_exit", lambda self: left.append(True))
+    # The backstop is skipped headless — otherwise it would end the test runner —
+    # so this test has to say it is standing in for a real terminal.
+    monkeypatch.setattr(AhaCodeApp, "is_headless", False, raising=False)
+
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_quit()
+        for _ in range(20):          # let the grace timer fire
+            await pilot.pause()
+            if left:
+                break
+            time.sleep(0.05)
+    assert left, "quit waited on the interpreter instead of leaving"
+
+
+@pytest.mark.asyncio
+async def test_a_clean_quit_asks_the_worker_to_stop_first(monkeypatch, fake_llm):
+    """Leaving hard is the backstop, not the plan: the cooperative stop still runs,
+    so a worker that CAN notice gets the chance to finish its write."""
+    monkeypatch.setattr(AhaCodeApp, "_force_exit", lambda self: None)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_quit()
+        assert app._stopping is True
+
+
+@pytest.mark.asyncio
 async def test_leaving_view_only_restores_driving(fake_llm):
     """The escape hatch works: even in a view-only session /new is a slash command, so
     the guard lets it through — it opens a fresh main session that is drivable again."""
