@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import re
 import threading
@@ -323,6 +323,15 @@ class AhaCodeApp(App):
         for btn in self.query("#send-btn").results(Button):
             btn.label = "■ Stop" if running else "↑ Send"
             btn.variant = "error" if running else "primary"
+        # The "esc to stop" hint used to ride in the status text, where it cost 14 of
+        # the ~7 columns the composer bar leaves for status on an 80-wide terminal —
+        # so the elapsed seconds it was crowding out never appeared at all. The
+        # prompt's subtitle has room and is already where the key hints live.
+        for prompt in self.query("#prompt").results(PromptInput):
+            if running:
+                prompt.border_subtitle = "Esc 로 중지"
+            elif not self.view_only:
+                prompt.border_subtitle = "Enter to send · Shift+Enter for newline"
 
     def _prune_empty_turn(self) -> None:
         """Drop the turn's rail if the reply produced no blocks (immediate error)."""
@@ -651,7 +660,7 @@ class AhaCodeApp(App):
         # (base + live environment), plan the planner.
         base = prompts.plan_system() if self.mode == "plan" else prompts.act_system()
         history = [{"role": "system", "content": base}, *self.session.messages]
-        self._status("● waiting…  (esc to stop)")
+        self._status("● waiting…")
         self._stopping = False  # a new turn clears a previous stop
         self._response_worker = self.stream_response(history, self._turn)
         self._set_send_running(True)  # the Send button becomes Stop
@@ -1081,7 +1090,7 @@ class AhaCodeApp(App):
                 boxes["thinking"] = ThinkingBlock()  # foldable; starts expanded
                 await container.mount(boxes["thinking"])
             boxes["thinking"].append_chunk(event.text)
-            self._status("● thinking…  (esc to stop)")
+            self._status("● thinking…")
         elif isinstance(event, TextDelta):
             self._fold_thinking(boxes)  # answer starting → auto-collapse the reasoning
             if boxes["answer"] is None:
@@ -1090,14 +1099,14 @@ class AhaCodeApp(App):
                 boxes["answer"] = Chatbox("", role="assistant", markdown=True)
                 await container.mount(boxes["answer"])
             boxes["answer"].append_chunk(event.text)
-            self._status("● generating…  (esc to stop)")
+            self._status("● generating…")
         elif isinstance(event, ToolCallDelta):
             if event.name == "todo_write":
                 return  # todo_write shows in the panel on its final call, not a bubble
             if event.name == "edit":
                 self._fold_thinking(boxes)
                 boxes["answer"] = None
-                self._status("● editing…  (esc to stop)")
+                self._status("● editing…")
                 return  # edit's coloured diff is rendered on the final ToolCall
             self._fold_thinking(boxes)
             boxes["answer"] = None
@@ -1112,12 +1121,12 @@ class AhaCodeApp(App):
                     boxes["tool"][event.index] = box
                 box._content = _render_tool_stream(event.name, buf)
                 box.update(box._content)
-                self._status("● writing…  (esc to stop)")
+                self._status("● writing…")
             else:
                 # bash / read / grep …: no call bubble — the result card shows the
                 # command in its title (IN) and the output in its body (OUT), the
                 # Claude Code shape. The status bar reports progress until it lands.
-                self._status(f"● running {event.name}…  (esc to stop)")
+                self._status(f"● running {event.name}…")
         elif isinstance(event, ToolCall):
             self._fold_thinking(boxes)  # fold reasoning; next turn opens fresh bubbles
             boxes["answer"] = None
@@ -1138,26 +1147,26 @@ class AhaCodeApp(App):
                     self.query_one(TodoPanel).update_todos(items)
                 boxes["tool"].clear()
                 boxes["tool_buf"].clear()
-                self._status("● planning…  (esc to stop)")
+                self._status("● planning…")
                 return
             if event.name == "plan_submit":  # the plan goes to the panel; the gate
                 if boxes.get("gate"):        # opens when its result confirms the save
                     self.query_one(TodoPanel).update_todos(self._plan_items(event.arguments))
                 boxes["tool"].clear()
                 boxes["tool_buf"].clear()
-                self._status("● submitting plan…  (esc to stop)")
+                self._status("● submitting plan…")
                 return
             if event.name == "edit":  # green diff card (shared with history restore)
                 await container.mount(self._edit_card(event.arguments))
                 boxes["tool"].clear()
                 boxes["tool_buf"].clear()
-                self._status("● editing…  (esc to stop)")
+                self._status("● editing…")
                 return
             # write streamed a live content bubble (kept); other tools show only the
             # result card, so there's no call bubble to keep here.
             boxes["tool"].clear()
             boxes["tool_buf"].clear()
-            self._status(f"● running {event.name}…  (esc to stop)")
+            self._status(f"● running {event.name}…")
         elif isinstance(event, ToolResult):
             self._running_tools.pop(event.id, None)
             if event.name == "todo_write":
@@ -1223,10 +1232,9 @@ class AhaCodeApp(App):
         oldest = min(self._running_tools.values(), key=lambda v: v[1])
         seconds = int(now - oldest[1])
         if len(self._running_tools) > 1:
-            self._status(f"● 도구 {len(self._running_tools)}개 실행 중… "
-                         f"{seconds}초  (esc to stop)")
+            self._status(f"● 도구 {len(self._running_tools)}개 · {seconds}초")
         else:
-            self._status(f"● running {oldest[0]}… {seconds}초  (esc to stop)")
+            self._status(f"● {oldest[0]} · {seconds}초")
 
     def _force_exit(self) -> None:  # seam: tests replace this rather than dying
         os._exit(0)

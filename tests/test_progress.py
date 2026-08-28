@@ -46,6 +46,28 @@ async def test_a_running_tool_counts_up():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("width", [80, 100, 120])
+async def test_the_status_fits_the_bar_it_lives_in(width):
+    """The counter was invisible on an 80-wide terminal: the composer's fixed
+    controls left the flexible status 7 columns, enough for the bullet and nothing
+    else. Counting seconds nobody can read is the same as not counting."""
+    from textual.widgets import Static
+
+    app = AhaCodeApp()
+    async with app.run_test(size=(width, 30)) as pilot:
+        await pilot.pause()
+        app._running_tools["1"] = ("bash", time.monotonic() - 87)
+        app._tick_progress()
+        await pilot.pause()
+        status = app.query_one("#status", Static)
+        rows = [status.render_line(y).text.strip() for y in range(status.region.height)]
+    assert app._last_status in rows, (
+        f"{width} columns: status area is {status.region.width} wide, "
+        f"needs {len(app._last_status)} for {app._last_status!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_parallel_tools_are_counted_not_listed():
     """Three reads racing must not take turns overwriting each other's name."""
     app = AhaCodeApp()
