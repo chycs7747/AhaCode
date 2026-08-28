@@ -165,6 +165,47 @@ def test_unknown_tool_is_error():
     assert result.is_error and "unknown tool" in result.output
 
 
+def _unknown_output(name, reg):
+    emitted = []
+    turns = [[ToolCall(id="1", name=name, arguments={})], [TextDelta("ok")]]
+    agent.run([{"role": "user", "content": "x"}], emit=emitted.append,
+              stream=make_stream(turns), registry=reg)
+    return next(e for e in emitted if isinstance(e, ToolResult)).output
+
+
+def test_unknown_tool_names_what_is_available():
+    """A bare "unknown tool: X" is a dead end — a model with a code-interpreter prior
+    answers it by trying run_python, then python, then code_interpreter. The result
+    carries the actual registry and points at the schemas already in the request."""
+    reg = registry()
+    out = _unknown_output("run_python", reg)
+    for name in reg:
+        assert name in out                    # every real option is named
+    assert "came with this request" in out    # and where to read about them
+
+
+def test_an_invented_name_is_answered_with_the_real_one():
+    """The whole point: one turn, not a run of them. run_python must come back
+    pointing at bash, not just at a list the model has to re-derive."""
+    reg = registry()                          # this fake holds read + bash
+    assert "Use `bash` for that." in _unknown_output("run_python", reg)
+    assert "Use `read` for that." in _unknown_output("read_file", reg)
+
+
+def test_an_invented_name_whose_tool_is_absent_says_so():
+    """Plan mode has no bash. Naming it without saying it is missing would send the
+    model straight into another dead end."""
+    reg = {k: v for k, v in registry().items() if k != "bash"}
+    out = _unknown_output("run_python", reg)
+    assert "`bash`" in out and "NOT available" in out
+
+
+def test_a_misspelling_gets_a_near_match():
+    """A typo is not an invented name, so the alias table cannot help — spelling
+    distance can."""
+    assert "Did you mean `read`?" in _unknown_output("reads", registry())
+
+
 def test_max_turns_backstop_forces_tool_free_summary():
     """Hitting the turn cap forces ONE final tool-free turn: tools are withheld
     (specs is None) and the model is made to produce a text wrap-up, instead of a

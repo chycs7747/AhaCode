@@ -10,6 +10,7 @@ time), and the LLM/tools are injectable for offline tests.
 
 from __future__ import annotations
 
+import difflib
 import json
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -25,6 +26,44 @@ ApproveFn = Callable[[ToolCall], bool]
 
 # Tool-call rounds one user message may take before the tool-free wrap-up turn.
 DEFAULT_MAX_TURNS = 10
+
+# Names models reach for that this project spells differently — mapped to the tool
+# that actually does the job. Not aliases: the call still fails. This exists so the
+# failure costs ONE turn instead of a run of them, because a model that invented
+# `run_python` answers a bare rejection by inventing `python`, then
+# `code_interpreter`. Only names with an unambiguous local equivalent belong here.
+_INSTEAD_OF = {
+    "bash": ("run_python", "python", "python3", "code_interpreter", "run_code",
+             "execute_code", "execute", "exec", "shell", "terminal", "run_command"),
+    "read": ("read_file", "open_file", "view_file", "get_file", "cat"),
+    "grep": ("search", "search_files", "find_in_files", "ripgrep", "rg", "search_code"),
+    "glob": ("find", "find_files", "list_files", "list_directory", "ls"),
+    "write": ("write_file", "create_file", "save_file"),
+    "edit": ("apply_patch", "str_replace", "replace_in_file", "patch", "edit_file"),
+    "webfetch": ("fetch", "fetch_url", "http_get", "browse", "open_url"),
+    "task": ("delegate", "spawn_agent", "subagent"),
+    "todo_write": ("todo", "update_todos", "set_todos", "task_list"),
+}
+
+
+def _instead_of(name: str, registry: dict) -> str:
+    """The one sentence that turns a rejection into a next move.
+
+    Three cases, most specific first: a known invented name whose equivalent IS
+    available, the same but NOT available this turn (plan mode has no bash, a
+    sub-agent at the depth limit has no task) — which is worth saying outright so
+    the model stops hunting — and finally a plain near-miss on spelling.
+    """
+    lowered = name.lower()
+    for real, invented in _INSTEAD_OF.items():
+        if lowered == real or lowered in invented:
+            if real in registry:
+                return f" Use `{real}` for that."
+            return (f" What you are reaching for is `{real}`, and it is NOT available "
+                    "this turn — the list above is the whole set, so do it another "
+                    "way or say why you cannot.")
+    close = difflib.get_close_matches(lowered, list(registry), n=1, cutoff=0.6)
+    return f" Did you mean `{close[0]}`?" if close else ""
 
 
 def _compaction_note(done: context.Compaction) -> str:
@@ -74,7 +113,19 @@ def _gate_tool(call: ToolCall, registry: dict, approve: ApproveFn | None):
         )
     tool = registry.get(call.name)
     if tool is None:
-        return ToolResult(call.id, call.name, f"unknown tool: {call.name}", is_error=True)
+        # "unknown tool: X" alone is a dead end. Point at the two things that
+        # resolve it: the set this turn actually has (it varies by mode, so the
+        # model cannot know it without being told) and the schemas already sitting
+        # in this request. Same principle as the parse_error branch above — say what
+        # to do next, not just what went wrong.
+        return ToolResult(
+            call.id, call.name,
+            f"unknown tool: {call.name}. This turn's tools are: "
+            f"{', '.join(sorted(registry))} — that is the complete set, and the "
+            "schema and description of each one came with this request; read them "
+            f"there rather than guessing a name.{_instead_of(call.name, registry)}",
+            is_error=True,
+        )
     # Safety gate first: a hard-blocked call never runs and is never even offered
     # for approval (e.g. `rm -rf /`).
     if tool.validate:

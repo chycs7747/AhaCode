@@ -81,10 +81,19 @@ def sampling_for(model: str, *, no_think: bool) -> tuple[dict, dict]:
     return dict(slot["kwargs"]), dict(slot["extra"])
 
 
+# How long a "does this address answer?" probe may take (see list_models). Short on
+# purpose: it runs while someone waits on a settings screen.
+PROBE_TIMEOUT = 10.0
+
 _client: OpenAI | None = None
 _cfg: config.ModelConfig | None = None
 # Process-wide concurrency gate — see _ensure_gate. Sized from config on first use.
 _gate: threading.BoundedSemaphore | None = None
+# Guards the lazy construction of the three globals above. Without it a fan-out that
+# starts several requests at once can have two threads both find _gate None and both
+# build a semaphore: the loser's permits are already held, so the cap is briefly
+# exceeded by exactly the thing it exists to bound.
+_init_lock = threading.Lock()
 
 
 def reset() -> None:
@@ -103,17 +112,24 @@ def _ensure_gate() -> threading.BoundedSemaphore:
     across a sub-agent delegation), so nested spawning cannot deadlock."""
     global _gate
     if _gate is None:
-        _gate = threading.BoundedSemaphore(config.load().max_parallel_agents)
+        with _init_lock:
+            if _gate is None:  # re-checked: another thread may have built it meanwhile
+                _gate = threading.BoundedSemaphore(config.load().max_parallel_agents)
     return _gate
 
 
 def _ensure_client() -> tuple[OpenAI, config.ModelConfig]:
     global _client, _cfg
     if _client is None:
-        _cfg = config.load()
-        _client = OpenAI(
-            base_url=_cfg.base_url, api_key=_cfg.api_key, timeout=_cfg.timeout
-        )
+        with _init_lock:
+            if _client is None:
+                cfg = config.load()
+                # Published together, and _cfg first: a reader that sees a non-None
+                # _client must never find the config that belongs to it still unset.
+                _cfg = cfg
+                _client = OpenAI(
+                    base_url=cfg.base_url, api_key=cfg.api_key, timeout=cfg.timeout
+                )
     return _client, _cfg
 
 
@@ -283,9 +299,26 @@ def complete(messages: list[dict]) -> str:
     return (resp.choices[0].message.content or "").strip()
 
 
-def list_models() -> list[str]:
-    """Model ids offered by the endpoint (GET /v1/models)."""
-    client, _ = _ensure_client()
+def list_models(base_url: str | None = None, api_key: str | None = None) -> list[str]:
+    """Model ids offered by an endpoint (GET /v1/models).
+
+    With no arguments: the configured endpoint, through the cached client. Passing
+    base_url probes a *different* endpoint with a throwaway client — what the
+    settings modal needs, since the address being typed there is not saved yet and
+    must not disturb the client the running session is using.
+
+    Listing is a plain GET and does not load a model, so it is safe to call against
+    a gateway that starts an engine on demand; only an inference request does that.
+    The probe gets its own short timeout: an address typed with a typo should come
+    back as an error in seconds, not hold the settings modal for the configured
+    request timeout (minutes).
+    """
+    if base_url is None:
+        client, _ = _ensure_client()
+    else:
+        client = OpenAI(base_url=base_url,
+                        api_key=api_key or config.load().api_key,
+                        timeout=PROBE_TIMEOUT)
     return [m.id for m in client.models.list()]
 
 
