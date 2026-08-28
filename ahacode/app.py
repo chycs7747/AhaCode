@@ -3,7 +3,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -139,6 +139,10 @@ class AhaCodeApp(App):
         # Tools this session's own loop is running: call id -> (name, started at).
         # Sub-agent tools are deliberately absent — they report in their own card.
         self._running_tools: dict[str, tuple[str, float]] = {}
+        # The message that started the turn in flight, held until the transcript has
+        # it. A loop that runs several rounds is still one question, so it is cleared
+        # after the first write rather than repeated above every round.
+        self._turn_question = ""
         latest = storage.latest_session()
         if latest:  # resume the most recent session
             self.session_path = latest
@@ -174,6 +178,9 @@ class AhaCodeApp(App):
         messages: list[dict]
         stats: str = ""
         prompt_tokens: int | None = None  # the server's count for this turn's request
+        # The same numbers the status line renders, unformatted, so the turn can be
+        # recorded as well as displayed (see storage.append_stats).
+        metrics: dict = field(default_factory=dict)
 
     @dataclass
     class ResponseFailed(Message):
@@ -615,6 +622,7 @@ class AhaCodeApp(App):
 
         self.session.add_user(text)
         storage.append_message(self.session_path, {"role": "user", "content": text})
+        self._turn_question = text
 
         self._follow_output = True  # a new turn re-pins to the bottom to show the reply
         container = self.query_one("#chat-container", VerticalScroll)
@@ -687,10 +695,44 @@ class AhaCodeApp(App):
         text = prompts.handoff_prompt(storage.display_path(plan))
         self.session.add_user(text)
         storage.append_message(self.session_path, {"role": "user", "content": text})
+        self._turn_question = f"(계획 실행 시작) {storage.display_path(plan)}"
         self._follow_output = True
         container = self.query_one("#chat-container", VerticalScroll)
         await container.mount(Chatbox(text, role="user"))
         await self._start_turn()
+
+    def _write_transcript_turn(self, event: "AhaCodeApp.ResponseComplete") -> None:
+        """Append this turn to the session's readable transcript.
+
+        The JSONL beside it already holds everything, but it holds it as the model
+        sees it — one line per message, tool arguments as escaped JSON. This is the
+        conversation as it appeared on screen, and each turn carries what it cost, so
+        a session can be read back later without the app and without re-measuring.
+        """
+        answer = "\n\n".join(
+            m["content"] for m in event.messages
+            if m.get("role") == "assistant" and m.get("content")
+        )
+        tools = [
+            f"🔧 {c['function']['name']} · "
+            f"{tool_summary(c['function']['name'], self._safe_args(c)) or ''}".strip(" ·")
+            for m in event.messages for c in (m.get("tool_calls") or [])
+        ]
+        if not (self._turn_question or answer or tools):
+            return
+        storage.append_turn(
+            storage.transcript_path(self.session_path),
+            user=self._turn_question, answer=answer, tools=tools,
+            metrics=event.metrics,
+        )
+        self._turn_question = ""  # written once; a resumed loop is not a new question
+
+    @staticmethod
+    def _safe_args(call: dict) -> dict:
+        try:
+            return json.loads(call["function"]["arguments"])
+        except (json.JSONDecodeError, TypeError, KeyError):
+            return {}
 
     async def _snapshot_progress(self) -> None:
         """Write plans/{plan}.result.md from the panel and announce the state."""
@@ -706,8 +748,11 @@ class AhaCodeApp(App):
              if m.get("role") == "assistant" and m.get("content")), "",
         )
         out = storage.result_path(plan)
-        storage.write_result(out, plan=plan, session_id=self.session_path.stem,
-                             items=items, summary=summary, complete=not left)
+        storage.write_result(
+            out, plan=plan, session_id=self.session_path.stem, items=items,
+            summary=summary, complete=not left,
+            throughput=storage.summarize_stats(storage.read_stats(self.session_path)),
+        )
         if left:
             await self._say_system(
                 f"⏸ 미완 항목 {len(left)}개 — 이어서 하려면 입력하세요 "
@@ -722,6 +767,22 @@ class AhaCodeApp(App):
         """An impl session carries a whole plan in one context, so it gets the
         larger cap; an ordinary turn answers one message."""
         return config.load().impl_max_turns if self.session_kind == "impl" else agent.DEFAULT_MAX_TURNS
+
+    @staticmethod
+    def _turn_metrics(stats: dict) -> dict:
+        """The turn's numbers, ready to record: the same quantities the status line
+        shows, kept as numbers so they can be summed later instead of re-parsed."""
+        gen = stats["completion"]
+        if not gen:
+            return {}
+        first = stats["t_first"] or stats["t_start"]
+        return {
+            "prompt": stats["prompt"],
+            "gen": gen,
+            "gen_seconds": round(max(time.monotonic() - first, 1e-9), 3),
+            "ttft": round((stats["t_first"] - stats["t_start"]) if stats["t_first"] else 0.0, 3),
+            "model": config.load().name,
+        }
 
     @staticmethod
     def _format_stats(stats: dict) -> str:
@@ -956,6 +1017,11 @@ class AhaCodeApp(App):
         for msg in event.messages:
             self.session.messages.append(msg)
             storage.append_message(self.session_path, msg)
+        if event.metrics:
+            # Recorded, not just shown: the status line is gone the moment the next
+            # turn starts, and "how fast has this been?" had no answer afterwards.
+            storage.append_stats(self.session_path, event.metrics)
+        self._write_transcript_turn(event)
         self._status(event.stats)
         if event.prompt_tokens:
             self._last_prompt_tokens = event.prompt_tokens
@@ -1393,7 +1459,8 @@ class AhaCodeApp(App):
             self.post_message(self.ResponseComplete(new_messages, "■ stopped", stats["last_prompt"]))
             return
         self.post_message(self.ResponseComplete(
-            new_messages, self._format_stats(stats), stats["last_prompt"]
+            new_messages, self._format_stats(stats), stats["last_prompt"],
+            self._turn_metrics(stats),
         ))
 
 

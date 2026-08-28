@@ -22,6 +22,10 @@ PLANS_DIR = AHACODE_DIR / "plans"
 # Throwaway verification scripts (oracles, one-off checks) go here, never in the
 # source tree — the write tool creates it on first use.
 SCRATCH_DIR = AHACODE_DIR / "scratch"
+# A readable transcript per session, written turn by turn: the questions and answers
+# as they appeared on screen, each turn stamped with what it cost. The JSONL beside
+# it is the machine's copy — complete, replayable, and unpleasant to read.
+TRANSCRIPTS_DIR = AHACODE_DIR / "transcripts"
 
 
 def new_session_path(base_dir: Path | None = None) -> Path:
@@ -51,6 +55,91 @@ def append_message(path: Path, message: dict) -> None:
     # Explicit utf-8: the platform default may differ (e.g. cp949 on Korean Windows).
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(message, ensure_ascii=False) + "\n")
+
+
+def append_stats(path: Path, metrics: dict) -> None:
+    """Record one turn's throughput beside the transcript.
+
+    Typed, so load_messages skips it: this is bookkeeping, not conversation, and it
+    must never be replayed to the model. Kept because the numbers were computed for
+    the status bar and then thrown away — which made "how fast has this been?" a
+    question nobody could answer after the fact without re-measuring.
+    """
+    append_message(path, {"type": "stats", **metrics})
+
+
+def read_stats(path: Path) -> list[dict]:
+    """Every turn's recorded throughput, oldest first."""
+    if not path.exists():
+        return []
+    out: list[dict] = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            obj = json.loads(line)
+            if obj.get("type") == "stats":
+                out.append(obj)
+    return out
+
+
+def summarize_stats(rows: list[dict]) -> str:
+    """One line of aggregate throughput, or "" when nothing was recorded."""
+    timed = [r for r in rows if r.get("gen") and r.get("gen_seconds")]
+    if not timed:
+        return ""
+    gen = sum(r["gen"] for r in timed)
+    seconds = sum(r["gen_seconds"] for r in timed)
+    ttfts = sorted(r["ttft"] for r in timed if r.get("ttft") is not None)
+    mid = ttfts[len(ttfts) // 2] if ttfts else 0.0
+    return (f"{len(timed)}턴 · 생성 {gen:,} 토큰 / {seconds:,.0f}초 "
+            f"= 평균 {gen / max(seconds, 1e-9):.1f} tok/s · TTFT 중앙값 {mid:.1f}초")
+
+
+def transcript_path(session_path: Path) -> Path:
+    """The readable transcript for a session: transcripts/{session}.md."""
+    return TRANSCRIPTS_DIR / f"{session_path.stem}.md"
+
+
+def format_metrics(metrics: dict) -> str:
+    """One line of what a turn cost, or "" when it produced nothing."""
+    gen, secs = metrics.get("gen"), metrics.get("gen_seconds")
+    if not gen or not secs:
+        return ""
+    parts = [f"TTFT {metrics.get('ttft', 0):.1f}초",
+             f"생성 {gen:,} 토큰", f"{gen / max(secs, 1e-9):.1f} tok/s"]
+    if metrics.get("prompt"):
+        parts.append(f"프롬프트 {metrics['prompt']:,} 토큰")
+    return " · ".join(parts)
+
+
+def append_turn(path: Path, *, user: str, answer: str, tools: list[str],
+                metrics: dict, stamp: str = "") -> None:
+    """Append one turn to the readable transcript.
+
+    Appended rather than rewritten: a session is a log, and rewriting the whole file
+    every turn would make a long one quadratic in work for no gain.
+    """
+    stamp = stamp or datetime.datetime.now().strftime("%H:%M:%S")
+    blocks: list[str] = []
+    if user:
+        blocks += [f"## {stamp} · 사용자", "", user.strip(), ""]
+    if answer or tools or metrics:
+        blocks.append(f"## {stamp} · AhaCode")
+        blocks.append("")
+    if tools:
+        blocks += [f"- {t}" for t in tools] + [""]
+    if answer:
+        blocks += [answer.strip(), ""]
+    line = format_metrics(metrics)
+    if line:
+        blocks += [f"> {line}", ""]
+    if not blocks:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = "" if path.exists() else f"# {path.stem}\n\n"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(header + "\n".join(blocks) + "\n")
 
 
 def load_messages(path: Path) -> list[dict]:
@@ -306,7 +395,8 @@ def result_path(plan: Path) -> Path:
 
 
 def write_result(
-    path: Path, *, plan: Path, session_id: str, items: list[dict], summary: str, complete: bool
+    path: Path, *, plan: Path, session_id: str, items: list[dict], summary: str,
+    complete: bool, throughput: str = "",
 ) -> None:
     """Snapshot an impl session's progress beside its plan — rewritten after every
     turn, so the file always says where the plan stands (the checklist exactly as
@@ -326,6 +416,8 @@ def write_result(
         "",
         *[f"{mark(it.get('status'))} {it.get('content', '')}" for it in items],
     ]
+    if throughput:
+        lines += ["", "## Throughput", "", throughput]
     if summary:
         lines += ["", "## Latest summary", "", summary]
     path.parent.mkdir(parents=True, exist_ok=True)
