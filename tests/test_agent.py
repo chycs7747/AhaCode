@@ -165,6 +165,45 @@ def test_unknown_tool_is_error():
     assert result.is_error and "unknown tool" in result.output
 
 
+def _closing_stream(closed, events):
+    """A stream that records whether the loop closed it on the way out."""
+    def gen(messages, specs=None):
+        try:
+            yield from events
+        finally:
+            closed.append(True)
+    return gen
+
+
+def test_a_stopped_turn_closes_the_stream():
+    """The loop owns the stream's lifetime, and stopping mid-turn is the path that
+    forgets it. client.stream_chat holds the process-wide concurrency permit inside
+    that generator, so a stream left suspended holds the permit too -- leak
+    max_parallel_agents of them and every later request blocks on acquire() forever,
+    which presents as an app frozen with no CPU and no network."""
+    closed = []
+    stream = _closing_stream(closed, [TextDelta("a"), TextDelta("b"), TextDelta("c")])
+    # False at the top of the loop so the turn actually starts, True once the first
+    # event arrives — a stop pressed mid-stream, which is the path that forgets.
+    seen = []
+
+    def cancelled():
+        seen.append(1)
+        return len(seen) > 1
+
+    agent.run([{"role": "user", "content": "x"}], emit=lambda e: None,
+              stream=stream, registry=registry(), is_cancelled=cancelled)
+    assert closed, "a stopped turn left its stream suspended"
+
+
+def test_a_finished_turn_closes_the_stream():
+    closed = []
+    stream = _closing_stream(closed, [TextDelta("done")])
+    agent.run([{"role": "user", "content": "x"}], emit=lambda e: None,
+              stream=stream, registry=registry())
+    assert closed
+
+
 def _unknown_output(name, reg):
     emitted = []
     turns = [[ToolCall(id="1", name=name, arguments={})], [TextDelta("ok")]]

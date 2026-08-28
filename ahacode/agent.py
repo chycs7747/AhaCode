@@ -14,6 +14,7 @@ import difflib
 import json
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 from ahacode import client, context, prompts, tools
 from ahacode.events import Event, Notice, TextDelta, ToolCall, ToolResult, Usage
@@ -64,6 +65,29 @@ def _instead_of(name: str, registry: dict) -> str:
                     "way or say why you cannot.")
     close = difflib.get_close_matches(lowered, list(registry), n=1, cutoff=0.6)
     return f" Did you mean `{close[0]}`?" if close else ""
+
+
+@contextmanager
+def _streaming(events: Iterator[Event]) -> Iterator[Iterator[Event]]:
+    """Own the stream's lifetime: close it on every way out of the loop.
+
+    client.stream_chat holds the process-wide concurrency permit with a `with` INSIDE
+    its generator, so the permit comes back only once that generator is exhausted or
+    closed. Stopping a turn mid-stream leaves the loop early; letting the frame's
+    refcount finalize the generator works right up until the frame is kept alive by a
+    traceback or a reference cycle, and then the permit is held until a GC pass. Leak
+    max_parallel_agents of them and every later request blocks on acquire() forever —
+    no CPU, no network, an app that simply looks frozen.
+
+    contextlib.closing would do, except `stream` is an injected seam typed
+    Iterator[Event]: the real one is a generator, and a plain iterator has no close().
+    """
+    try:
+        yield events
+    finally:
+        close = getattr(events, "close", None)
+        if close is not None:
+            close()
 
 
 def _compaction_note(done: context.Compaction) -> str:
@@ -223,16 +247,17 @@ def run(
         # --- one LLM turn: stream deltas live, collect the tool calls ---
         text = ""
         calls: list[ToolCall] = []
-        for event in stream(messages, specs):
-            if is_cancelled():
-                return appended
-            if isinstance(event, ToolCall):
-                calls.append(event)
-            elif isinstance(event, TextDelta):
-                text += event.text
-            elif isinstance(event, Usage):
-                prompt_tokens = event.prompt_tokens
-            emit(event)  # thinking / text / tool-call shown as it arrives
+        with _streaming(stream(messages, specs)) as events:
+            for event in events:
+                if is_cancelled():
+                    return appended
+                if isinstance(event, ToolCall):
+                    calls.append(event)
+                elif isinstance(event, TextDelta):
+                    text += event.text
+                elif isinstance(event, Usage):
+                    prompt_tokens = event.prompt_tokens
+                emit(event)  # thinking / text / tool-call shown as it arrives
 
         add(_assistant_message(text, calls))
 
@@ -271,12 +296,13 @@ def run(
         if not is_cancelled():
             add({"role": "user", "content": prompts.max_turns_prompt()})
             text = ""
-            for event in stream(messages, None):  # tools off for this turn
-                if is_cancelled():
-                    return appended
-                if isinstance(event, TextDelta):
-                    text += event.text
-                emit(event)
+            with _streaming(stream(messages, None)) as events:  # tools off this turn
+                for event in events:
+                    if is_cancelled():
+                        return appended
+                    if isinstance(event, TextDelta):
+                        text += event.text
+                    emit(event)
             add(_assistant_message(text, []))
 
     return appended

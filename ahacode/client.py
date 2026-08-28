@@ -7,7 +7,9 @@ from contextlib import contextmanager
 from openai import OpenAI
 
 from ahacode import config, prompts
-from ahacode.events import Event, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, Usage
+from ahacode.events import (
+    Event, Notice, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, Usage,
+)
 
 # The mode of the turn currently being sent, per THREAD — so plan/impl/sub-agent
 # each pick their own thinking budget (config.thinking_budget_for). Thread-local
@@ -94,6 +96,77 @@ _gate: threading.BoundedSemaphore | None = None
 # build a semaphore: the loser's permits are already held, so the cap is briefly
 # exceeded by exactly the thing it exists to bound.
 _init_lock = threading.Lock()
+# When a permit last entered or left the gate. A queue — however deep — keeps
+# changing hands; a gate whose permits were taken by requests that are now gone
+# never does. That difference is what tells a busy backend apart from a deadlock
+# without guessing at a deadline (see _acquire_permit).
+_gate_clock = threading.Lock()
+_last_gate_change = time.monotonic()
+# Grace on top of the request timeout before an unmoving gate counts as stuck.
+GATE_STUCK_MARGIN = 60.0
+_GATE_POLL = 1.0
+# How long a queue may be silent before it is worth a line on screen. Waiting is
+# normal — max_parallel_agents = 1 is the recommended setting for a single GPU, so
+# every fan-out queues — but on screen a normal wait and a hang look identical, and
+# that is the whole reason a stuck app was hard to recognise as stuck.
+WAIT_NOTICE_AFTER = 3.0
+
+
+def _touch_gate() -> None:
+    global _last_gate_change
+    with _gate_clock:
+        _last_gate_change = time.monotonic()
+
+
+def _gate_idle_seconds() -> float:
+    with _gate_clock:
+        return time.monotonic() - _last_gate_change
+
+
+def _reset_gate() -> None:
+    """Throw the gate away so the next caller builds a fresh one."""
+    global _gate
+    with _init_lock:
+        _gate = None
+    _touch_gate()
+
+
+def _wait_for_permit(timeout: float, limit: int):
+    """Take a concurrency permit — saying so when the wait is long enough to look
+    like a hang, and rebuilding a gate whose permits have leaked.
+
+    A permit is held for one request, and no request outlives the configured client
+    timeout — so if nothing has entered or left the gate for longer than that, the
+    permits are held by requests that no longer exist and waiting on them is waiting
+    forever. Rebuild in that case. A real queue keeps the clock moving and is left
+    alone however long it takes, which is the point: the app must not cut off a cold
+    model load, and it must not sit frozen on permits nobody holds.
+
+    A generator, so it can report through the same event channel as everything else:
+    client.py has no way to reach a widget and should not grow one. Callers take the
+    result with `yield from`. Returns the semaphore the permit came from (release
+    THAT one, not whatever _ensure_gate hands out later) and whether a rebuild was
+    needed.
+    """
+    stuck_after = timeout + GATE_STUCK_MARGIN
+    started = time.monotonic()
+    told = healed = False
+    while True:
+        gate = _ensure_gate()
+        if gate.acquire(timeout=_GATE_POLL):
+            _touch_gate()
+            if told:  # close the loop on a wait the user was told about
+                yield Notice("▶ 자리가 나서 요청을 시작합니다.")
+            return gate, healed
+        if not told and time.monotonic() - started > WAIT_NOTICE_AFTER:
+            told = True
+            yield Notice(
+                f"⏳ 다른 요청이 끝나기를 기다리는 중입니다 (동시 실행 한도 {limit}개). "
+                "멈춘 것이 아니라 차례를 기다리는 중입니다."
+            )
+        if _gate_idle_seconds() > stuck_after:
+            _reset_gate()
+            healed = True
 
 
 def reset() -> None:
@@ -103,6 +176,7 @@ def reset() -> None:
     _client = None
     _cfg = None
     _gate = None
+    _touch_gate()  # a fresh gate has not been sitting still — don't inherit an old idle
 
 
 def _ensure_gate() -> threading.BoundedSemaphore:
@@ -252,13 +326,23 @@ def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterat
     extra.update(sample_extra)
     if extra:
         kwargs["extra_body"] = extra
-    # Hold a global concurrency permit for the request's lifetime: acquired here,
-    # released when this generator is exhausted or closed (the outer `with` exits).
-    # All agents funnel through here, so this bounds true gateway concurrency (see
-    # _ensure_gate). The inner `with` closes the HTTP connection on every exit path —
-    # including when the caller abandons the generator mid-stream (GeneratorExit).
-    with _ensure_gate():
+    # Hold a global concurrency permit for the request's lifetime: taken here,
+    # released when this generator is exhausted or closed. All agents funnel through
+    # here, so this bounds true gateway concurrency (see _ensure_gate). The inner
+    # `with` closes the HTTP connection on every exit path — including when the
+    # caller abandons the generator mid-stream (GeneratorExit).
+    gate, healed = yield from _wait_for_permit(cfg.timeout, cfg.max_parallel_agents)
+    if healed:
+        # Say it out loud rather than recovering in silence: a gate that had to be
+        # rebuilt means requests ended without giving their permit back, and that is
+        # a defect worth seeing rather than one worth smoothing over.
+        yield Notice("동시 요청 게이트가 멈춰 있어 초기화했습니다 — "
+                     "이전 요청이 자리를 반납하지 않았습니다.")
+    try:
         yield from _stream_with_budget_fallback(client, kwargs)
+    finally:
+        gate.release()
+        _touch_gate()
 
 
 def _stream_with_budget_fallback(client, kwargs: dict) -> Iterator[Event]:

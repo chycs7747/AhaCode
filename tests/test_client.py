@@ -133,9 +133,18 @@ def test_tool_call_streams_deltas_then_final():
 
 
 # --- stream_chat reasoning params + budget fallback ------------------------
-import contextlib
+import threading
 
 from ahacode import config
+
+
+def _ungated(timeout, limit):
+    """Stand in for the concurrency gate in tests that are about the request, not
+    about concurrency. A generator, like the real _wait_for_permit — callers reach
+    it with `yield from` — returning the semaphore the permit came from and whether
+    the gate had to be rebuilt."""
+    yield from ()
+    return threading.Semaphore(1), False
 
 
 class _FakeStream:
@@ -168,7 +177,7 @@ def test_stream_chat_sends_reasoning_extra_body(monkeypatch):
     seen = {}
     fc = _fake_client(lambda **kw: (seen.update(kw), _FakeStream())[1])
     monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg()))
-    monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
+    monkeypatch.setattr(client, "_wait_for_permit", _ungated)
     list(client.stream_chat([{"role": "user", "content": "x"}]))
     assert _thinking_keys(seen["extra_body"]) == {"reasoning_effort": "medium", "thinking_token_budget": 4096}
 
@@ -177,7 +186,7 @@ def test_stream_chat_omits_budget_when_zero(monkeypatch):
     seen = {}
     fc = _fake_client(lambda **kw: (seen.update(kw), _FakeStream())[1])
     monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg(thinking_token_budget=0)))
-    monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
+    monkeypatch.setattr(client, "_wait_for_permit", _ungated)
     list(client.stream_chat([{"role": "user", "content": "x"}]))
     assert _thinking_keys(seen["extra_body"]) == {"reasoning_effort": "medium"}  # no budget key
 
@@ -194,7 +203,7 @@ def test_budget_fallback_on_reasoning_config_error(monkeypatch):
         return _FakeStream()
 
     monkeypatch.setattr(client, "_ensure_client", lambda: (_fake_client(create), _cfg()))
-    monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
+    monkeypatch.setattr(client, "_wait_for_permit", _ungated)
     list(client.stream_chat([{"role": "user", "content": "x"}]))
     assert len(calls) == 2
     assert "thinking_token_budget" in calls[0]["extra_body"]      # first tried with budget
@@ -207,7 +216,7 @@ def test_no_think_after_tool_result(monkeypatch):
     seen = {}
     fc = _fake_client(lambda **kw: (seen.update(kw), _FakeStream())[1])
     monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg()))
-    monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
+    monkeypatch.setattr(client, "_wait_for_permit", _ungated)
     list(client.stream_chat([
         {"role": "user", "content": "solve it"},
         {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
@@ -222,7 +231,7 @@ def test_no_think_off_keeps_thinking_on_tool_turn(monkeypatch):
     seen = {}
     fc = _fake_client(lambda **kw: (seen.update(kw), _FakeStream())[1])
     monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg(no_think_after_tools=False)))
-    monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
+    monkeypatch.setattr(client, "_wait_for_permit", _ungated)
     list(client.stream_chat([{"role": "tool", "tool_call_id": "c1", "content": "ran"}]))
     assert _thinking_keys(seen["extra_body"]) == {"reasoning_effort": "medium", "thinking_token_budget": 4096}
 
@@ -235,7 +244,7 @@ def test_unrelated_error_is_not_retried(monkeypatch):
         raise RuntimeError("some other 500")
 
     monkeypatch.setattr(client, "_ensure_client", lambda: (_fake_client(create), _cfg()))
-    monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
+    monkeypatch.setattr(client, "_wait_for_permit", _ungated)
     import pytest
     with pytest.raises(RuntimeError, match="some other 500"):
         list(client.stream_chat([{"role": "user", "content": "x"}]))
@@ -270,7 +279,7 @@ def test_the_request_carries_the_profile_for_its_mode(monkeypatch):
     seen = {}
     fc = _fake_client(lambda **kw: (seen.update(kw), _FakeStream())[1])
     monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg(name="qwen38")))
-    monkeypatch.setattr(client, "_ensure_gate", lambda: contextlib.nullcontext())
+    monkeypatch.setattr(client, "_wait_for_permit", _ungated)
 
     list(client.stream_chat([{"role": "user", "content": "hi"}]))
     assert seen["temperature"] == 1.0 and seen["top_p"] == 0.95
