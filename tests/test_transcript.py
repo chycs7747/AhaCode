@@ -23,6 +23,19 @@ def isolated_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(AhaCodeApp, "generate_title", lambda self, *a, **k: None)
 
 
+def test_the_suite_never_writes_into_the_working_copy():
+    """Twice now the suite has left its own output in the developer's .ahacode/ —
+    first config.toml, then 48 transcripts of the fake model saying hello. Every
+    directory the app generates into has to be redirected, and this is the check
+    that says so out loud when a new one is added."""
+    from ahacode import storage as st
+
+    real = st.PROJECT_ROOT / ".ahacode"
+    for name in ("SESSIONS_DIR", "PLANS_DIR", "TRANSCRIPTS_DIR", "SCRATCH_DIR"):
+        path = getattr(st, name)
+        assert not path.is_relative_to(real), f"{name} still points at {path}"
+
+
 def test_a_turn_reads_back_with_its_cost(tmp_path):
     out = tmp_path / "t.md"
     storage.append_turn(out, user="이거 고쳐줘", answer="고쳤습니다",

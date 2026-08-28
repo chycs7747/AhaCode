@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from ahacode import config
+from ahacode import config, storage
 
 # Anything that would start another test run of this project. Matched as COMMANDS,
 # not as substrings: pytest's own tmp_path is C:\...\pytest-of-<user>\pytest-91\...,
@@ -42,6 +42,20 @@ def isolated_config(monkeypatch, tmp_path):
     """
     monkeypatch.setattr(config, "GLOBAL_CONFIG_PATH", tmp_path / "global-config.toml")
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "project-config.toml")
+
+
+@pytest.fixture(autouse=True)
+def isolated_output_dirs(monkeypatch, tmp_path):
+    """Point everything the app GENERATES at tmp, for every test.
+
+    Test files patch the directory they assert on and leave the rest pointing at the
+    working copy, so any output a test does not care about lands in the developer's
+    own .ahacode/ — a run of the suite left 48 transcripts of the fake model saying
+    "Hello! How can I help you today?" among the real ones. A test that patches its
+    own directory still wins: a module-level autouse fixture runs after this one.
+    """
+    for name in ("SESSIONS_DIR", "PLANS_DIR", "TRANSCRIPTS_DIR", "SCRATCH_DIR"):
+        monkeypatch.setattr(storage, name, tmp_path / name.lower())
 
 
 @pytest.fixture(autouse=True)
