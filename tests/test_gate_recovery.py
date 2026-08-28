@@ -25,7 +25,7 @@ def gate_of(monkeypatch):
     client.reset()
 
 
-def _endless(_c, _k):
+def _endless(_c, _k, _base_url=""):
     for i in range(10_000):
         yield TextDelta(f"{i} ")
 
@@ -89,7 +89,7 @@ def test_a_real_queue_says_it_is_queueing(monkeypatch):
 def test_a_permit_that_is_free_says_nothing(monkeypatch):
     """No bubble for a wait nobody noticed."""
     monkeypatch.setattr(client, "_stream_with_budget_fallback",
-                        lambda c, k: iter([TextDelta("hi")]))
+                        lambda c, k, b="": iter([TextDelta("hi")]))
     events = list(client.stream_chat([{"role": "user", "content": "y"}]))
     assert not [e for e in events if isinstance(e, Notice)]
 

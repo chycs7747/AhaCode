@@ -87,6 +87,13 @@ def sampling_for(model: str, *, no_think: bool) -> tuple[dict, dict]:
 # purpose: it runs while someone waits on a settings screen.
 PROBE_TIMEOUT = 10.0
 
+# Endpoints that refused our vendor extensions, by base_url. Everything outside the
+# plain OpenAI request shape — enable_thinking, thinking_token_budget, top_k, min_p —
+# is an extension some servers take and others reject outright. Remembered so the
+# failed round trip that discovers it is paid once, not on every turn. reset() clears
+# it, which is also the way to re-probe a server you have since reconfigured.
+_NO_EXTRAS: set[str] = set()
+
 _client: OpenAI | None = None
 _cfg: config.ModelConfig | None = None
 # Process-wide concurrency gate — see _ensure_gate. Sized from config on first use.
@@ -176,6 +183,7 @@ def reset() -> None:
     _client = None
     _cfg = None
     _gate = None
+    _NO_EXTRAS.clear()  # re-probe: the endpoint or its config may have just changed
     _touch_gate()  # a fresh gate has not been sitting still — don't inherit an old idle
 
 
@@ -235,11 +243,18 @@ def _iter_events(chunks: Iterable) -> Iterator[Event]:
             finish_reason = choice.finish_reason
         delta = choice.delta
 
-        # Thinking: some servers stream it under "reasoning" (verified on the wire
-        # against vLLM); not in the SDK's typed model, hence the defensive getattr.
-        reasoning = getattr(delta, "reasoning", None)
-        if isinstance(reasoning, str) and reasoning:
-            yield ThinkingDelta(reasoning)
+        # Thinking arrives under a different key depending on the server: vLLM's
+        # reasoning parser and DeepSeek-shaped APIs use reasoning_content, while
+        # other builds and gateways use plain reasoning. Neither is in the SDK's
+        # typed model, hence the defensive getattr. Read BOTH — a server that speaks
+        # one while we look for the other is indistinguishable from a model that
+        # never thinks, which is exactly how this presented: no thinking block, no
+        # error, just a long silence before the answer.
+        for key in ("reasoning_content", "reasoning"):
+            piece = getattr(delta, key, None)
+            if isinstance(piece, str) and piece:
+                yield ThinkingDelta(piece)
+                break
         if isinstance(delta.content, str) and delta.content:
             yield TextDelta(delta.content)
 
@@ -324,7 +339,10 @@ def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterat
     sample_kwargs, sample_extra = sampling_for(cfg.name, no_think=no_think)
     kwargs.update(sample_kwargs)
     extra.update(sample_extra)
-    if extra:
+    # Skip the extras entirely once this endpoint has told us it refuses them: the
+    # discovery costs one rejected request, and repeating it every turn would make a
+    # working server feel broken.
+    if extra and cfg.base_url not in _NO_EXTRAS:
         kwargs["extra_body"] = extra
     # Hold a global concurrency permit for the request's lifetime: taken here,
     # released when this generator is exhausted or closed. All agents funnel through
@@ -339,30 +357,59 @@ def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterat
         yield Notice("동시 요청 게이트가 멈춰 있어 초기화했습니다 — "
                      "이전 요청이 자리를 반납하지 않았습니다.")
     try:
-        yield from _stream_with_budget_fallback(client, kwargs)
+        yield from _stream_with_budget_fallback(client, kwargs, cfg.base_url)
     finally:
         gate.release()
         _touch_gate()
 
 
-def _stream_with_budget_fallback(client, kwargs: dict) -> Iterator[Event]:
-    """Stream the request. If the server refuses thinking_token_budget because its
-    reasoning-config isn't set up, retry ONCE without the budget so the app still
-    works (uncapped) instead of erroring on every turn. The refusal is a request-time
-    400 (before any event is yielded), so the retry can't double-emit."""
+def _stream_with_budget_fallback(client, kwargs: dict, base_url: str = "") -> Iterator[Event]:
+    """Stream the request, degrading once if the server refuses our extensions.
+
+    Two steps, narrowest first. A server whose reasoning-config is not set up refuses
+    thinking_token_budget in particular, and dropping only that keeps the sampling
+    profile. Any other request rejection means this endpoint does not take vendor
+    extensions at all — vLLM, Ollama, llama.cpp and the rest disagree about which of
+    them exist — so drop them wholesale and remember the endpoint, or the failed
+    round trip is paid again on every single turn.
+
+    Retried only while nothing has been yielded: past the first event the server has
+    accepted the request, and retrying would replay what the user already saw.
+    """
+    started = False
+    retry_extra: dict | None = None
+    note: Notice | None = None
     try:
         with client.chat.completions.create(**kwargs) as response:
-            yield from _iter_events(response)
+            for event in _iter_events(response):
+                started = True
+                yield event
+        return
     except Exception as exc:
         extra = kwargs.get("extra_body") or {}
-        if "thinking_token_budget" not in extra or "reasoning_config" not in str(exc):
+        status = getattr(exc, "status_code", None)
+        if started or not extra:
             raise
-        extra = {k: v for k, v in extra.items() if k != "thinking_token_budget"}
-        retry = {**kwargs, "extra_body": extra} if extra else {
-            k: v for k, v in kwargs.items() if k != "extra_body"
-        }
-        with client.chat.completions.create(**retry) as response:
-            yield from _iter_events(response)
+        if "thinking_token_budget" in extra and "reasoning_config" in str(exc):
+            retry_extra = {k: v for k, v in extra.items() if k != "thinking_token_budget"}
+        elif isinstance(status, int) and 400 <= status < 500:
+            retry_extra = {}
+            if base_url:
+                _NO_EXTRAS.add(base_url)
+            note = Notice(
+                "이 서버는 사고·샘플링 확장 옵션을 받지 않아 기본 설정으로 요청합니다 "
+                "(사고 예산과 reasoning_effort는 이 엔드포인트에서 무시됩니다)."
+            )
+        else:
+            raise
+
+    if note is not None:
+        yield note
+    retry = {**kwargs, "extra_body": retry_extra} if retry_extra else {
+        k: v for k, v in kwargs.items() if k != "extra_body"
+    }
+    with client.chat.completions.create(**retry) as response:
+        yield from _iter_events(response)
 
 
 def complete(messages: list[dict]) -> str:
@@ -376,10 +423,25 @@ def complete(messages: list[dict]) -> str:
     # the non-thinking profile. (Thinking itself is left alone here — this helper does
     # not switch it, and turning it off would be a separate decision.)
     sample_kwargs, sample_extra = sampling_for(cfg.name, no_think=True)
-    resp = client.chat.completions.create(
-        model=cfg.name, messages=messages, stream=False,
-        extra_body=sample_extra or None, **sample_kwargs,
-    )
+    if cfg.base_url in _NO_EXTRAS:
+        sample_extra = {}
+    try:
+        resp = client.chat.completions.create(
+            model=cfg.name, messages=messages, stream=False,
+            extra_body=sample_extra or None, **sample_kwargs,
+        )
+    except Exception as exc:
+        # Same degrade as the streaming path, and it matters as much: titling and
+        # context compaction run through here, so an endpoint that rejects the extras
+        # would fail every compaction — and compaction failing is how a long session
+        # stops working entirely.
+        status = getattr(exc, "status_code", None)
+        if not sample_extra or not (isinstance(status, int) and 400 <= status < 500):
+            raise
+        _NO_EXTRAS.add(cfg.base_url)
+        resp = client.chat.completions.create(
+            model=cfg.name, messages=messages, stream=False, **sample_kwargs,
+        )
     return (resp.choices[0].message.content or "").strip()
 
 

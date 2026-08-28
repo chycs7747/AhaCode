@@ -7,10 +7,12 @@ from ahacode import client
 from ahacode.events import TextDelta, ThinkingDelta, ToolCall
 
 
-def _delta(content=None, tool_calls=None, reasoning=None):
+def _delta(content=None, tool_calls=None, reasoning=None, reasoning_content=None):
     d = SimpleNamespace(content=content, tool_calls=tool_calls)
     if reasoning is not None:
         d.reasoning = reasoning
+    if reasoning_content is not None:
+        d.reasoning_content = reasoning_content
     return d
 
 
@@ -33,6 +35,22 @@ def _frag(index, id=None, name=None, arguments=None):
     return SimpleNamespace(
         index=index, id=id, function=SimpleNamespace(name=name, arguments=arguments)
     )
+
+
+def test_thinking_under_either_key():
+    """Servers disagree on the key: vLLM's reasoning parser and DeepSeek-shaped APIs
+    send reasoning_content, others send reasoning. Reading only one makes a thinking
+    model look like a silent one — no block, no error, just a long pause."""
+    for key in ("reasoning", "reasoning_content"):
+        events = list(client._iter_events([_chunk(_delta(**{key: "생각 중"}))]))
+        assert [e.text for e in events if isinstance(e, ThinkingDelta)] == ["생각 중"], key
+
+
+def test_thinking_is_not_double_counted_when_both_keys_arrive():
+    """A server that sets both must not produce the block twice."""
+    events = list(client._iter_events(
+        [_chunk(_delta(reasoning="a", reasoning_content="a"))]))
+    assert len([e for e in events if isinstance(e, ThinkingDelta)]) == 1
 
 
 def test_text_and_thinking_deltas():
