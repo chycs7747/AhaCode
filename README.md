@@ -117,33 +117,58 @@ foldable cards you approve before they run.
 ### Sessions & config
 
 - **Persistent sessions** — every message is appended to a plain-text JSONL
-  file under `sessions/` in the project root; the latest session is restored
-  on startup. Your history is always `cat`-able.
+  file under `.ahacode/sessions/` in the project you launched in; the latest
+  session is restored on startup. Your history is always `cat`-able.
 - **A session tree** — sub-agent transcripts are linked to the session that
   spawned them, and the picker shows the whole tree. Machine-authored child
   sessions open read-only, so you can read one without derailing it.
 - **Model picker & status bar** — the bar under the prompt holds the mode,
   model, and auto-approve controls plus a live token/throughput readout; the
   model list is fetched from the server's `/v1/models`.
+- **A settings screen** — ⚙ Settings opens every `config.toml` field worth changing,
+  on four tabs down the left edge: 연결 (endpoint, key, model, timeout), 에이전트,
+  컨텍스트, 사고. The 연결 tab asks *the address in the box* for its `/v1/models`,
+  so the endpoint and the model name cannot drift apart — a model name only means
+  anything on the server that serves it. Listing is a plain GET and loads nothing.
 
 ## Requirements
 
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)
 - An OpenAI-compatible LLM server (developed against a local
   [vLLM](https://github.com/vllm-project/vllm) instance)
+- On Windows, [Git for Windows](https://git-scm.com/download/win) — the `bash`
+  tool runs commands through its bash. Without it AhaCode falls back to `cmd`
+  and says so in the model's prompt rather than sending it bash it cannot run.
 
 ## Getting started
 
+Install it once; run it inside whatever project you want to work on.
+
 ```bash
-git clone https://github.com/chycs7747/AhaCode && cd AhaCode
-uv sync
-uv run textual run ahacode.app
+uv tool install git+https://github.com/chycs7747/AhaCode
+
+cd ~/some/project
+ahacode
 ```
+
+**The directory you launch from is the workspace.** `read`, `glob`, `grep` and
+`bash` all resolve against it, and everything the run generates lands in that
+project's `.ahacode/` — so add `.ahacode/` to its `.gitignore`. (`AHACODE_ROOT`
+overrides the choice if you would rather not cd.)
+
+To try it without installing anything permanent:
+
+```bash
+uvx --from git+https://github.com/chycs7747/AhaCode ahacode
+```
+
+To work on AhaCode itself, see [Development](#development).
 
 Type a message and press <kbd>Enter</kbd> — see [Keys](#keys) for the rest.
 
-The first run creates `config.toml` in the project root — edit it to point at
-your server, or configure it without leaving the chat (see [Commands](#commands)).
+The first run writes `~/.ahacode/config.toml` pointing at `localhost:8888`. Point
+it at your own server with `/url` — Ollama serves `localhost:11434`, vLLM
+`localhost:8000` — or edit the file; see [Configuration](#configuration).
 
 ## Commands
 
@@ -179,10 +204,18 @@ and are not recorded in your session.
 
 ## Configuration
 
+Settings live in two layers. Which server to talk to is a fact about your machine,
+not about any one project, so it lives once in `~/.ahacode/config.toml` — written
+with commented defaults on first run, and the file `/url` and `/model` update. A
+project that wants something different can drop its own `.ahacode/config.toml`
+beside its sessions; it is merged **key by key** over the global one, so overriding
+the model does not mean restating the endpoint. There is no project file unless you
+write one.
+
 ```toml
 [model]
-base_url = "http://127.0.0.1:8078/v1"
-name = "qwen38-nvfp4"
+base_url = "http://localhost:8888/v1"    # Ollama is :11434 · vLLM is :8000
+name = "qwen3.8-flash-next"
 api_key = "EMPTY"            # many local servers ignore this, but the SDK requires one
 timeout = 60.0               # seconds; caps how long a read may block between chunks
 thinking_token_budget = 4096 # per-turn reasoning cap; 0 = unbounded
@@ -194,10 +227,9 @@ context_window = 32768       # your model's window, in tokens; 0 disables compac
 [agent]
 subagent_depth = 1        # generations of sub-agents that may nest (0 = none)
 max_parallel_agents = 8   # cap on concurrent requests (1 = serialise sub-agents)
-# max_parallel_agents, subagent_depth, context_window, compact_threshold and the
-# per-mode thinking budgets (plan/impl/subagent) are editable live from the
-# ⚙ Agents button — set max_parallel_agents to 1 to keep a single GPU from being
-# double-loaded, and give plan a bigger thinking budget than impl/subagent.
+# Every field on this page is editable live from the ⚙ Settings button — set
+# max_parallel_agents to 1 to keep a single GPU from being double-loaded, and give
+# plan a bigger thinking budget than impl/subagent.
 compact_threshold = 0.8   # condense once a request reaches this fraction of the window
 keep_recent_messages = 6  # newest messages always kept verbatim
 ```
@@ -213,9 +245,9 @@ per-turn budget only caps *one* turn, so the re-thinking stacks across a long lo
 One session per file, one message per line, append-only:
 
 ```bash
-ls sessions/
-cat sessions/2026-08-18_212512.jsonl
-tail -f sessions/*.jsonl   # watch messages land in real time
+ls .ahacode/sessions/
+cat .ahacode/sessions/2026-08-18_212512.jsonl
+tail -f .ahacode/sessions/*.jsonl   # watch messages land in real time
 ```
 
 The first line of each file is a header — `{"type":"header","id","parent_id",
@@ -223,8 +255,9 @@ The first line of each file is a header — `{"type":"header","id","parent_id",
 session that spawned it. The tree in the picker is derived by scanning those
 headers; a parent never stores a child list, which keeps every write an append.
 
-Both `config.toml` and `sessions/` are git-ignored — your key and your
-conversations never end up in a commit.
+Everything a run generates — `sessions/`, `plans/`, `scratch/`, and a project
+`config.toml` if you wrote one — sits under the single hidden `.ahacode/`, so one
+`.gitignore` line keeps your key and your conversations out of every commit.
 
 ## Architecture
 
@@ -252,7 +285,9 @@ ahacode/
 │   └── __init__.py   #   the registry, and the depth gate that hands out `task`
 │
 ├── client.py         # LLM I/O — the only module that talks to a provider
-├── config.py         # config.toml in the project root
+├── workspace.py      # PROJECT_ROOT = the directory AhaCode was launched in
+├── shell.py          # which shell a bash call gets, and how to kill its tree
+├── config.py         # ~/.ahacode/config.toml + the project's optional override
 ├── session.py        # conversation state (plain Python, widget-free)
 ├── storage.py        # JSONL persistence + the session tree (./sessions/)
 ├── ahacode.tcss      # styles (no inline CSS)
@@ -282,10 +317,19 @@ Design rules the codebase sticks to:
 ## Development
 
 ```bash
+git clone https://github.com/chycs7747/AhaCode && cd AhaCode
+uv sync
+
 uv run pytest -q                        # unit + headless TUI tests (Textual Pilot)
 uv run textual run --dev ahacode.app    # run with devtools attached
 uv run textual console                  # live logs in a second terminal
+
+uv tool install -e .                    # `ahacode` everywhere, live off this checkout
 ```
+
+`uv tool install -e` links the installed command at this working copy, so edits
+land on the next run with no reinstall. Only a change to `dependencies` or to
+`[project.scripts]` needs `--reinstall`.
 
 Tests replace the LLM with an offline fake via `monkeypatch`, so the suite runs
 without a server — including the TUI tests, which drive the real app through
