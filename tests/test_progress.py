@@ -8,10 +8,11 @@ alike. Everything here is about the elapsed second that tells them apart.
 import time
 
 import pytest
+from rich.cells import cell_len
 
-from ahacode import client, config, storage
-from ahacode.app import AhaCodeApp
-from ahacode.events import TextDelta, ToolCall, ToolResult
+from ahacode import agent, client, config, storage
+from ahacode.app import _PHASE_ID, AhaCodeApp
+from ahacode.events import Phase, TextDelta, ToolCall, ToolResult
 from ahacode.widgets.subagent_card import SubagentCard
 
 
@@ -47,7 +48,16 @@ async def test_a_running_tool_counts_up():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("width", [80, 100, 120])
-async def test_the_status_fits_the_bar_it_lives_in(width):
+@pytest.mark.parametrize("label, ago", [
+    ("bash", 87),
+    # Korean costs two cells per character, so a label that reads fine in source
+    # can still lose the seconds at the end. "컨텍스트 압축" needed 23 of the 18
+    # cells the bar leaves at width 80 and truncated to "● 컨텍스트 압축 ·" —
+    # everything except the number it exists to show. 1220s covers a 20-minute
+    # compaction, the longest run actually observed.
+    (agent.COMPACTING, 1220),
+])
+async def test_the_status_fits_the_bar_it_lives_in(width, label, ago):
     """The counter was invisible on an 80-wide terminal: the composer's fixed
     controls left the flexible status 7 columns, enough for the bullet and nothing
     else. Counting seconds nobody can read is the same as not counting."""
@@ -56,14 +66,16 @@ async def test_the_status_fits_the_bar_it_lives_in(width):
     app = AhaCodeApp()
     async with app.run_test(size=(width, 30)) as pilot:
         await pilot.pause()
-        app._running_tools["1"] = ("bash", time.monotonic() - 87)
+        app._running_tools["1"] = (label, time.monotonic() - ago)
         app._tick_progress()
         await pilot.pause()
         status = app.query_one("#status", Static)
         rows = [status.render_line(y).text.strip() for y in range(status.region.height)]
+    # cell_len, not len: Korean is two cells per character, which is the whole
+    # reason a label can measure "short" in source and still not fit.
     assert app._last_status in rows, (
         f"{width} columns: status area is {status.region.width} wide, "
-        f"needs {len(app._last_status)} for {app._last_status!r}"
+        f"needs {cell_len(app._last_status)} for {app._last_status!r}"
     )
 
 
@@ -106,6 +118,58 @@ async def test_a_subagents_tool_does_not_claim_the_status_line():
         await app._render_event(
             ToolCall(id="9", name="grep", arguments={"pattern": "x"}),
             _boxes(gate=False), container)          # a child's boxes carry no gate
+        assert not app._running_tools
+
+
+@pytest.mark.asyncio
+async def test_compaction_counts_up_like_a_tool():
+    """Compaction was the last silent stretch: one model call over the whole
+    history, no stream, no tool, minutes long. It reported only once it was over,
+    by which time the user had already read the still screen as a freeze."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        container = app.query_one("#chat-container")
+        await app._render_event(Phase(agent.COMPACTING), _boxes(), container)
+        assert agent.COMPACTING in app._last_status
+        app._running_tools[_PHASE_ID] = (agent.COMPACTING, time.monotonic() - 122)
+        app._tick_progress()
+        assert "122초" in app._last_status
+
+
+@pytest.mark.asyncio
+async def test_a_finished_compaction_stops_being_counted():
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        container = app.query_one("#chat-container")
+        boxes = _boxes()
+        await app._render_event(Phase(agent.COMPACTING), boxes, container)
+        assert app._running_tools
+        await app._render_event(Phase(agent.COMPACTING, done=True), boxes, container)
+        assert not app._running_tools
+
+
+@pytest.mark.asyncio
+async def test_a_subagents_compaction_does_not_claim_the_status_line():
+    """A child compacts its own history; its card already carries a ticking clock,
+    and letting it drive the one status line would speak over the parent."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        container = app.query_one("#chat-container")
+        await app._render_event(Phase(agent.COMPACTING), _boxes(gate=False), container)
+        assert not app._running_tools
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_turn_stops_the_clock():
+    """Esc during a tool never delivers its ToolResult, so the entry that the
+    result would have retired stays — and the counter goes on claiming work is
+    running for an app that stopped. Ending the turn is what clears it."""
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        app._running_tools["1"] = ("bash", time.monotonic() - 30)
+        app._set_send_running(False)
+        assert not app._running_tools
+        app._tick_progress()  # and nothing revives it
         assert not app._running_tools
 
 

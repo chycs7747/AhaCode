@@ -75,6 +75,23 @@ class Notice:
 
 
 @dataclass
+class Phase:
+    """A stretch of HARNESS work that streams nothing while it runs.
+
+    Every other slow thing here reports as it goes: a tool is timed in the status
+    line, a model turn arrives token by token. Compaction does neither — it is one
+    synchronous model call over the whole history, routinely a minute or more, and
+    the last screen the user saw stays frozen for all of it. That is the picture a
+    real deadlock makes, so the two became indistinguishable in practice.
+
+    Sent in pairs: `done=False` opens the stretch, `done=True` closes it.
+    """
+
+    name: str
+    done: bool = False
+
+
+@dataclass
 class Usage:
     """Token accounting for one model call, from the stream's usage trailer
     (choices=[] chunk sent when stream_options.include_usage is on)."""
@@ -87,5 +104,6 @@ class Usage:
 # The union every consumer switches on. isinstance(event, TextDelta) is the
 # Python equivalent of matching on a discriminated-union `type` tag.
 Event = (
-    ThinkingDelta | TextDelta | ToolCallDelta | ToolCall | ToolResult | Notice | Usage
+    ThinkingDelta | TextDelta | ToolCallDelta | ToolCall | ToolResult | Notice
+    | Phase | Usage
 )

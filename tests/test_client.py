@@ -320,6 +320,23 @@ def test_complete_also_pins_its_sampling(monkeypatch):
     assert client.complete([{"role": "user", "content": "title this"}]) == "t"
     assert seen["temperature"] == 0.7          # a title is not a thinking task
     assert seen["extra_body"]["top_k"] == 20
+    # ...and the model is told so, not just sampled as if it had been. Sending the
+    # decisive profile while leaving a 4096-token reasoning budget on is the worst
+    # of both, and it is compaction that pays: minutes of chain-of-thought before
+    # the first word of a summary of text the model was already given.
+    assert seen["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_a_non_qwen_utility_call_still_turns_thinking_off(monkeypatch):
+    """The sampling profiles are Qwen-specific and return nothing for other
+    families — so a DeepSeek or GLM endpoint used to get no thinking switch at all
+    from this path, which is where the cost actually lands."""
+    seen = {}
+    reply = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="t"))])
+    fc = _fake_client(lambda **kw: (seen.update(kw), reply)[1])
+    monkeypatch.setattr(client, "_ensure_client", lambda: (fc, _cfg(name="deepseek-r1")))
+    assert client.complete([{"role": "user", "content": "summarize"}]) == "t"
+    assert seen["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def test_stream_chat_uses_the_active_mode_thinking_budget(monkeypatch):

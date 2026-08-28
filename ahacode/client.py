@@ -433,9 +433,17 @@ def complete(messages: list[dict]) -> str:
     client, cfg = _ensure_client()
     # Same reason as stream_chat: never leave the sampling to whatever the server
     # happens to default to. A title or a summary is not a thinking task, so it takes
-    # the non-thinking profile. (Thinking itself is left alone here — this helper does
-    # not switch it, and turning it off would be a separate decision.)
+    # the non-thinking profile.
     sample_kwargs, sample_extra = sampling_for(cfg.name, no_think=True)
+    # ...and thinking itself is switched off to match, not just the sampling. This
+    # used to send the no-think profile to a model still doing full chain-of-thought,
+    # which is the worst of both: the sampling says "be decisive", the budget says
+    # "deliberate for 4096 tokens". Compaction runs here, so on a thinking model the
+    # summary of a long session paid a minutes-long reasoning pass before its first
+    # word — a wait with no stream behind it, which is how one measured six-minute
+    # compaction read as a frozen app. Nothing here needs deliberation: a title and a
+    # condensed transcript are both restatements of text already in the prompt.
+    sample_extra["chat_template_kwargs"] = {"enable_thinking": False}
     if cfg.base_url in _NO_EXTRAS:
         sample_extra = {}
     try:

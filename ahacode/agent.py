@@ -17,7 +17,9 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 from ahacode import client, context, prompts, tools
-from ahacode.events import Event, Notice, TextDelta, ToolCall, ToolResult, Usage
+from ahacode.events import (
+    Event, Notice, Phase, TextDelta, ToolCall, ToolResult, Usage,
+)
 
 # Type aliases spelling out the seams the app (and tests) plug into.
 StreamFn = Callable[[list[dict], list[dict] | None], Iterator[Event]]
@@ -27,6 +29,12 @@ ApproveFn = Callable[[ToolCall], bool]
 
 # Tool-call rounds one user message may take before the tool-free wrap-up turn.
 DEFAULT_MAX_TURNS = 10
+
+# What the status line calls the compaction pass while it blocks the loop. Short
+# because it has to be: the composer bar leaves the status 18 cells on an 80-wide
+# terminal and Korean costs two each, so "컨텍스트 압축" (23 with the clock) loses
+# exactly the seconds it is there to show. The Notice afterwards says the rest.
+COMPACTING = "압축 중"
 
 # Names models reach for that this project spells differently — mapped to the tool
 # that actually does the job. Not aliases: the call still fails. This exists so the
@@ -96,6 +104,28 @@ def _compaction_note(done: context.Compaction) -> str:
     if done.pruned_chars:
         return f"🗜 컨텍스트 확보를 위해 오래된 도구 출력 {done.pruned_chars:,}자를 비웠어요."
     return f"🗜 컨텍스트 한계에 가까워 이전 메시지 {done.summarized}개를 요약으로 압축했어요."
+
+
+def _announced_summarize(
+    summarize: context.SummarizeFn | None, emit: EmitFn
+) -> context.SummarizeFn:
+    """Wrap the summarizer so the UI is told while it runs.
+
+    The bracket goes HERE rather than around maybe_compact because only this half
+    is slow, and only sometimes: most calls return under the threshold without
+    doing anything, and pruning is pure string work. Announcing the whole of
+    maybe_compact would flash an indicator on every turn for work that already
+    finished. This fires exactly when a model call is about to block the loop.
+    """
+
+    def run(older: list[dict]) -> str:
+        emit(Phase(COMPACTING))
+        try:
+            return (summarize or context.llm_summarize)(older)
+        finally:
+            emit(Phase(COMPACTING, done=True))
+
+    return run
 
 
 def _assistant_message(text: str, tool_calls: list[ToolCall]) -> dict:
@@ -239,7 +269,9 @@ def run(
 
         # Condense BEFORE sending, so this turn's request fits. `appended` is
         # untouched by this, so a compacted run still persists its real messages.
-        done = context.maybe_compact(messages, prompt_tokens, summarize=summarize)
+        done = context.maybe_compact(
+            messages, prompt_tokens, summarize=_announced_summarize(summarize, emit)
+        )
         if done:
             prompt_tokens = None  # the old count no longer describes this prompt
             emit(Notice(_compaction_note(done)))

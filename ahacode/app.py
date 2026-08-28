@@ -21,7 +21,7 @@ from ahacode import (
 from ahacode.tools import plan as plan_tool  # non_actionable(): plan-step sanity check
 from ahacode.tools import spill
 from ahacode.events import (
-    Notice, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage,
+    Notice, Phase, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage,
 )
 from ahacode.render import diff_stats, edit_diff_lines, tool_summary
 from ahacode.session import ChatSession
@@ -40,6 +40,11 @@ from ahacode.widgets.model_bar import ModelBar
 
 
 # System prompts now live in ahacode/prompts.py (assembled per mode/model).
+
+# Harness phases share _running_tools with the tools so they get the same ticking
+# clock. This is the id they book it under: not a call id, so it cannot collide
+# with one, and a single slot because phases do not nest.
+_PHASE_ID = "\0phase"
 
 # Eye-friendly Markdown palette. Rich's defaults paint headings magenta and inline
 # code "bold cyan on black" — harsh reds/boxes on a dark terminal. We push softer
@@ -320,6 +325,13 @@ class AhaCodeApp(App):
         callback whose only remaining job is to tidy up, turning an orderly shutdown
         into a crash. Nothing to update is a valid outcome here.
         """
+        if not running:
+            # Whatever was in flight is over, however it ended. A cancelled turn
+            # never delivers the ToolResult (or the closing Phase) that would have
+            # retired its entry, and a leftover entry means _tick_progress goes on
+            # counting up for work that stopped — the exact lie the counter exists
+            # to prevent.
+            self._running_tools.clear()
         for btn in self.query("#send-btn").results(Button):
             btn.label = "■ Stop" if running else "↑ Send"
             btn.variant = "error" if running else "primary"
@@ -1085,6 +1097,19 @@ class AhaCodeApp(App):
             self._fold_thinking(boxes)
             boxes["answer"] = None
             await container.mount(Chatbox(event.text, role="system"))
+        elif isinstance(event, Phase):
+            # Harness work with a duration, timed by the same clock the tools use —
+            # the point is a number that moves, because a static line is the picture
+            # a deadlock makes. A sub-agent's phases are skipped for the same reason
+            # its tools are (its card carries its own ticking clock); the gate check
+            # is what tells the two apart.
+            if not boxes.get("gate"):
+                return
+            if event.done:
+                self._running_tools.pop(_PHASE_ID, None)
+            else:
+                self._running_tools[_PHASE_ID] = (event.name, time.monotonic())
+                self._status(f"● {event.name} · 0초")
         elif isinstance(event, ThinkingDelta):
             if boxes["thinking"] is None:
                 boxes["thinking"] = ThinkingBlock()  # foldable; starts expanded

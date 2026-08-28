@@ -4,7 +4,7 @@ the transcript on disk stays complete when the in-flight copy is compacted."""
 import pytest
 
 from ahacode import agent, config, context, subagent
-from ahacode.events import Notice, TextDelta, ToolCall, Usage
+from ahacode.events import Notice, Phase, TextDelta, ToolCall, Usage
 
 CFG = config.DEFAULTS
 
@@ -208,6 +208,89 @@ def test_subagent_transcript_is_complete_after_compaction(monkeypatch):
 def _fake_read():
     from ahacode.tools.base import Tool
     return Tool(name="read", description="", parameters={}, execute=lambda a: "contents")
+
+
+# --- compaction has to say it is running, not only that it ran --------------
+
+def _phases(events):
+    return [(e.name, e.done) for e in events if isinstance(e, Phase)]
+
+
+def test_compaction_announces_itself_while_it_blocks(monkeypatch):
+    """The Notice arrives when compaction is OVER. Between the user's message and
+    that Notice sits one synchronous model call over the whole history — minutes,
+    with nothing on screen changing. That gap is what made a working app and a
+    deadlocked one look identical, so the slow half brackets itself."""
+    monkeypatch.setattr(config, "load", lambda: _cfg(context_window=1, keep_recent_messages=1))
+    events: list = []
+
+    def summarize(older):
+        # Mid-call: the UI must already know, because this is the part that blocks.
+        assert _phases(events) == [(agent.COMPACTING, False)]
+        return "condensed"
+
+    agent.run(
+        [{"role": "system", "content": "s"},
+         {"role": "user", "content": "old"},
+         {"role": "assistant", "content": "a"},
+         {"role": "user", "content": "new"}],
+        emit=events.append,
+        stream=lambda m, tools=None: iter([TextDelta("done")]),
+        summarize=summarize,
+    )
+    assert _phases(events) == [(agent.COMPACTING, False), (agent.COMPACTING, True)]
+    # and it still closes with the after-the-fact Notice
+    assert any(isinstance(e, Notice) for e in events)
+
+
+def test_a_turn_that_does_not_compact_announces_nothing(monkeypatch):
+    """maybe_compact runs before EVERY turn and almost always returns under the
+    threshold. Bracketing the whole of it would flash an indicator on each one."""
+    monkeypatch.setattr(config, "load", lambda: _cfg(context_window=100_000))
+    events: list = []
+    agent.run(
+        [{"role": "user", "content": "hi"}],
+        emit=events.append,
+        stream=lambda m, tools=None: iter([TextDelta("hello")]),
+        summarize=lambda m: "never called",
+    )
+    assert _phases(events) == []
+
+
+def test_a_pruned_turn_announces_nothing(monkeypatch):
+    """Pruning is pure string work — it returns before the slow half is reached,
+    so there is no wait to explain."""
+    monkeypatch.setattr(config, "load", lambda: _cfg(context_window=1, keep_recent_messages=1))
+    events: list = []
+    agent.run(
+        _subagent_history(20_000),
+        emit=events.append,
+        stream=lambda m, tools=None: iter([TextDelta("done")]),
+        summarize=lambda m: "never called",
+    )
+    assert _phases(events) == []
+
+
+def test_the_phase_closes_even_when_summarizing_fails(monkeypatch):
+    """A crashed summarizer must not leave the indicator up forever — that would
+    be a permanent 'still working' on an app that stopped."""
+    monkeypatch.setattr(config, "load", lambda: _cfg(context_window=1, keep_recent_messages=1))
+    events: list = []
+
+    def boom(older):
+        raise RuntimeError("gateway said no")
+
+    with pytest.raises(RuntimeError):
+        agent.run(
+            [{"role": "system", "content": "s"},
+             {"role": "user", "content": "old"},
+             {"role": "assistant", "content": "a"},
+             {"role": "user", "content": "new"}],
+            emit=events.append,
+            stream=lambda m, tools=None: iter([TextDelta("x")]),
+            summarize=boom,
+        )
+    assert _phases(events) == [(agent.COMPACTING, False), (agent.COMPACTING, True)]
 
 
 # --- prune: the cheap pass, and the only one a sub-agent can use ------------
