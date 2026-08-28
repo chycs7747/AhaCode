@@ -107,6 +107,22 @@ def test_complete_degrades_too():
     assert not _Picky.seen[-1].get("extra_body")
 
 
+@pytest.mark.parametrize("model, expects_profile", [
+    ("qwen3.8-flash-next", True),
+    ("Qwen2.5-Coder-32B", True),
+    ("deepseek-r1-distill-32b", False),
+    ("llama-3.3-70b", False),
+    ("mistral-small", False),
+    ("gpt-oss-120b", False),
+])
+def test_sampling_is_only_sent_to_a_model_it_was_tuned_for(model, expects_profile):
+    """prompts.family() falls back to qwen because a prompt must pick something.
+    Sampling must not: temperature 1.0 / top_k 20 / min_p 0 is a Qwen3 profile, and
+    guessing it onto Llama or DeepSeek is worse than letting the server default."""
+    kwargs, extra = client.sampling_for(model, no_think=False)
+    assert bool(kwargs or extra) is expects_profile, model
+
+
 def test_reset_re_probes():
     """Changing the endpoint or its config is the moment to try the extras again."""
     list(client.stream_chat([{"role": "user", "content": "a"}]))

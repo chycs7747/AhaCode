@@ -70,13 +70,26 @@ SAMPLING: dict[str, dict[str, dict]] = {
 }
 
 
+def _sampling_family(model: str) -> str | None:
+    """The sampling profile that fits this model, or None.
+
+    Deliberately NOT prompts.family(), which falls back to "qwen" for anything it
+    does not recognise — a prompt has to pick something, so a default is right
+    there. Sampling has no such obligation, and the values are model-specific: the
+    Qwen3 profile below (temperature 1.0, top_k 20, min_p 0) is a worse guess for
+    Llama or DeepSeek than sending nothing and letting the server apply its own.
+    """
+    name = (model or "").lower()
+    return "qwen" if "qwen" in name else None
+
+
 def sampling_for(model: str, *, no_think: bool) -> tuple[dict, dict]:
     """(request kwargs, extra_body) for this model in this mode.
 
     An unknown family gets nothing — better to let that provider apply its own
     default than to send it parameters it may not understand.
     """
-    profile = SAMPLING.get(prompts.family(model))
+    profile = SAMPLING.get(_sampling_family(model))
     if not profile:
         return {}, {}
     slot = profile["nothink" if no_think else "think"]
