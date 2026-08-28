@@ -10,7 +10,8 @@ import json
 import shutil
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from ahacode.workspace import PROJECT_ROOT  # the launch directory — see workspace.py
+
 # Every file the app generates lives under here, so the project root stays clean and
 # .gitignore needs one line. On-demand mkdir (below) creates the subdirs as needed.
 AHACODE_DIR = PROJECT_ROOT / ".ahacode"
@@ -336,7 +337,11 @@ def display_path(path: Path) -> str:
     try:
         return path.relative_to(PROJECT_ROOT).as_posix()
     except ValueError:
-        return str(path)
+        # Outside the project — still as_posix, not str: this string is handed to the
+        # model, which puts it straight into read() and into bash, where a Windows
+        # backslash is an escape character rather than a separator. Forward slashes
+        # are accepted as paths on Windows too; the drive letter survives either way.
+        return path.as_posix()
 
 
 def plan_title(path: Path) -> str:

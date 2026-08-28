@@ -1,16 +1,34 @@
-"""User configuration — config.toml under ./.ahacode/, created on first load."""
+"""User configuration, in two layers.
+
+Which endpoint to talk to is a fact about your machine, not about any one project,
+so it lives once in ~/.ahacode/config.toml. Everything a project generates —
+sessions, plans, scratch — lives in that project's own ./.ahacode/, and a
+config.toml there is an optional override for the rare project that wants a
+different model. Absent (the normal case) the global file is used as-is.
+"""
 
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-# ./.ahacode/config.toml — grouped with sessions/ and plans/ under the one hidden
-# folder, kept out of git. save() mkdirs the parent, so first run creates it.
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from ahacode.workspace import GLOBAL_DIR, PROJECT_ROOT
+
+# Written with commented defaults on first run, and the file /url and /model
+# update unless the project has claimed an override of its own.
+GLOBAL_CONFIG_PATH = GLOBAL_DIR / "config.toml"
+# ./.ahacode/config.toml — optional, and grouped with sessions/ and plans/ under the
+# one hidden folder, kept out of git. Never created automatically: a project only
+# gets an override when you write one.
 CONFIG_PATH = PROJECT_ROOT / ".ahacode" / "config.toml"
 
-DEFAULT_BASE_URL = "http://localhost:9000/v1"
-DEFAULT_MODEL = "qwen38"
+# A first run has to point somewhere, and the only defensible somewhere is this
+# machine: a private address baked in as the default fails for everyone but its
+# owner, and fails at the first request with a connection error rather than
+# anything that explains itself. Ollama serves http://localhost:11434/v1 and vLLM
+# http://localhost:8000/v1 — change it with /url, and the model with /model or the
+# picker under the prompt.
+DEFAULT_BASE_URL = "http://localhost:8888/v1"
+DEFAULT_MODEL = "qwen3.8-flash-next"
 DEFAULT_API_KEY = "EMPTY"
 DEFAULT_TIMEOUT = 900.0
 DEFAULT_SUBAGENT_DEPTH = 1  # generations of sub-agents that may nest (0 = none)
@@ -122,7 +140,7 @@ def _render(cfg: ModelConfig) -> str:
 # Editable here, or from inside the chat with /model and /url.
 
 [model]
-base_url = "{cfg.base_url}"
+base_url = "{cfg.base_url}"  # Ollama: http://localhost:11434/v1 · vLLM: http://localhost:8000/v1
 name = "{cfg.name}"
 api_key = "{cfg.api_key}"  # many local servers ignore this, but the SDK requires one
 timeout = {cfg.timeout}    # seconds; caps how long a read may block between chunks
@@ -160,20 +178,59 @@ allow = {allow!r}
 """
 
 
+def _read(path: Path) -> dict:
+    """The raw TOML of one config file, or {} when there isn't one."""
+    if not path.exists():
+        return {}
+    with path.open("rb") as f:  # tomllib requires binary mode
+        return tomllib.load(f)
+
+
+def _layer(base: dict, over: dict) -> dict:
+    """Merge one config file over another per section AND per key, so a project file
+    that sets only [model].name still inherits the global endpoint. Merging whole
+    sections instead would make any override a full copy of the section — the one
+    key you meant to change, plus stale duplicates of every key you didn't."""
+    out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in base.items()}
+    for k, v in over.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k].update(v)
+        else:
+            out[k] = v
+    return out
+
+
 def save(cfg: ModelConfig, path: Path | None = None) -> None:
-    """Write the config file (used by first-run defaults and /commands)."""
-    path = path or CONFIG_PATH
+    """Write the config file (used by first-run defaults and /commands).
+
+    With no path, writes wherever this project's settings already live: its own
+    override if it has one, else the global file. So /url in a fresh project
+    configures every project — the endpoint is set once — while /model in a project
+    that has claimed an override stays local to it.
+    """
+    path = path or (CONFIG_PATH if CONFIG_PATH.exists() else GLOBAL_CONFIG_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_render(cfg), encoding="utf-8")
 
 
 def load(path: Path | None = None) -> ModelConfig:
-    """Load the model config, writing a commented default file on first run."""
-    path = path or CONFIG_PATH
-    if not path.exists():
-        save(DEFAULTS, path)
-    with path.open("rb") as f:  # tomllib requires binary mode
-        data = tomllib.load(f)
+    """Load the model config, writing a commented default file on first run.
+
+    With no path: the global file with this project's override layered on top. An
+    explicit path loads that one file alone (no layering) — which is what the tests
+    and any caller pointing at a specific file want.
+    """
+    if path is not None:
+        if not path.exists():
+            save(DEFAULTS, path)
+        return _build(_read(path))
+    if not GLOBAL_CONFIG_PATH.exists():
+        save(DEFAULTS, GLOBAL_CONFIG_PATH)
+    return _build(_layer(_read(GLOBAL_CONFIG_PATH), _read(CONFIG_PATH)))
+
+
+def _build(data: dict) -> ModelConfig:
+    """Turn merged TOML into the frozen config object."""
     model = data.get("model", {})
     agent = data.get("agent", {})
     perms = data.get("permissions", {})

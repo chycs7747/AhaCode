@@ -8,12 +8,40 @@ was noticed, because a timeout kills only the shell and leaves the tree orphaned
 A comment would not have prevented it. This does.
 """
 
+import re
 import subprocess
 
 import pytest
 
-# Anything that would start another test run of this project.
-_RECURSIVE = ("pytest", "uv run", "tox")
+from ahacode import config
+
+# Anything that would start another test run of this project. Matched as COMMANDS,
+# not as substrings: pytest's own tmp_path is C:\...\pytest-of-<user>\pytest-91\...,
+# so a plain `in` test flags every command that merely touches a temp file. The
+# lookarounds reject a hit that is glued to a path separator, a word character, or a
+# hyphen — which is every path-shaped occurrence, and none of the real invocations.
+_RECURSIVE = tuple(
+    re.compile(rf"(?<![\w./\\-]){pattern}(?![\w./\\-])")
+    for pattern in (r"pytest", r"uv\s+run", r"tox")
+)
+
+
+@pytest.fixture(autouse=True)
+def isolated_config(monkeypatch, tmp_path):
+    """Point BOTH config layers at tmp, for every test.
+
+    config.load() reads the global file on every call and creates it on first run,
+    and config.save() writes to whichever layer is in play — so without this a test
+    run writes settings into the developer's home and into the working copy's own
+    .ahacode/, then reads them back, making results depend on the machine it ran on.
+    A project config left behind that way also outranks the global one at runtime,
+    which is a confusing thing to debug long after the test that wrote it.
+
+    Tests needing a specific project override still patch config.CONFIG_PATH in their
+    own fixture; a module-level autouse fixture runs after this one, so theirs wins.
+    """
+    monkeypatch.setattr(config, "GLOBAL_CONFIG_PATH", tmp_path / "global-config.toml")
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "project-config.toml")
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +52,7 @@ def no_recursive_test_runs(monkeypatch):
     def guard(command, *args, **kwargs):
         text = command if isinstance(command, str) else " ".join(map(str, command))
         for needle in _RECURSIVE:
-            if needle in text:
+            if needle.search(text):
                 raise AssertionError(
                     f"a test tried to run the test suite as a subprocess: {text!r}\n"
                     "That re-enters this file and forks exponentially. Use a trivial "

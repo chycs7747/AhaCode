@@ -11,9 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Tools resolve relative paths / run commands against the project root, so the
-# agent's "workspace" matches where AhaCode was launched. Defined once here.
-# tools/base.py -> tools -> ahacode -> <project root>
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+# agent's "workspace" matches where AhaCode was launched — which is what
+# workspace.PROJECT_ROOT is. Re-exported here because every tool module imports it
+# from base, and because the tests swap it per-module to sandbox a run.
+from ahacode.workspace import PROJECT_ROOT
 
 
 def resolve_path(path: str) -> Path:
