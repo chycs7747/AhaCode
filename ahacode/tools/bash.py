@@ -10,12 +10,10 @@ a denylist can be worded around; the real safeguard is the human approval modal.
 
 from __future__ import annotations
 
-import os
 import re
-import signal
 import subprocess
 
-from ahacode import config
+from ahacode import config, shell
 from ahacode.text import elide, line_count
 from ahacode.tools import spill
 from ahacode.tools.base import PROJECT_ROOT, Tool
@@ -87,40 +85,18 @@ def _resolve_timeout(requested) -> int:
         return config.load().bash_timeout
 
 
-def _kill_tree(proc: subprocess.Popen) -> None:
-    """Kill the command AND everything it started.
-
-    subprocess.run's own timeout handling kills only the direct child — the shell —
-    so whatever that shell launched is orphaned and keeps running. Not theoretical:
-    a few timed-out `uv run pytest` calls once left ~140 stray processes behind and
-    took the load average to 198. start_new_session puts the command in its own
-    process group; killing the GROUP is what actually stops the tree.
-    """
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except OSError:  # already gone, or not permitted — settle for the direct child
-        proc.kill()
-
-
 def _bash(args: dict) -> str:
     seconds = _resolve_timeout(args.get("timeout"))
-    # shell=True: the model writes ordinary shell (pipes, globs). stderr folds into
-    # stdout so the model sees errors too. Popen rather than run() so a timeout can
-    # kill the whole process group (see _kill_tree).
-    proc = subprocess.Popen(
-        args["command"],
-        shell=True,
-        cwd=PROJECT_ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        start_new_session=True,
-    )
+    # The model writes ordinary shell (pipes, globs), stderr folds into stdout so it
+    # sees errors too, and the command gets its own process group so a timeout can
+    # kill the whole tree. Which shell that is — and how to kill it — is per-platform;
+    # shell.py owns that.
+    proc = shell.popen(args["command"], cwd=PROJECT_ROOT)
     try:
         out, _ = proc.communicate(timeout=seconds)
         return _finish(out, proc.returncode)
     except subprocess.TimeoutExpired:
-        _kill_tree(proc)
+        shell.kill_tree(proc)
         # Keep what it managed to produce. Discarding it tells the model nothing about
         # how far the command got — which is the one thing that makes a timeout
         # actionable (a suite that printed 200 passing lines before being killed is
@@ -134,8 +110,12 @@ def _bash(args: dict) -> str:
         return _finish(out, None)
 
 
-def _finish(out: str, returncode: int | None) -> str:
+def _finish(out: str | None, returncode: int | None) -> str:
     """Spill if oversized, note a failing exit code, and hand back the text."""
+    # communicate() hands back None for a pipe whose reader thread died. shell.py
+    # fixes the cause (a locale-decoding crash on non-ASCII output); this makes the
+    # symptom a turn that says "(no output)" rather than one that raises.
+    out = out or ""
     if len(out) > _SPILL_OVER_CHARS:
         out = _spilled(out)
     if returncode:

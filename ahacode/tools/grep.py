@@ -32,7 +32,9 @@ def _grep(args: dict) -> str:
         text = read_text_or_none(path)  # None for binary/oversized/unreadable
         if text is None:
             continue
-        name = str(path.relative_to(PROJECT_ROOT)) if path.is_relative_to(PROJECT_ROOT) else str(path)
+        # as_posix so a Windows result reads ahacode/grep.py, not ahacode\grep.py —
+        # the model feeds these paths straight back into read() and into bash.
+        name = path.relative_to(PROJECT_ROOT).as_posix() if path.is_relative_to(PROJECT_ROOT) else str(path)
         matched_here = False
         for lineno, line in enumerate(text.splitlines(), start=1):
             if not regex.search(line):

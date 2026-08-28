@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import platform
 
-from ahacode import config, storage
+from ahacode import config, shell, storage
 
 # --- raw layers -----------------------------------------------------------
 
@@ -213,7 +213,10 @@ def environment_block(model: str | None = None) -> str:
     cfg = config.load()
     return (
         "# Environment\n"
-        f"- OS: {platform.system()} · shell: bash · cwd: {storage.PROJECT_ROOT}\n"
+        # The real shell, not an assumed one: on a Windows box without Git bash the
+        # bash tool runs cmd, and a model told "bash" would keep writing syntax that
+        # cannot run there.
+        f"- OS: {platform.system()} · shell: {shell.NAME} · cwd: {storage.PROJECT_ROOT}\n"
         f"- model: {model or cfg.name}"
     )
 

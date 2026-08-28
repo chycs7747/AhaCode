@@ -1,8 +1,21 @@
+import sys
 import time
+from pathlib import Path
 
 import pytest
 
-from ahacode import config, tools
+from ahacode import config, shell, tools
+
+# The interpreter running these tests, as a path the shell will not mangle: on
+# Windows sys.executable is C:\...\python.exe, and bash reads every backslash as an
+# escape. Forward slashes work in both. "python3" would not work at all — Windows
+# names it python.exe, and the bare name hits the Store alias stub.
+PY = Path(sys.executable).as_posix()
+# A Windows box with no bash runs cmd (see ahacode/shell.py), which shares none of
+# this syntax. The tool is honest about that; these tests skip rather than pretend.
+needs_posix_shell = pytest.mark.skipif(
+    shell.NAME != "bash", reason="needs a POSIX shell — install Git for Windows"
+)
 
 
 def test_read_returns_file_contents(tmp_path):
@@ -38,7 +51,7 @@ def test_bash_spills_big_output_instead_of_discarding_it(tmp_path, monkeypatch):
 
     monkeypatch.setattr(spill, "_session_dir", tmp_path / "s-out")
     out = bash_mod.BASH.execute(
-        {"command": "python3 -c \"print('HEAD'); print('x'*80000); print('TAIL')\""}
+        {"command": f"{PY} -c \"print('HEAD'); print('x'*80000); print('TAIL')\""}
     )
     assert out.startswith("[output was 80,0")     # the header stands in for the bulk
     assert "HEAD" in out and "TAIL" in out         # both ends survive in the preview
@@ -67,12 +80,59 @@ def test_bash_falls_back_to_truncation_when_it_cannot_spill(tmp_path, monkeypatc
 
     monkeypatch.setattr(spill, "write", lambda text, prefix="out": None)
     out = bash_mod.BASH.execute(
-        {"command": "python3 -c \"print('HEAD'); print('x'*80000); print('TAIL')\""}
+        {"command": f"{PY} -c \"print('HEAD'); print('x'*80000); print('TAIL')\""}
     )
     assert out.startswith("HEAD") and out.endswith("TAIL")
     assert "elided" in out
 
 
+@needs_posix_shell
+def test_non_ascii_output_comes_back_intact(tmp_path):
+    """Output is decoded as UTF-8, not as the machine's locale.
+
+    text=True decodes with the locale encoding, which on a Korean Windows box is
+    cp949: the first UTF-8 byte from `cat` on a Korean file killed the reader
+    thread, communicate() returned None, and the tool raised "object of type
+    'NoneType' has no len()". Every command whose output held a non-ASCII character
+    failed that way — which, in a project whose plans and comments are Korean, is
+    most of them.
+    """
+    from ahacode.tools import bash as bash_mod
+
+    f = tmp_path / "korean.txt"
+    f.write_text("계획 요약: 이진 탐색 + 후위 그리디\n", encoding="utf-8")
+    out = bash_mod.BASH.execute({"command": f'cat "{f.as_posix()}"'})
+    assert "계획 요약: 이진 탐색 + 후위 그리디" in out
+
+
+def test_the_recursion_guard_matches_commands_not_paths():
+    """The guard was tightened to stop flagging pytest's own tmp_path (which is
+    literally .../pytest-of-<user>/pytest-91/...). It must still catch the thing it
+    exists for: a test that shells out to this suite and forks exponentially."""
+    import conftest
+
+    def flagged(text):
+        return any(p.search(text) for p in conftest._RECURSIVE)
+
+    assert flagged("uv run pytest -q")
+    assert flagged("pytest tests/")
+    assert flagged("cd sub && tox")
+    assert not flagged('cat "C:/Users/x/Temp/pytest-of-cyh/pytest-91/korean.txt"')
+    assert not flagged("echo pytest-report.xml")
+
+
+def test_undecodable_output_is_replaced_not_raised():
+    """Bytes that are not valid UTF-8 still come back as text — a mangled line tells
+    the model more than an exception does."""
+    from ahacode.tools import bash as bash_mod
+
+    out = bash_mod.BASH.execute(
+        {"command": f"{PY} -c \"import sys; sys.stdout.buffer.write(b'ok-\\xff\\xfe-end')\""}
+    )
+    assert "ok-" in out and "-end" in out
+
+
+@needs_posix_shell
 def test_timeout_keeps_the_partial_output(tmp_path, monkeypatch):
     """A killed command still printed something. Discarding it leaves the model with
     nothing — not even how far the command got. (The partial output arrives as BYTES

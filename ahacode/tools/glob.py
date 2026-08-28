@@ -22,7 +22,10 @@ def _glob(args: dict) -> str:
     shown = matches[:_MAX_RESULTS]
     # Report paths relative to the project root — that's how the model refers to
     # them everywhere else (and what `read` accepts straight back).
-    lines = [str(p.relative_to(PROJECT_ROOT)) if p.is_relative_to(PROJECT_ROOT) else str(p)
+    # as_posix, not str: on Windows str() yields ahacode\agent.py, and the model then
+    # echoes backslashes back into bash — where they are escape characters, not
+    # separators. Forward slashes are accepted as paths on every platform.
+    lines = [p.relative_to(PROJECT_ROOT).as_posix() if p.is_relative_to(PROJECT_ROOT) else str(p)
              for p in shown]
     if len(matches) > len(shown):
         lines.append(f"... ({len(matches) - len(shown)} more; narrow the pattern)")
