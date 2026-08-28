@@ -27,7 +27,7 @@ from ahacode.session import ChatSession
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.header_bar import HeaderBar
-from ahacode.widgets.agent_settings import AgentSettings, AgentSettingsResult
+from ahacode.widgets.settings import Settings, SettingsResult
 from ahacode.widgets.plan_gate import PlanGate
 from ahacode.widgets.prompt_input import PromptInput
 from ahacode.widgets.session_picker import SessionPicker
@@ -215,39 +215,50 @@ class AhaCodeApp(App):
         """Reflect the current server endpoint in the top bar."""
         self.query_one(HeaderBar).set_endpoint(config.load().base_url)
 
-    @on(Button.Pressed, "#agent-settings-btn")
-    def _on_agent_settings_button(self, event: Button.Pressed) -> None:
+    @on(Button.Pressed, "#settings-btn")
+    def _on_settings_button(self, event: Button.Pressed) -> None:
         event.stop()
-        cfg = config.load()
-        self.push_screen(
-            AgentSettings(cfg.max_parallel_agents, cfg.subagent_depth,
-                          cfg.context_window, cfg.compact_threshold,
-                          cfg.plan_thinking_budget, cfg.impl_thinking_budget,
-                          cfg.subagent_thinking_budget, cfg.no_think_after_tools),
-            self._agent_settings_saved,
-        )
+        self.push_screen(Settings(config.load()), self._settings_saved)
 
-    def _agent_settings_saved(self, result: "AgentSettingsResult | None") -> None:
-        """Persist the chosen parallelism/depth/context settings and resize the
-        client gate so the very next request honours them (same path as /model)."""
+    def _settings_saved(self, result: "SettingsResult | None") -> None:
+        """Persist every field the modal owns and reset the client, so the next
+        request uses the new endpoint, model, timeout and gate size (same path as
+        /model and /url, which set one field each)."""
         if result is None:
             return
         from dataclasses import replace
+        before = config.load()
         config.save(replace(
-            config.load(),
+            before,
+            base_url=result.base_url, api_key=result.api_key,
+            name=result.model, timeout=result.timeout,
             max_parallel_agents=result.max_parallel, subagent_depth=result.depth,
+            impl_max_turns=result.impl_max_turns,
             context_window=result.context_window, compact_threshold=result.compact_threshold,
+            keep_recent_messages=result.keep_recent,
+            thinking_token_budget=result.thinking_budget,
+            reasoning_effort=result.reasoning_effort,
             plan_thinking_budget=result.plan_thinking, impl_thinking_budget=result.impl_thinking,
             subagent_thinking_budget=result.subagent_thinking,
             no_think_after_tools=result.no_think_after_tools,
         ))
         client.reset()
+        self._set_header_endpoint()
+        self.query_one(ModelBar).refresh_state()
         window = "압축 끔" if result.context_window == 0 else f"{result.context_window // 1024}K"
         def think(v):
             return "전역" if v is None else f"{v // 1024}K"
+        # Endpoint and model first, and only when they moved: they are the two that
+        # change what answers, and a silent switch is the one worth noticing.
+        moved = []
+        if result.base_url != before.base_url:
+            moved.append(f"엔드포인트 {result.base_url}")
+        if result.model != before.name:
+            moved.append(f"모델 {result.model} (다음 메시지에 적용)")
+        lead = (" · ".join(moved) + " · ") if moved else ""
         self.run_worker(
             self._say_system(
-                f"설정 저장 — 최대 병렬 {result.max_parallel} · 깊이 {result.depth} · "
+                f"Settings 저장 — {lead}최대 병렬 {result.max_parallel} · 깊이 {result.depth} · "
                 f"컨텍스트 {window} · 압축 {int(result.compact_threshold * 100)}% · "
                 f"사고 plan {think(result.plan_thinking)}/impl {think(result.impl_thinking)}/"
                 f"sub {think(result.subagent_thinking)} · 도구후사고 "
@@ -283,10 +294,16 @@ class AhaCodeApp(App):
         return worker is not None and worker.is_running
 
     def _set_send_running(self, running: bool) -> None:
-        """Flip the composer button between Send (idle) and Stop (streaming)."""
-        btn = self.query_one("#send-btn", Button)
-        btn.label = "■ Stop" if running else "↑ Send"
-        btn.variant = "error" if running else "primary"
+        """Flip the composer button between Send (idle) and Stop (streaming).
+
+        query, not query_one: a turn can end — or fail — after the composer is gone,
+        when the app is quitting mid-stream. query_one would raise NoMatches from a
+        callback whose only remaining job is to tidy up, turning an orderly shutdown
+        into a crash. Nothing to update is a valid outcome here.
+        """
+        for btn in self.query("#send-btn").results(Button):
+            btn.label = "■ Stop" if running else "↑ Send"
+            btn.variant = "error" if running else "primary"
 
     def _prune_empty_turn(self) -> None:
         """Drop the turn's rail if the reply produced no blocks (immediate error)."""
@@ -365,6 +382,52 @@ class AhaCodeApp(App):
             if not rail.children:
                 await rail.remove()
         container.scroll_end(animate=False)
+        # After the scroll to the end: a restored gate scrolls to itself, and that
+        # has to be the last word — it is the thing the session is waiting on.
+        await self._restore_plan_gate(container, call_args, call_names)
+
+    async def _restore_plan_gate(self, container, call_args: dict, call_names: dict) -> None:
+        """Re-open the gate if this session was left waiting on one.
+
+        The gate is runtime state — one widget and one bool — so quitting with a plan
+        on screen used to strand it: the checklist came back in the pinned panel and
+        the plan file was still on disk, but the only control that could run it was
+        gone, and the loop was no longer paused. Nothing was corrupt and nothing was
+        answerable.
+
+        The transcript says plainly when that happened: the last thing in the session
+        is a *successful* plan_submit result with no turn after it. Anything else —
+        a refusal the model owes a resubmission for, a later message that settled the
+        gate — leaves it closed.
+
+        A plan that was already run still reopens, deliberately: the impl work goes to
+        a CHILD session, so the planner's own transcript is unchanged by it, and
+        approving again is a supported move (it makes a sibling, never a deeper
+        child). Reopening the planner is how you get that second run.
+        """
+        self._reset_plan_gate()
+        if self.view_only or self.session_kind == "impl":
+            return  # an impl session carries a plan out; it never approves one
+        if not self.session.messages:
+            return
+        last = self.session.messages[-1]
+        if last.get("role") != "tool":
+            return
+        cid = last.get("tool_call_id")
+        if call_names.get(cid) != "plan_submit":
+            return
+        content = last.get("content") or ""
+        if self._is_plan_rejection(content):
+            return
+        if not storage.plan_path(self.session_path).exists():
+            return  # the plan file was deleted; there is nothing left to run
+        args = call_args.get(cid, {})
+        await self._open_plan_gate(
+            [it["content"] for it in self._plan_items(args)],
+            args.get("summary", ""),
+            content.split(" (", 1)[0].removeprefix("Plan saved to "),
+            container,
+        )
 
     async def _new_session(self) -> None:
         """Start a fresh session (new file + header) and clear the view."""
@@ -662,7 +725,12 @@ class AhaCodeApp(App):
     def _status(self, text: str) -> None:
         """Push live turn status to the bar (empty = idle)."""
         self._last_status = text
-        self.query_one(ModelBar).set_status(text)
+        # query, not query_one — same reason as _set_send_running: this is called from
+        # turn callbacks, which can land after the bar is gone when the app is quitting
+        # mid-stream. _last_status above is the state; the bar is only its display, so
+        # there being nothing to draw on is not an error.
+        for bar in self.query(ModelBar).results(ModelBar):
+            bar.set_status(text)
 
     def _switch_model(self, name: str) -> str:
         """Persist a model choice. The server actually loads it on the next request."""
@@ -1249,5 +1317,14 @@ class AhaCodeApp(App):
 
 app = AhaCodeApp
 
-if __name__ == "__main__":
+
+def main() -> None:
+    """The `ahacode` console script (see [project.scripts]). Its job is to exist:
+    an installed entry point is what lets AhaCode be launched from *another*
+    project's directory, which is the whole point of workspace.PROJECT_ROOT being
+    the launch directory rather than wherever this file was installed."""
     AhaCodeApp().run()
+
+
+if __name__ == "__main__":
+    main()

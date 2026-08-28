@@ -60,6 +60,24 @@ def _stream_turns(monkeypatch, turns):
 # viewport the scroll container claims that exact cell, so the click misses. Aim one
 # cell inside instead; a human clicks the middle of the button anyway.
 _INSIDE = (2, 1)
+# A viewport tall enough to hold the plan gate. pilot.click aims at real screen
+# coordinates, so at the default 80x24 a gate pushed below the fold raises
+# OutOfBounds — which is why some tests below press() the button instead. Where the
+# click can be kept, it should be: it is the path a user actually takes.
+_TALL = (100, 50)
+
+
+async def _settle(app, pilot):
+    """Wait until the app goes quiet, not just until the current worker ends.
+
+    workers.wait_for_complete() waits for the workers running when it is called, and
+    an approved plan chains turns — the gate starts the impl session, and that turn's
+    tool result starts the next one. Waiting once can return in the gap between two
+    of them, before the end-of-plan notice has been posted.
+    """
+    for _ in range(6):
+        await app.workers.wait_for_complete()
+        await pilot.pause()
 
 
 async def _plan_mode(app, pilot):
@@ -80,6 +98,80 @@ async def _ask(pilot, app, text):
     await app.workers.wait_for_complete()
     await pilot.pause()
     await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_the_gate_is_reachable_on_a_small_terminal(monkeypatch):
+    """The gate must fit on the screen the plan was written on.
+
+    The pinned panel grows one row per step, and a 12-step plan took 15 of an 80x24
+    terminal's 24 rows — leaving the chat 2, which is less than the gate card the
+    same plan had just opened. The loop then sat blocked on buttons that could not
+    be scrolled to: nothing was broken, and nothing could be answered either.
+    """
+    steps = [f"{i + 1}단계: 구체적인 작업 항목을 적는다" for i in range(12)]
+    _stream_turns(monkeypatch, [[_submit(*steps)], [TextDelta("did it")]])
+
+    app = AhaCodeApp()
+    async with app.run_test(size=(80, 24)) as pilot:   # the default terminal
+        await _plan_mode(app, pilot)
+        await _ask(pilot, app, "만들어줘")
+        assert app._plan_gate_pending is True
+        r = app.query_one("#plan-gate-run", Button).region
+        assert 0 <= r.y and r.bottom <= app.size.height, (
+            f"▶ 실행 sits at rows {r.y}..{r.bottom} of a {app.size.height}-row screen"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_submitted_plan_survives_reopening_the_session(monkeypatch):
+    """Quitting with a plan on screen must not strand it. The gate is runtime state,
+    so reopening the session has to rebuild it from the transcript — otherwise the
+    checklist comes back, the plan file is still there, and nothing can run it."""
+    _stream_turns(monkeypatch, [[_submit()], [TextDelta("did it all")]])
+
+    app = AhaCodeApp()
+    async with app.run_test(size=_TALL) as pilot:
+        await _plan_mode(app, pilot)
+        await _ask(pilot, app, "풀어줘")
+        planner = app.session_path.stem
+        assert app._plan_gate_pending is True
+
+        await app._new_session()                  # walk away, as quitting would
+        await pilot.pause()
+        assert app._plan_gate_pending is False
+        assert not list(app.query(PlanGate))
+
+        await app._switch_session(planner)        # come back to it
+        await pilot.pause()
+        assert app._plan_gate_pending is True     # the gate is waiting again
+        assert len(list(app.query(PlanGate))) == 1
+        assert list(app.query(PlanGate))[-1].steps == STEPS
+
+        app.query_one("#plan-gate-run", Button).press()   # and it still works
+        await _settle(app, pilot)
+        assert app.session_kind == "impl"
+        assert storage.read_header(app.session_path)["parent_id"] == planner
+
+
+@pytest.mark.asyncio
+async def test_a_session_that_never_submitted_reopens_without_a_gate(monkeypatch):
+    """Only a transcript ENDING on a submitted plan reopens one. A turn that just
+    talked leaves nothing to decide, and must not pause the loop on reload."""
+    _stream_turns(monkeypatch, [[TextDelta("아직 계획은 없어요")]])
+
+    app = AhaCodeApp()
+    async with app.run_test(size=_TALL) as pilot:
+        await _plan_mode(app, pilot)
+        await _ask(pilot, app, "생각 좀 해봐")
+        planner = app.session_path.stem
+
+        await app._new_session()
+        await pilot.pause()
+        await app._switch_session(planner)
+        await pilot.pause()
+        assert app._plan_gate_pending is False
+        assert not list(app.query(PlanGate))
 
 
 def _plan_file(app):
@@ -161,7 +253,7 @@ async def test_run_button_hands_the_plan_to_a_child_impl_session(monkeypatch):
     calls = _stream_turns(monkeypatch, [[_submit()], [TextDelta("did it all")]])
 
     app = AhaCodeApp()
-    async with app.run_test() as pilot:
+    async with app.run_test(size=_TALL) as pilot:
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
         parent = app.session_path
@@ -197,13 +289,12 @@ async def test_approving_a_revised_plan_makes_a_sibling_not_a_deeper_child(monke
     ])
 
     app = AhaCodeApp()
-    async with app.run_test() as pilot:
+    async with app.run_test(size=_TALL) as pilot:
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
         planner = app.session_path.stem
         await pilot.click("#plan-gate-run", offset=_INSIDE)
-        await app.workers.wait_for_complete()
-        await pilot.pause()
+        await _settle(app, pilot)
         first = app.session_path.stem
 
         await app._switch_session(planner)        # back to the planning session
@@ -212,8 +303,7 @@ async def test_approving_a_revised_plan_makes_a_sibling_not_a_deeper_child(monke
         app.query_one("#prompt", PromptInput).focus()  # Enter must reach the prompt
         await _ask(pilot, app, "b.py 하나로 줄여")   # revise → resubmit → new gate
         app.query_one("#plan-gate-run", Button).press()  # may sit below the viewport
-        await app.workers.wait_for_complete()
-        await pilot.pause()
+        await _settle(app, pilot)   # the gate starts the impl turn; wait for that too
         second = app.session_path.stem
 
         assert first != second
@@ -230,7 +320,7 @@ async def test_revise_button_settles_without_resuming(monkeypatch):
     calls = _stream_turns(monkeypatch, [[_submit()], [_submit("Write b.py with g()", summary="v2")]])
 
     app = AhaCodeApp()
-    async with app.run_test() as pilot:
+    async with app.run_test(size=_TALL) as pilot:
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
         await pilot.click("#plan-gate-continue", offset=_INSIDE)
@@ -385,8 +475,7 @@ async def test_an_impl_session_gets_the_larger_turn_cap(monkeypatch):
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
         app.query_one("#plan-gate-run", Button).press()  # may sit below the viewport
-        await app.workers.wait_for_complete()
-        await pilot.pause()
+        await _settle(app, pilot)   # the gate starts a SECOND turn; wait for that one
     assert seen[0] == agent.DEFAULT_MAX_TURNS
     assert seen[-1] == config.load().impl_max_turns > agent.DEFAULT_MAX_TURNS
 
@@ -417,8 +506,7 @@ async def test_an_impl_turn_that_leaves_steps_owed_says_so(monkeypatch):
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
         app.query_one("#plan-gate-run", Button).press()
-        await app.workers.wait_for_complete()
-        await pilot.pause()
+        await _settle(app, pilot)
         said = [b._content for b in app.query(Chatbox) if b.has_class("chatbox--system")]
         assert any("미완 항목 2개" in s and "Add tests/test_solver.py" in s for s in said)
         # the progress snapshot sits beside the PLANNING session's plan file
@@ -440,8 +528,7 @@ async def test_a_finished_plan_gets_no_owed_notice(monkeypatch):
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
         app.query_one("#plan-gate-run", Button).press()
-        await app.workers.wait_for_complete()
-        await pilot.pause()
+        await _settle(app, pilot)
         said = [b._content for b in app.query(Chatbox) if b.has_class("chatbox--system")]
         assert not any("미완 항목" in s for s in said)
         assert any("✓ 계획 완료" in s for s in said)

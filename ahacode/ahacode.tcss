@@ -195,8 +195,15 @@ ModelBar #auto-approve.-on > .toggle--label {
    against the header's coloured band. One row of top padding balances it — it takes
    the app background rather than the header's panel colour, so it reads as a gap
    rather than as more header. */
+/* max-height, because `height: auto` alone grows one row per step and rows are the
+   scarce resource (see HeaderBar's rule). A 12-step plan took 15 of 24 rows and left
+   the chat 2 — not enough to show the plan-gate card that the same plan had just
+   opened, so the loop sat blocked on buttons nobody could scroll to. The panel is a
+   reference; the decision on screen outranks it. Past the cap it scrolls. */
 TodoPanel {
     height: auto;
+    max-height: 40%;
+    overflow-y: auto;
     padding: 1 2 0 2;
     border-bottom: solid $secondary;
     color: $text-muted;
@@ -219,41 +226,89 @@ TodoPanel.todo-panel--done {
     margin-bottom: 1;
 }
 
-AgentSettings {
+Settings {
     align: center middle;
 }
 
-#agent-settings-box {
-    width: 60;
-    height: auto;
+/* Fixed height, not auto: the four panes differ in length, and an auto-sized box
+   would resize under the cursor every time a tab is clicked. */
+#settings-box {
+    width: 78;
+    height: 30;
     max-height: 90%;
-    overflow-y: auto;
-    padding: 1 2;
     border: round $accent;
     background: $surface;
 }
 
-#agent-settings-title {
+#settings-rail {
+    width: 16;
+    height: 100%;
+    padding: 1 1 1 2;
+    background: $panel;
+}
+
+#settings-title {
     text-style: bold;
     color: $accent;
     margin-bottom: 1;
 }
 
-#agent-settings-hint {
+.settings-tab {
+    width: 100%;
+    height: 3;
+    border: none;
+    background: transparent;
+    color: $text-muted;
+    text-align: left;
+}
+
+.settings-tab.-active {
+    background: $surface;
+    color: $accent;
+    text-style: bold;
+}
+
+#settings-right {
+    width: 1fr;
+    height: 100%;
+    padding: 1 2;
+}
+
+#settings-panes {
+    height: 1fr;
+}
+
+.settings-hint {
     color: $text-muted;
     margin-bottom: 1;
 }
 
-#agent-settings-box Select {
+#settings-right Select {
     margin-bottom: 1;
 }
 
-#agent-settings-buttons {
+#settings-right Input {
+    margin-bottom: 1;
+}
+
+/* The button and its result sit on one line so the status reads as the button's
+   answer rather than as another field. */
+#settings-fetch-row {
+    height: auto;
+    margin-bottom: 1;
+}
+
+#settings-fetch-status {
+    color: $text-muted;
+    margin-left: 2;
+}
+
+#settings-buttons {
     height: auto;
     margin-top: 1;
 }
 
-#agent-settings-buttons Button {
+#settings-buttons Button {
     margin-right: 1;
 }
 

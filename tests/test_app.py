@@ -277,7 +277,9 @@ async def test_endpoint_shows_in_header_not_the_composer(fake_llm):
     async with app.run_test() as pilot:
         await pilot.pause()
         shown = app.query_one(HeaderBar)._endpoint_text
-        assert "localhost:9000" in shown  # compact host:port (drops scheme, /v1)
+        # Compact host:port. Derived from the default rather than spelled out, so
+        # changing the shipped endpoint cannot leave a stale literal here.
+        assert config.DEFAULT_BASE_URL.split("://")[1].removesuffix("/v1") in shown
         assert "http://" not in shown and not shown.endswith("/v1")  # scheme/suffix stripped
         assert not app.query_one(ModelBar).query("#endpoint")        # gone from the footer
 
@@ -1593,6 +1595,12 @@ async def test_leaving_view_only_restores_driving(fake_llm):
         await pilot.pause()
         assert any(m.get("role") == "user" and m["content"] == "hello"
                    for m in app.session.messages)
+        # That message started a turn. Leaving run_test() here would tear the screen
+        # down underneath the worker, and its completion callback would then query
+        # widgets that no longer exist — a failure about #chat-container that has
+        # nothing to do with what this test is checking.
+        await app.workers.wait_for_complete()
+        await pilot.pause()
 
 
 @pytest.mark.asyncio
