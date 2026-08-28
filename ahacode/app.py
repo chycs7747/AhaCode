@@ -860,9 +860,19 @@ class AhaCodeApp(App):
         # `container` here is the turn rail, a plain Vertical — scrolling THAT does
         # nothing. The scroller is #chat-container, one level up.
         self._follow_output = True
-        scroller = self.query_one("#chat-container", VerticalScroll)
-        scroller.scroll_end(animate=False, immediate=True)
+        self.call_after_refresh(self._reveal_plan_gate)
         self._status("⏸ 계획 승인 대기")
+
+    def _reveal_plan_gate(self) -> None:
+        """Bring the gate's buttons on screen, after layout has caught up.
+
+        Scrolling in the same frame as the mount measures the pre-mount content
+        height — and the pinned panel reflows in that same frame, changing how much
+        room the chat has — so on a short terminal the scroll lands short and the
+        loop waits on buttons below the fold. One refresh later both are settled.
+        """
+        self.query_one("#chat-container", VerticalScroll).scroll_end(
+            animate=False, immediate=True)
 
     def _settle_plan_gate(self, choice: str) -> None:
         """Answer the open gate (whatever the user chose) and release the loop."""
