@@ -874,7 +874,7 @@ async def test_new_session_clears_the_plan(monkeypatch):
         assert panel.display is False
 
         # ...and approving in the fresh session finds no plan file to hand off.
-        await app._start_impl_session()
+        await app.plan.start_impl_session()
         await pilot.pause()
         assert "실행할 계획이 없어요" in list(app.query(Chatbox))[-1]._content
 

@@ -69,9 +69,9 @@ async def test_a_turn_that_finished_a_step_carries_on(monkeypatch):
     async with app.run_test() as pilot:
         await _impl_app(pilot, app, done=1)
         started = _turns_started(app, monkeypatch)
-        await app._auto_continue()
+        await app.plan.auto_continue()
         assert started, "a step was completed; the run should continue by itself"
-        assert app._stalled == 0
+        assert app.plan.stalled == 0
 
 
 @pytest.mark.asyncio
@@ -81,7 +81,7 @@ async def test_a_finished_plan_stops(monkeypatch):
     async with app.run_test() as pilot:
         await _impl_app(pilot, app, done=3, total=3)
         started = _turns_started(app, monkeypatch)
-        await app._auto_continue()
+        await app.plan.auto_continue()
         assert not started
 
 
@@ -95,14 +95,14 @@ async def test_turns_that_finish_nothing_eventually_stop(monkeypatch):
     async with app.run_test() as pilot:
         await _impl_app(pilot, app, done=1)
         started = _turns_started(app, monkeypatch)
-        await app._auto_continue()          # 1 done: progress, continue
+        await app.plan.auto_continue()          # 1 done: progress, continue
         assert len(started) == 1
         for expected in (2, 3):             # nothing new completes
-            await app._auto_continue()
+            await app.plan.auto_continue()
             assert len(started) == expected, "still under the stall limit"
-        await app._auto_continue()          # third barren turn: give up
+        await app.plan.auto_continue()          # third barren turn: give up
         assert len(started) == 3
-        assert app._stalled == 3
+        assert app.plan.stalled == 3
 
 
 @pytest.mark.asyncio
@@ -114,12 +114,12 @@ async def test_progress_resets_the_stall_counter(monkeypatch):
     async with app.run_test() as pilot:
         await _impl_app(pilot, app, done=1, total=5)
         started = _turns_started(app, monkeypatch)
-        await app._auto_continue()
-        await app._auto_continue()
-        assert app._stalled == 1
+        await app.plan.auto_continue()
+        await app.plan.auto_continue()
+        assert app.plan.stalled == 1
         app.query_one(TodoPanel).update_todos(_steps(2, 5))   # a step lands
-        await app._auto_continue()
-        assert app._stalled == 0
+        await app.plan.auto_continue()
+        assert app.plan.stalled == 0
         assert len(started) == 3
 
 
@@ -133,7 +133,7 @@ async def test_a_stopped_run_is_not_restarted(monkeypatch):
         await _impl_app(pilot, app, done=1)
         started = _turns_started(app, monkeypatch)
         app._stopping = True
-        await app._auto_continue()
+        await app.plan.auto_continue()
         assert not started
 
 
@@ -144,8 +144,8 @@ async def test_the_plan_gate_is_not_talked_over(monkeypatch):
     async with app.run_test() as pilot:
         await _impl_app(pilot, app, done=1)
         started = _turns_started(app, monkeypatch)
-        app._plan_gate_pending = True
-        await app._auto_continue()
+        app.plan.pending = True
+        await app.plan.auto_continue()
         assert not started
 
 
@@ -157,7 +157,7 @@ async def test_zero_turns_it_off(monkeypatch):
     async with app.run_test() as pilot:
         await _impl_app(pilot, app, done=1)
         started = _turns_started(app, monkeypatch)
-        await app._auto_continue()
+        await app.plan.auto_continue()
         assert not started
 
 
@@ -170,7 +170,7 @@ async def test_a_session_with_no_checklist_is_left_alone(monkeypatch):
     async with app.run_test() as pilot:
         app.session_kind = "impl"
         started = _turns_started(app, monkeypatch)
-        await app._auto_continue()
+        await app.plan.auto_continue()
         assert not started
 
 
@@ -182,12 +182,12 @@ async def test_typing_clears_the_stall(monkeypatch):
     app = AhaCodeApp()
     async with app.run_test() as pilot:
         await _impl_app(pilot, app, done=1)
-        app._stalled = 2
+        app.plan.stalled = 2
         monkeypatch.setattr(app, "_start_turn", lambda: _noop())
         app.query_one("#prompt").text = "여기부터 다시 해줘"
         await pilot.press("enter")
         await pilot.pause()
-        assert app._stalled == 0
+        assert app.plan.stalled == 0
 
 
 async def _noop():
@@ -218,13 +218,13 @@ async def test_an_uncapped_turn_ends_when_no_step_lands(monkeypatch):
             "read": Tool(name="read", description="", parameters={},
                          execute=lambda a: "body")})
         monkeypatch.setattr(app, "_approve_tool", lambda call: True)
-        monkeypatch.setattr(app, "_auto_continue", _noop)   # judge one turn only
+        monkeypatch.setattr(app.plan, "auto_continue", _noop)  # judge one turn only
         app.query_one("#prompt").text = "go"
         await pilot.press("enter")
         await app.workers.wait_for_complete()
         await pilot.pause()
     assert len(rounds) == 5, f"ran {len(rounds)} rounds against a limit of 5"
-    assert app._round_stalled
+    assert app.plan.round_stalled
 
 
 @pytest.mark.asyncio
@@ -255,7 +255,7 @@ async def test_a_completed_step_buys_more_rounds(monkeypatch):
             "todo_write": Tool(name="todo_write", description="", parameters={},
                                execute=lambda a: "saved")})
         monkeypatch.setattr(app, "_approve_tool", lambda call: True)
-        monkeypatch.setattr(app, "_auto_continue", _noop)
+        monkeypatch.setattr(app.plan, "auto_continue", _noop)
         app.query_one("#prompt").text = "go"
         await pilot.press("enter")
         await app.workers.wait_for_complete()

@@ -18,8 +18,8 @@ from rich.theme import Theme
 from ahacode import (
     agent, client, config, permissions, prompts, storage, subagent, tools,
 )
-from ahacode.tools import plan as plan_tool  # non_actionable(): plan-step sanity check
 from ahacode.commands import Commands
+from ahacode.plan_run import PlanRun
 from ahacode.tools import spill
 from ahacode.events import (
     Notice, Phase, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage,
@@ -30,7 +30,6 @@ from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.header_bar import HeaderBar
 from ahacode.widgets.settings import Settings, SettingsResult
-from ahacode.widgets.plan_gate import PlanGate
 from ahacode.widgets.prompt_input import PromptInput
 from ahacode.widgets.session_picker import SessionPicker
 from ahacode.widgets.subagent_card import SubagentCard
@@ -124,6 +123,7 @@ class AhaCodeApp(App):
         super().__init__()
         self.session = ChatSession()
         self.commands = Commands(self)  # /model, /url, /allow, /think
+        self.plan = PlanRun(self)  # the gate, the handoff, and the stall detector
         self.mode = "act"  # "act" (full tools) or "plan" (read-only + todo_write)
         self._last_status = ""
         self.auto_approve = False  # session-only: skip the approval modal when on
@@ -132,22 +132,12 @@ class AhaCodeApp(App):
         # The server's own count for the last request — what compaction measures
         # against, rather than an estimate.
         self._last_prompt_tokens: int | None = None
-        # Set while a submitted plan awaits an answer; the worker's should_pause
-        # reads it. Written only on the main thread, so a plain bool is enough.
-        self._plan_gate_pending = False
-        self._plan_gate: PlanGate | None = None
         # This loop's own running tools: call id -> (name, started at). Sub-agent
         # tools are deliberately absent — they report in their own card.
         self._running_tools: dict[str, tuple[str, float]] = {}
         # The message that started the turn in flight. Cleared after the first
         # transcript write: several rounds are still one question.
         self._turn_question = ""
-        # Stall detection, by turn and by round (see _auto_continue). Plain ints:
-        # a lost reset costs one extra round, which is not worth a lock.
-        self._done_steps = 0
-        self._stalled = 0
-        self._rounds_since_step = 0
-        self._round_stalled = False
         latest = storage.latest_session()
         if latest:  # resume the most recent session
             self.session_path = latest
@@ -343,12 +333,6 @@ class AhaCodeApp(App):
             turn.remove()
         self._turn = None
 
-    @staticmethod
-    def _is_plan_rejection(text: str) -> bool:
-        """A plan_submit result that came back refused (the model must resubmit).
-        Success starts with "Plan saved to …"; a rejection is the reason itself."""
-        return not text.startswith("Plan saved to")
-
     async def _render_history(self) -> None:
         """Clear the chat and remount the session's messages, matching the live
         rendering exactly — turn rails, titled tool cards, diffs, todo_write into
@@ -391,14 +375,14 @@ class AhaCodeApp(App):
                     elif name == "todo_write":  # to the pinned panel, as when live
                         todo.update_todos(call_args[cid].get("items", []))
                     elif name == "plan_submit":  # the submitted plan IS the checklist
-                        todo.update_todos(self._plan_items(call_args[cid]))
+                        todo.update_todos(self.plan.items(call_args[cid]))
             elif role == "tool":
                 cid = msg.get("tool_call_id")
                 name = call_names.get(cid, "tool")
                 if name in ("edit", "todo_write"):
                     continue  # already shown as the diff card / the pinned panel
                 if name == "plan_submit":
-                    if not self._is_plan_rejection(content):
+                    if not self.plan.is_rejection(content):
                         continue  # success shows as the plan panel, not a card
                     summary = tool_summary(name, call_args.get(cid, {}))
                     await turn.mount(ToolResultBlock(name, content, True, summary=summary))
@@ -413,43 +397,7 @@ class AhaCodeApp(App):
         container.scroll_end(animate=False)
         # After the scroll to the end: a restored gate scrolls to itself, and that
         # has to be the last word — it is the thing the session is waiting on.
-        await self._restore_plan_gate(container, call_args, call_names)
-
-    async def _restore_plan_gate(self, container, call_args: dict, call_names: dict) -> None:
-        """Re-open the gate if this session was left waiting on one.
-
-        The gate is runtime state (one widget, one bool), so quitting with a plan on
-        screen stranded it: the checklist and the plan file both came back, but
-        nothing on screen could run them. The transcript says when that happened —
-        the session's last entry is a SUCCESSFUL plan_submit result with no turn
-        after it. Anything else leaves the gate closed.
-
-        An already-run plan reopens too, deliberately: impl work goes to a CHILD
-        session, so approving again makes a sibling, never a deeper child.
-        """
-        self._reset_plan_gate()
-        if self.view_only or self.session_kind == "impl":
-            return  # an impl session carries a plan out; it never approves one
-        if not self.session.messages:
-            return
-        last = self.session.messages[-1]
-        if last.get("role") != "tool":
-            return
-        cid = last.get("tool_call_id")
-        if call_names.get(cid) != "plan_submit":
-            return
-        content = last.get("content") or ""
-        if self._is_plan_rejection(content):
-            return
-        if not storage.plan_path(self.session_path).exists():
-            return  # the plan file was deleted; there is nothing left to run
-        args = call_args.get(cid, {})
-        await self._open_plan_gate(
-            [it["content"] for it in self._plan_items(args)],
-            args.get("summary", ""),
-            content.split(" (", 1)[0].removeprefix("Plan saved to "),
-            container,
-        )
+        await self.plan.restore(container, call_args, call_names)
 
     async def _new_session(self) -> None:
         """Start a fresh session (new file + header) and clear the view."""
@@ -463,7 +411,7 @@ class AhaCodeApp(App):
         self.session_kind = "main"
         self.session_parent_id = None
         self._has_title = False
-        self._reset_plan_gate()
+        self.plan.reset()
         spill.set_session(self.session_path)
         self._set_header_title("")
         await self._render_history()  # clears the pinned plan with the rest of the view
@@ -481,7 +429,7 @@ class AhaCodeApp(App):
         self.session_kind = str(meta.get("kind", "main"))
         self.session_parent_id = meta.get("parent_id")
         self._has_title = bool(meta.get("title"))
-        self._reset_plan_gate()
+        self.plan.reset()
         spill.set_session(self.session_path)
         self._set_header_title(meta.get("title", ""))
         await self._render_history()  # replays this session's plan into the panel
@@ -575,9 +523,9 @@ class AhaCodeApp(App):
         if not text:
             # An empty Enter while the gate is open is the keyboard's ▶: the card
             # is the only thing waiting, and it says so.
-            if self._plan_gate_pending:
-                self._settle_plan_gate("▶ 실행 (Enter)")
-                await self._start_impl_session()
+            if self.plan.pending:
+                self.plan.settle("▶ 실행 (Enter)")
+                await self.plan.start_impl_session()
             return
         # PromptInput clears itself on submit.
 
@@ -604,8 +552,8 @@ class AhaCodeApp(App):
         # Text typed while the gate is open is feedback on the plan: the card settles
         # as "revise", the plan is not executed, and the message goes to the model,
         # which revises and resubmits.
-        if self._plan_gate_pending:
-            self._settle_plan_gate("✎ 수정 계속")
+        if self.plan.pending:
+            self.plan.settle("✎ 수정 계속")
 
         if text.startswith("/"):
             # Slash commands configure the app; they never reach the LLM
@@ -625,7 +573,7 @@ class AhaCodeApp(App):
         # A typed instruction is a fresh start: whatever the run was stuck on, the
         # user has now said something about it, so the previous turns of no progress
         # should not count against the turns that follow.
-        self._stalled = 0
+        self.plan.stalled = 0
 
         self._follow_output = True  # a new turn re-pins to the bottom to show the reply
         container = self.query_one("#chat-container", VerticalScroll)
@@ -664,42 +612,6 @@ class AhaCodeApp(App):
             self.mode = mode
             self.query_one("#mode-select", Select).value = mode
 
-    async def _start_impl_session(self) -> None:
-        """▶ on the gate: hand the submitted plan to a child session that carries it out.
-
-        The child is a HANDOFF — same depth (so it keeps every tool, task
-        included), act mode, seeded with one message naming the plan file. One
-        continuous context does the whole plan, so a stop leaves a transcript the
-        same model picks up. Approving a revised plan makes a new sibling rather
-        than appending to an old child that was written for a different plan.
-        """
-        if self.view_only:  # a sub-agent transcript can't drive new work
-            await self._say_system("🔒 보기 전용 세션에서는 계획을 실행할 수 없어요. /new 로 시작하세요.")
-            return
-        plan = storage.plan_path(self.session_path)
-        if not plan.exists():
-            await self._say_system("실행할 계획이 없어요 — plan 모드에서 계획을 제출하면 파일이 생깁니다.")
-            return
-        parent_id, depth = self.session_path.stem, self.session_depth
-        child = storage.new_session_path()
-        storage.write_header(child, storage.make_header(
-            child.stem, parent_id=parent_id, kind="impl", relation="handoff", depth=depth,
-            model=config.load().name, title=storage.plan_title(plan),
-        ))
-        await self._switch_session(child.stem)  # empty child; also flips the bar to act
-        await self._say_system(
-            f"↳ 계획 실행 세션 — {storage.display_path(plan)} 을 읽고 진행합니다 "
-            f"(계획 세션 {parent_id} 의 자식)"
-        )
-        text = prompts.handoff_prompt(storage.display_path(plan))
-        self.session.add_user(text)
-        storage.append_message(self.session_path, {"role": "user", "content": text})
-        self._turn_question = f"(계획 실행 시작) {storage.display_path(plan)}"
-        self._follow_output = True
-        container = self.query_one("#chat-container", VerticalScroll)
-        await container.mount(Chatbox(text, role="user"))
-        await self._start_turn()
-
     def _write_transcript_turn(self, event: "AhaCodeApp.ResponseComplete") -> None:
         """Append this turn to the session's readable transcript.
 
@@ -731,89 +643,6 @@ class AhaCodeApp(App):
             return json.loads(call["function"]["arguments"])
         except (json.JSONDecodeError, TypeError, KeyError):
             return {}
-
-    async def _snapshot_progress(self) -> None:
-        """Write plans/{plan}.result.md from the panel and announce the state."""
-        panel = self.query_one(TodoPanel)
-        items = list(panel.items)
-        if not items:
-            return  # nothing declared yet — the model has not mirrored the plan
-        left = panel.unfinished()
-        parent = self.session_parent_id or self.session_path.stem
-        plan = storage.plan_path(storage.SESSIONS_DIR / f"{parent}.jsonl")
-        summary = next(
-            (m["content"] for m in reversed(self.session.messages)
-             if m.get("role") == "assistant" and m.get("content")), "",
-        )
-        out = storage.result_path(plan)
-        storage.write_result(
-            out, plan=plan, session_id=self.session_path.stem, items=items,
-            summary=summary, complete=not left,
-            throughput=storage.summarize_stats(storage.read_stats(self.session_path)),
-        )
-        if left:
-            await self._say_system(
-                f"⏸ 미완 항목 {len(left)}개 — 이어서 하려면 입력하세요 "
-                f"(다음: {left[0].get('content', '')[:60]}) · 진행 기록 {storage.display_path(out)}"
-            )
-        else:
-            await self._say_system(
-                f"✓ 계획 완료 — {len(items)}단계 모두 처리 · 결과 {storage.display_path(out)}"
-            )
-
-    @staticmethod
-    def _finished_steps(panel: TodoPanel) -> int:
-        return len(panel.items) - len(panel.unfinished())
-
-    async def _auto_continue(self) -> None:
-        """Carry an impl session on to its next turn without being asked.
-
-        What ends a run is a stall, not a count. Rounds and turns measure how hard
-        the model is working; only the checklist measures whether the work is
-        getting anywhere. So steps still completing means carry on however long it
-        takes, and N turns in a row completing nothing means stop and say where.
-        """
-        cfg = config.load()
-        if not cfg.auto_continue_stall:
-            return  # switched off: the old ask-every-turn behaviour
-        if self._plan_gate_pending or getattr(self, "_stopping", False):
-            return  # something is already waiting on the user; do not talk over it
-        panel = self.query_one(TodoPanel)
-        left = panel.unfinished()
-        if not panel.items or not left:
-            return  # no checklist to judge progress by, or the plan is finished
-        done = self._finished_steps(panel)
-        # Strictly greater: a turn that completes nothing is a stall even if it
-        # produced text, tool calls, and a confident summary — all of which the
-        # stalling turns did produce.
-        self._stalled = 0 if done > self._done_steps else self._stalled + 1
-        self._done_steps = done
-        # Naming the round backstop matters: "the turn ended" and "the turn was cut
-        # off after 40 rounds of getting nowhere" look identical from the outside,
-        # and they call for opposite responses from whoever reads this in the morning.
-        why = f" (단계 완료 없이 {self._rounds_since_step}라운드)" if self._round_stalled else ""
-        if self._stalled >= cfg.auto_continue_stall:
-            await self._say_system(
-                f"⏹ {self._stalled}턴 연속으로 완료된 단계가 없어 자동 진행을 멈췄습니다"
-                f"{why} — {done}/{len(panel.items)} 완료. "
-                f"막힌 곳: {left[0].get('content', '')[:60]}"
-            )
-            return
-        await self._say_system(
-            f"▶ 자동 진행 {done}/{len(panel.items)} 완료{why} · 다음: "
-            f"{left[0].get('content', '')[:60]} (Esc 로 중지)"
-        )
-        text = prompts.continue_prompt()
-        self.session.add_user(text)
-        storage.append_message(self.session_path, {"role": "user", "content": text})
-        self._turn_question = f"(자동 진행) 다음: {left[0].get('content', '')[:60]}"
-        self._follow_output = True
-        await self._start_turn()
-
-    def _max_turns(self) -> int:
-        """An impl session carries a whole plan in one context, so it gets the
-        larger cap; an ordinary turn answers one message."""
-        return config.load().impl_max_turns if self.session_kind == "impl" else agent.DEFAULT_MAX_TURNS
 
     @staticmethod
     def _turn_metrics(stats: dict) -> dict:
@@ -890,65 +719,18 @@ class AhaCodeApp(App):
         else:
             await self._say_system("auto-approve OFF — tools ask first.")
 
-    @staticmethod
-    def _plan_items(args: dict) -> list[dict]:
-        """plan_submit's steps in the shape the pinned panel takes (all pending)."""
-        return [{"content": st, "status": plan_tool.PENDING}
-                for st in args.get("steps", []) if isinstance(st, str) and st.strip()]
-
-    async def _open_plan_gate(self, steps: list[str], summary: str, path: str, container) -> None:
-        """The model submitted a plan: hold the loop and put the decision on screen.
-
-        Opened only from the MAIN loop's plan_submit result (a sub-agent is never
-        offered the tool — it has no user to ask, and its parent is blocked on it).
-        No heuristics: the model said it is done, so this is the moment.
-        """
-        # Setting this stops the loop between turns (agent.run's should_pause), so
-        # nothing runs until a button is pressed.
-        self._plan_gate_pending = True
-        self._plan_gate = PlanGate(steps, summary=summary, path=path)
-        await container.mount(self._plan_gate)
-        # Override follow-output: the loop is BLOCKED on these buttons, so they are
-        # not optional content. NOTE `container` is the turn rail, a plain Vertical —
-        # scrolling that does nothing; the scroller is #chat-container, one level up.
-        self._follow_output = True
-        self.call_after_refresh(self._reveal_plan_gate)
-        self._status("⏸ 계획 승인 대기")
-
-    def _reveal_plan_gate(self) -> None:
-        """Bring the gate's buttons on screen, after layout has caught up.
-
-        Scrolling in the mount's own frame measures the pre-mount height, and the
-        pinned panel reflows in that same frame — so on a short terminal the scroll
-        lands short and the loop waits on buttons below the fold.
-        """
-        self.query_one("#chat-container", VerticalScroll).scroll_end(
-            animate=False, immediate=True)
-
-    def _settle_plan_gate(self, choice: str) -> None:
-        """Answer the open gate (whatever the user chose) and release the loop."""
-        self._plan_gate_pending = False
-        if self._plan_gate is not None and self._plan_gate.is_mounted:
-            self._plan_gate.settle(choice)
-        self._plan_gate = None
-
-    def _reset_plan_gate(self) -> None:
-        """Forget the gate entirely — a different session asks about its own plans."""
-        self._plan_gate_pending = False
-        self._plan_gate = None
-
     @on(Button.Pressed, "#plan-gate-run")
     async def _on_plan_gate_run(self, event: Button.Pressed) -> None:
         event.stop()
-        self._settle_plan_gate("▶ 실행")
-        await self._start_impl_session()
+        self.plan.settle("▶ 실행")
+        await self.plan.start_impl_session()
 
     @on(Button.Pressed, "#plan-gate-continue")
     async def _on_plan_gate_continue(self, event: Button.Pressed) -> None:
         """✎ 수정 — the plan stays on screen; the user says what to change and the
         next turn revises it (plan_submit again replaces the plan file)."""
         event.stop()
-        self._settle_plan_gate("✎ 수정 계속")
+        self.plan.settle("✎ 수정 계속")
         self.query_one("#prompt", PromptInput).focus()
 
     @property
@@ -1011,8 +793,8 @@ class AhaCodeApp(App):
         # "finished talking" looks the same as "finished the plan". So: snapshot
         # where it stands after every turn, and say so.
         if self.session_kind == "impl" and event.messages:
-            await self._snapshot_progress()
-            await self._auto_continue()
+            await self.plan.snapshot_progress()
+            await self.plan.auto_continue()
 
     @on(ResponseFailed)
     async def response_failed(self, event: ResponseFailed) -> None:
@@ -1123,22 +905,14 @@ class AhaCodeApp(App):
                 # boxes (no "gate" key); planning its private sub-task used to
                 # overwrite the parent's checklist wholesale.
                 if boxes.get("gate"):
-                    panel = self.query_one(TodoPanel)
-                    before = self._finished_steps(panel)
-                    panel.update_todos(items)
-                    if self._finished_steps(panel) > before:
-                        # A step landed. This is the ONLY reset, which is what
-                        # makes the counter a stall detector and not a round cap
-                        # renamed: a run that keeps finishing steps never trips
-                        # it, however many rounds each step takes.
-                        self._rounds_since_step = 0
+                    self.plan.note_todo_update(self.query_one(TodoPanel), items)
                 boxes["tool"].clear()
                 boxes["tool_buf"].clear()
                 self._status("● planning…")
                 return
             if event.name == "plan_submit":  # the plan goes to the panel; the gate
                 if boxes.get("gate"):        # opens when its result confirms the save
-                    self.query_one(TodoPanel).update_todos(self._plan_items(event.arguments))
+                    self.query_one(TodoPanel).update_todos(self.plan.items(event.arguments))
                 boxes["tool"].clear()
                 boxes["tool_buf"].clear()
                 self._status("● submitting plan…")
@@ -1163,8 +937,8 @@ class AhaCodeApp(App):
                 # user sees why; the model already has the reason and resubmits.
                 args = boxes.get("call_args", {}).get(event.id, {})
                 path = event.output.split(" (", 1)[0].removeprefix("Plan saved to ")
-                await self._open_plan_gate(
-                    [it["content"] for it in self._plan_items(args)],
+                await self.plan.open(
+                    [it["content"] for it in self.plan.items(args)],
                     str(args.get("summary", "")).strip(), path, container,
                 )
                 return
@@ -1403,7 +1177,7 @@ class AhaCodeApp(App):
                 # One usage trailer per model call, so this is also the round
                 # counter the stall backstop needs — counted here rather than off
                 # tool calls, which arrive several to a round.
-                self._rounds_since_step += 1
+                self.plan.rounds_since_step += 1
                 stats["prompt"] += event.prompt_tokens
                 stats["completion"] += event.completion_tokens
                 # The LAST turn's prompt size is what the next turn has to fit under;
@@ -1421,24 +1195,7 @@ class AhaCodeApp(App):
             self.session_path, self.session_depth, container, worker, approve
         )
 
-        # The stall backstop at round granularity. Without it "no turn cap" means no
-        # backstop: _auto_continue can only judge a turn that ENDED, and an uncapped
-        # turn that never stops calling tools never gives it the chance. Read once
-        # per turn — config.load() reads a file, and the limit cannot change mid-turn.
-        stall_rounds = config.load().stall_rounds if self.session_kind == "impl" else 0
-        self._rounds_since_step = 0
-        self._round_stalled = False
-
-        def should_pause() -> bool:
-            """Stop the loop BETWEEN rounds — cleanly, the way a finished answer
-            does, so everything produced so far is kept and the caller decides
-            what happens next."""
-            if self._plan_gate_pending:
-                return True
-            if stall_rounds and self._rounds_since_step >= stall_rounds:
-                self._round_stalled = True
-                return True
-            return False
+        stall_rounds = self.plan.begin_turn()  # arms the round backstop for this turn
 
         # The turn's mode picks its thinking budget (config.thinking_budget_for):
         # plan thinks deep, impl shallow, a plain act turn uses the global.
@@ -1452,9 +1209,10 @@ class AhaCodeApp(App):
                     approve=approve,                    # bash and friends are confirmed first
                     registry=self._registry_for_mode(),  # plan mode = read-only subset
                     ctx=ctx,                            # task delegates through this
-                    max_turns=self._max_turns(),        # larger for an impl session
+                    max_turns=self.plan.max_turns(),    # larger for an impl session
                     prompt_tokens=self._last_prompt_tokens,  # measured, for compaction
-                    should_pause=should_pause,  # the plan gate, and the stall backstop
+                    # the plan gate, and the round-level stall backstop
+                    should_pause=lambda: self.plan.should_pause(stall_rounds),
                 )
         except Exception as exc:
             # Server 500, timeout, connection refused... all become a bubble, not a crash.

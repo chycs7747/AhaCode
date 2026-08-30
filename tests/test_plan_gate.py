@@ -116,7 +116,7 @@ async def test_the_gate_is_reachable_on_a_small_terminal(monkeypatch):
     async with app.run_test(size=(80, 24)) as pilot:   # the default terminal
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "만들어줘")
-        assert app._plan_gate_pending is True
+        assert app.plan.pending is True
         r = app.query_one("#plan-gate-run", Button).region
         assert 0 <= r.y and r.bottom <= app.size.height, (
             f"▶ 실행 sits at rows {r.y}..{r.bottom} of a {app.size.height}-row screen"
@@ -135,16 +135,16 @@ async def test_a_submitted_plan_survives_reopening_the_session(monkeypatch):
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
         planner = app.session_path.stem
-        assert app._plan_gate_pending is True
+        assert app.plan.pending is True
 
         await app._new_session()                  # walk away, as quitting would
         await pilot.pause()
-        assert app._plan_gate_pending is False
+        assert app.plan.pending is False
         assert not list(app.query(PlanGate))
 
         await app._switch_session(planner)        # come back to it
         await pilot.pause()
-        assert app._plan_gate_pending is True     # the gate is waiting again
+        assert app.plan.pending is True     # the gate is waiting again
         assert len(list(app.query(PlanGate))) == 1
         assert list(app.query(PlanGate))[-1].steps == STEPS
 
@@ -170,7 +170,7 @@ async def test_a_session_that_never_submitted_reopens_without_a_gate(monkeypatch
         await pilot.pause()
         await app._switch_session(planner)
         await pilot.pause()
-        assert app._plan_gate_pending is False
+        assert app.plan.pending is False
         assert not list(app.query(PlanGate))
 
 
@@ -197,7 +197,7 @@ async def test_plan_submit_opens_the_gate_and_pauses(monkeypatch):
         await _ask(pilot, app, "풀어줘")
         gate = app.query_one(PlanGate)
         assert gate.steps == STEPS and gate.summary == "Solve it"
-        assert app._plan_gate_pending is True
+        assert app.plan.pending is True
         assert len(calls) == 1                      # the loop stopped
         assert [m["role"] for m in app.session.messages] == ["user", "assistant", "tool"]
         assert [it["content"] for it in app.query_one(TodoPanel).items] == STEPS
@@ -220,7 +220,7 @@ async def test_a_rejected_submission_does_not_open_the_gate(monkeypatch):
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
         assert len(app.query(PlanGate)) == 1
-        assert app._plan_gate_pending is True
+        assert app.plan.pending is True
         assert len(calls) == 2
         first_result = app.session.messages[2]
         assert first_result["role"] == "tool" and "PlanRejected: steps is empty" in first_result["content"]
@@ -239,7 +239,7 @@ async def test_act_mode_todo_write_never_gates(monkeypatch):
     async with app.run_test() as pilot:
         await _ask(pilot, app, "리팩터링 해줘")          # act is the default mode
         assert list(app.query(PlanGate)) == []
-        assert app._plan_gate_pending is False
+        assert app.plan.pending is False
         assert app.session.messages[-1]["content"] == "done"
 
 
@@ -257,13 +257,13 @@ async def test_run_button_hands_the_plan_to_a_child_impl_session(monkeypatch):
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
         parent = app.session_path
-        assert app._plan_gate_pending is True
+        assert app.plan.pending is True
 
         await pilot.click("#plan-gate-run", offset=_INSIDE)
         await app.workers.wait_for_complete()
         await pilot.pause()
 
-        assert app._plan_gate_pending is False
+        assert app.plan.pending is False
         assert app.mode == "act" and app.session_kind == "impl"
         assert app.session_path != parent
         header = storage.read_header(app.session_path)
@@ -327,7 +327,7 @@ async def test_revise_button_settles_without_resuming(monkeypatch):
         await app.workers.wait_for_complete()
         await pilot.pause()
 
-        assert app._plan_gate_pending is False
+        assert app.plan.pending is False
         assert len(calls) == 1                         # no resume request
         assert app.mode == "plan"
         assert app.query_one(PlanGate).has_class("plan-gate--settled")
@@ -335,7 +335,7 @@ async def test_revise_button_settles_without_resuming(monkeypatch):
         await _ask(pilot, app, "b.py 하나로 줄여")
         gates = list(app.query(PlanGate))
         assert len(gates) == 2 and gates[-1].steps == ["Write b.py with g()"]
-        assert app._plan_gate_pending is True
+        assert app.plan.pending is True
         assert _plan_file(app).read_text(encoding="utf-8").startswith("# v2\n")
         assert [it["content"] for it in app.query_one(TodoPanel).items] == ["Write b.py with g()"]
 
@@ -350,10 +350,10 @@ async def test_typing_while_the_gate_is_open_is_revision_feedback(monkeypatch):
     async with app.run_test() as pilot:
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
-        assert app._plan_gate_pending is True
+        assert app.plan.pending is True
 
         await _ask(pilot, app, "승인")            # even this — the model answers by resubmitting
-        assert app._plan_gate_pending is False
+        assert app.plan.pending is False
         assert list(app.query(SubagentCard)) == []
         gate = list(app.query(PlanGate))[0]
         assert gate.has_class("plan-gate--settled")
@@ -370,10 +370,10 @@ async def test_empty_enter_while_the_gate_is_open_approves(monkeypatch):
     async with app.run_test() as pilot:
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
-        assert app._plan_gate_pending is True
+        assert app.plan.pending is True
 
         await _ask(pilot, app, "")
-        assert app._plan_gate_pending is False
+        assert app.plan.pending is False
         assert app.mode == "act" and app.session_kind == "impl"
         assert list(app.query(PlanGate)) == []          # the child is a fresh view
 
@@ -386,12 +386,12 @@ async def test_new_session_forgets_the_gate(monkeypatch):
     async with app.run_test() as pilot:
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
-        assert app._plan_gate_pending is True
+        assert app.plan.pending is True
 
         app.query_one("#prompt", PromptInput).text = "/new"
         await pilot.press("enter")
         await pilot.pause()
-        assert app._plan_gate_pending is False
+        assert app.plan.pending is False
         assert app.query_one(TodoPanel).items == []
 
 
@@ -413,7 +413,7 @@ async def test_a_subagents_plan_never_pauses_its_parent(monkeypatch):
         app.auto_approve = True
         await _ask(pilot, app, "위임해줘")
         assert list(app.query(PlanGate)) == []
-        assert app._plan_gate_pending is False
+        assert app.plan.pending is False
         assert len(app.query(SubagentCard)) == 1
         assert app.query_one(TodoPanel).items == []
         assert app.session.messages[-1]["content"] == "parent done"
