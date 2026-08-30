@@ -8,7 +8,7 @@ from textual.widgets import Button, ContentSwitcher, Input, Label, Select
 from ahacode import client, config, storage
 from ahacode.app import AhaCodeApp
 from ahacode.events import TextDelta
-from ahacode.widgets.settings import Settings, SettingsResult
+from ahacode.widgets.settings import Settings
 
 
 @pytest.fixture(autouse=True)

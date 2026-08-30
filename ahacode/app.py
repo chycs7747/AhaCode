@@ -24,7 +24,7 @@ from ahacode.session_ctl import SessionControl
 from ahacode.turn_view import _PHASE_ID, TurnView  # noqa: F401  (_PHASE_ID: tests)
 from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.header_bar import HeaderBar
-from ahacode.widgets.settings import Settings, SettingsResult
+from ahacode.widgets.settings import Settings
 from ahacode.widgets.prompt_input import PromptInput
 from ahacode.widgets.subagent_card import SubagentCard
 from ahacode.widgets.todo_panel import TodoPanel
@@ -186,53 +186,42 @@ class AhaCodeApp(App):
         event.stop()
         self.push_screen(Settings(config.load()), self._settings_saved)
 
-    def _settings_saved(self, result: "SettingsResult | None") -> None:
-        """Persist every field the modal owns and reset the client, so the next
-        request uses the new endpoint, model, timeout and gate size (same path as
-        /model and /url, which set one field each)."""
-        if result is None:
+    def _settings_saved(self, saved: "config.ModelConfig | None") -> None:
+        """Persist what the modal handed back and reset the client, so the next
+        request uses the new endpoint, model, timeout and gate size (the same path
+        /model and /url take, which set one field each)."""
+        if saved is None:
             return
-        from dataclasses import replace
         before = config.load()
-        config.save(replace(
-            before,
-            base_url=result.base_url, api_key=result.api_key,
-            name=result.model, timeout=result.timeout,
-            max_parallel_agents=result.max_parallel, subagent_depth=result.depth,
-            impl_max_turns=result.impl_max_turns,
-            auto_continue_stall=result.auto_continue_stall,
-            stall_rounds=result.stall_rounds,
-            context_window=result.context_window, compact_threshold=result.compact_threshold,
-            keep_recent_messages=result.keep_recent,
-            thinking_token_budget=result.thinking_budget,
-            reasoning_effort=result.reasoning_effort,
-            plan_thinking_budget=result.plan_thinking, impl_thinking_budget=result.impl_thinking,
-            subagent_thinking_budget=result.subagent_thinking,
-            no_think_after_tools=result.no_think_after_tools,
-        ))
+        config.save(saved)
         client.reset()
-        self._set_header_endpoint()
-        self.query_one(ModelBar).refresh_state()
-        window = "압축 끔" if result.context_window == 0 else f"{result.context_window // 1024}K"
-        def think(v):
+        self.refresh_config_ui()
+        self.run_worker(self._say_system(self._settings_summary(before, saved)),
+                        exclusive=False)
+
+    @staticmethod
+    def _settings_summary(before, saved) -> str:
+        """What changed, in one line. Endpoint and model lead and appear only when
+        they MOVED: they are the two that change what answers, and a silent switch
+        is the one worth noticing."""
+        def budget(v):
             return "전역" if v is None else f"{v // 1024}K"
-        # Endpoint and model first, and only when they moved: they are the two that
-        # change what answers, and a silent switch is the one worth noticing.
+
         moved = []
-        if result.base_url != before.base_url:
-            moved.append(f"엔드포인트 {result.base_url}")
-        if result.model != before.name:
-            moved.append(f"모델 {result.model} (다음 메시지에 적용)")
+        if saved.base_url != before.base_url:
+            moved.append(f"엔드포인트 {saved.base_url}")
+        if saved.name != before.name:
+            moved.append(f"모델 {saved.name} (다음 메시지에 적용)")
         lead = (" · ".join(moved) + " · ") if moved else ""
-        self.run_worker(
-            self._say_system(
-                f"Settings 저장 — {lead}최대 병렬 {result.max_parallel} · 깊이 {result.depth} · "
-                f"컨텍스트 {window} · 압축 {int(result.compact_threshold * 100)}% · "
-                f"사고 plan {think(result.plan_thinking)}/impl {think(result.impl_thinking)}/"
-                f"sub {think(result.subagent_thinking)} · 도구후사고 "
-                f"{'끔' if result.no_think_after_tools else '켬'}"
-            ),
-            exclusive=False,
+        window = "압축 끔" if saved.context_window == 0 else f"{saved.context_window // 1024}K"
+        return (
+            f"Settings 저장 — {lead}최대 병렬 {saved.max_parallel_agents} · "
+            f"깊이 {saved.subagent_depth} · 컨텍스트 {window} · "
+            f"압축 {int(saved.compact_threshold * 100)}% · 사고 "
+            f"plan {budget(saved.plan_thinking_budget)}/"
+            f"impl {budget(saved.impl_thinking_budget)}/"
+            f"sub {budget(saved.subagent_thinking_budget)} · 도구후사고 "
+            f"{'끔' if saved.no_think_after_tools else '켬'}"
         )
 
     @on(Button.Pressed, "#new-session-btn")

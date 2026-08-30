@@ -21,7 +21,7 @@ picking a model here does not send a request either — the server sees it on th
 next message.
 
 Save persists via config.save + client.reset (which rebuilds the client and
-resizes the semaphore); the modal returns the chosen values or None on cancel.
+resizes the semaphore); the modal returns the edited ModelConfig, or None on cancel.
 """
 
 from __future__ import annotations
@@ -32,45 +32,9 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, ContentSwitcher, Input, Label, Select
 
-from ahacode import client
+from dataclasses import replace
 
-
-class SettingsResult:
-    """What the modal hands back on save (plain attributes, no dependency on
-    config). The three per-mode thinking budgets are int | None — None means
-    "follow the global budget"."""
-
-    __slots__ = ("base_url", "api_key", "model", "timeout",
-                 "max_parallel", "depth", "impl_max_turns", "auto_continue_stall", "stall_rounds",
-                 "context_window", "compact_threshold", "keep_recent",
-                 "thinking_budget", "reasoning_effort",
-                 "plan_thinking", "impl_thinking", "subagent_thinking",
-                 "no_think_after_tools")
-
-    def __init__(self, base_url, api_key, model, timeout,
-                 max_parallel, depth, impl_max_turns,
-                 context_window, compact_threshold, keep_recent,
-                 thinking_budget, reasoning_effort,
-                 plan_thinking, impl_thinking, subagent_thinking,
-                 no_think_after_tools, auto_continue_stall, stall_rounds):
-        self.base_url = base_url
-        self.api_key = api_key
-        self.model = model
-        self.timeout = timeout
-        self.max_parallel = max_parallel
-        self.depth = depth
-        self.impl_max_turns = impl_max_turns
-        self.auto_continue_stall = auto_continue_stall
-        self.stall_rounds = stall_rounds
-        self.context_window = context_window
-        self.compact_threshold = compact_threshold
-        self.keep_recent = keep_recent
-        self.thinking_budget = thinking_budget
-        self.reasoning_effort = reasoning_effort
-        self.plan_thinking = plan_thinking
-        self.impl_thinking = impl_thinking
-        self.subagent_thinking = subagent_thinking
-        self.no_think_after_tools = no_think_after_tools
+from ahacode import client, config
 
 
 TABS = [("connection", "연결"), ("agent", "에이전트"),
@@ -135,7 +99,7 @@ def _think_value(override):
     return _GLOBAL if override is None else _nearest([o for o in _THINK if o[1] != _GLOBAL], override)
 
 
-class Settings(ModalScreen["SettingsResult | None"]):
+class Settings(ModalScreen["config.ModelConfig | None"]):
     """dismiss(SettingsResult) = save · dismiss(None) = cancel."""
 
     BINDINGS = [("escape", "cancel", "Close")]
@@ -311,24 +275,27 @@ class Settings(ModalScreen["SettingsResult | None"]):
     @on(Button.Pressed, "#settings-save")
     def _save(self, event: Button.Pressed) -> None:
         event.stop()
-        self.dismiss(SettingsResult(
+        # replace(), not a fresh ModelConfig: the fields this modal does not own
+        # (allow_rules, bash_timeout) carry through untouched.
+        self.dismiss(replace(
+            self._cfg,
             base_url=self.query_one("#settings-base-url", Input).value.strip() or self._cfg.base_url,
             api_key=self.query_one("#settings-api-key", Input).value.strip() or self._cfg.api_key,
-            model=str(self._value("model")),
+            name=str(self._value("model")),
             timeout=float(self._value("timeout")),
-            max_parallel=int(self._value("parallel")),
-            depth=int(self._value("depth")),
+            max_parallel_agents=int(self._value("parallel")),
+            subagent_depth=int(self._value("depth")),
             impl_max_turns=int(self._value("impl-turns")),
             auto_continue_stall=int(self._value("stall")),
             stall_rounds=int(self._value("stall-rounds")),
             context_window=int(self._value("window")),
             compact_threshold=float(self._value("threshold")),
-            keep_recent=int(self._value("keep-recent")),
-            thinking_budget=int(self._value("think-global")),
+            keep_recent_messages=int(self._value("keep-recent")),
+            thinking_token_budget=int(self._value("think-global")),
             reasoning_effort=str(self._value("effort")),
-            plan_thinking=self._think("plan"),
-            impl_thinking=self._think("impl"),
-            subagent_thinking=self._think("subagent"),
+            plan_thinking_budget=self._think("plan"),
+            impl_thinking_budget=self._think("impl"),
+            subagent_thinking_budget=self._think("subagent"),
             no_think_after_tools=bool(self._value("after-tools")),
         ))
 

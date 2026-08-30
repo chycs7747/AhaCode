@@ -6,7 +6,7 @@ from contextlib import contextmanager
 
 from openai import OpenAI
 
-from ahacode import config, prompts
+from ahacode import config
 from ahacode.events import (
     Event, Notice, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, Usage,
 )
