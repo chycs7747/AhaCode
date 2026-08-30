@@ -265,10 +265,20 @@ Three layers, with one vocabulary between them:
 
 ```
 ahacode/
-├── app.py            # Textual App: layout, event wiring, worker → UI rendering
+├── app.py            # the Textual App itself: layout, key/button wiring, and the
+│                     # state a session has (which file, what depth, which mode).
+│                     # Behaviour lives in the five collaborators it holds:
+│   ├─ session_ctl.py #   SessionControl — new / switch / repair / replay history
+│   ├─ plan_run.py    #   PlanRun — the gate, the handoff to an impl session, and
+│   │                 #     the stall detection that ends an unattended run
+│   ├─ runner.py      #   TurnRunner — the worker thread: the agent loop, tool
+│   │                 #     approval, sub-agent spawning, and what a turn cost
+│   ├─ turn_view.py   #   TurnView — canonical events -> mounted bubbles and cards
+│   └─ commands.py    #   Commands — /model /url /allow /think (config only)
+│
 ├── events.py         # the canonical event union every layer speaks
 │                     #   ThinkingDelta · TextDelta · ToolCallDelta
-│                     #   ToolCall · ToolResult · Notice · Usage
+│                     #   ToolCall · ToolResult · Notice · Phase · Usage
 │
 ├── agent.py          # the agent loop: stream a turn → run its tools → feed the
 │                     # results back → until a turn has no tool calls
@@ -313,6 +323,12 @@ Design rules the codebase sticks to:
   `call_from_thread` (built-in backpressure) and announces completion with a
   message, never by mutating shared state.
 - **One file per tool and per widget**, styles in `.tcss`, never inline.
+- **The App owns state; collaborators own behaviour.** `app.py` holds the
+  session (which file, what depth, which mode) because everything reads it, and
+  wires the keys and buttons Textual dispatches to it. Everything those handlers
+  then *do* lives in one of the five collaborators above, each named for the
+  question it answers — so "when does a run stop?" is `plan_run.py`, start to
+  finish, rather than six pieces of state spread through the App.
 
 ## Development
 
