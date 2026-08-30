@@ -162,7 +162,7 @@ async def test_a_session_whose_turn_is_running_is_not_deletable(monkeypatch, tmp
             if w is not None and w.is_running:
                 break
             await pilot.pause(0.02)
-        app._open_picker()
+        app.sessions.open_picker()
         await pilot.pause()
         picker = app.screen
         picker.query_one("#picker-list", ListView).index = _row_of(picker, current.stem)

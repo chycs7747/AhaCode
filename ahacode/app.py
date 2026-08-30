@@ -22,6 +22,7 @@ from ahacode.tools import spill
 from ahacode.events import TextDelta, ThinkingDelta, Usage
 from ahacode.render import tool_summary
 from ahacode.session import ChatSession
+from ahacode.session_ctl import SessionControl
 from ahacode.turn_view import _PHASE_ID, TurnBoxes, TurnView, edit_card  # noqa: F401
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
@@ -82,6 +83,7 @@ class AhaCodeApp(App):
         self.commands = Commands(self)  # /model, /url, /allow, /think
         self.plan = PlanRun(self)  # the gate, the handoff, and the stall detector
         self.turn_view = TurnView(self)  # events -> mounted bubbles and cards
+        self.sessions = SessionControl(self)  # new / switch / repair / replay
         self.mode = "act"  # "act" (full tools) or "plan" (read-only + todo_write)
         self._last_status = ""
         self.auto_approve = False  # session-only: skip the approval modal when on
@@ -157,10 +159,10 @@ class AhaCodeApp(App):
         meta = storage.read_session_meta(self.session_path) or {}
         self._set_header_title(meta.get("title", ""))
         self._set_header_endpoint()
-        await self._render_history()
+        await self.sessions.render_history()
         self._reflect_view_only()  # resumed session is a main one, but stay correct
         if not self.view_only:
-            await self._repair_interrupted()  # startup resume of an interrupted session
+            await self.sessions.repair_interrupted()  # resume an interrupted session
         # Follow the stream only while pinned to the bottom: watch the scroller's
         # scroll_y and re-derive the flag. Our own scroll_end lands exactly at the
         # bottom (flag stays on); a user scroll-up drops below it (flag off, sticky).
@@ -240,12 +242,12 @@ class AhaCodeApp(App):
     @on(Button.Pressed, "#new-session-btn")
     async def _on_new_session_button(self, event: Button.Pressed) -> None:
         event.stop()
-        await self._new_session()
+        await self.sessions.new()
 
     @on(Button.Pressed, "#open-sessions-btn")
     def _on_open_sessions_button(self, event: Button.Pressed) -> None:
         event.stop()
-        self._open_picker()
+        self.sessions.open_picker()
 
     @on(Button.Pressed, "#send-btn")
     def _on_send_button(self, event: Button.Pressed) -> None:
@@ -290,170 +292,6 @@ class AhaCodeApp(App):
         if turn is not None and turn.is_mounted and not turn.children:
             turn.remove()
         self._turn = None
-
-    async def _render_history(self) -> None:
-        """Clear the chat and remount the session's messages, matching the live
-        rendering exactly — turn rails, titled tool cards, diffs, todo_write into
-        the pinned panel — so a reloaded session looks like the turn that made it.
-
-        Also the ONE owner of the pinned plan: cleared here and refilled from the
-        history, so the panel is always a function of the open session. Every
-        session switch comes through here, which is what stops a previous plan
-        lingering behind a hidden panel.
-        """
-        container = self.query_one("#chat-container", VerticalScroll)
-        await container.remove_children()
-        todo = self.query_one(TodoPanel)
-        todo.clear()
-        call_args: dict[str, dict] = {}   # tool_call_id -> parsed arguments
-        call_names: dict[str, str] = {}   # tool_call_id -> tool name
-        turn = None
-        for msg in self.session.messages:
-            role = msg["role"]
-            content = msg.get("content") or ""
-            if role == "user":
-                turn = None  # a user message closes the previous assistant turn
-                await container.mount(Chatbox(content, role="user"))
-                continue
-            if turn is None:  # assistant / tool -> one rail
-                turn = Vertical(classes="turn")
-                await container.mount(turn)
-            if role == "assistant":
-                if content:  # the model's text answer (tool calls become cards)
-                    await turn.mount(Chatbox(content, role="assistant", markdown=True))
-                for c in msg.get("tool_calls") or []:
-                    cid, name = c["id"], c["function"]["name"]
-                    call_names[cid] = name
-                    try:
-                        call_args[cid] = json.loads(c["function"]["arguments"])
-                    except (json.JSONDecodeError, TypeError):
-                        call_args[cid] = {}
-                    if name == "edit":  # its result is skipped below
-                        await turn.mount(edit_card(call_args[cid]))
-                    elif name == "todo_write":  # to the pinned panel, as when live
-                        todo.update_todos(call_args[cid].get("items", []))
-                    elif name == "plan_submit":  # the submitted plan IS the checklist
-                        todo.update_todos(self.plan.items(call_args[cid]))
-            elif role == "tool":
-                cid = msg.get("tool_call_id")
-                name = call_names.get(cid, "tool")
-                if name in ("edit", "todo_write"):
-                    continue  # already shown as the diff card / the pinned panel
-                if name == "plan_submit":
-                    if not self.plan.is_rejection(content):
-                        continue  # success shows as the plan panel, not a card
-                    summary = tool_summary(name, call_args.get(cid, {}))
-                    await turn.mount(ToolResultBlock(name, content, True, summary=summary))
-                    continue
-                summary = tool_summary(name, call_args.get(cid, {}))
-                await turn.mount(ToolResultBlock(name, content, summary=summary))
-        # A turn whose every block went somewhere else (a lone todo_write → the panel)
-        # would leave a bare green rail behind; drop those, as the live path does.
-        for rail in list(container.query(".turn")):
-            if not rail.children:
-                await rail.remove()
-        container.scroll_end(animate=False)
-        # After the scroll to the end: a restored gate scrolls to itself, and that
-        # has to be the last word — it is the thing the session is waiting on.
-        await self.plan.restore(container, call_args, call_names)
-
-    async def _new_session(self) -> None:
-        """Start a fresh session (new file + header) and clear the view."""
-        self.session = ChatSession()
-        self.session_path = storage.new_session_path()
-        storage.write_header(
-            self.session_path,
-            storage.make_header(self.session_path.stem, kind="main", model=config.load().name),
-        )
-        self.session_depth = 0
-        self.session_kind = "main"
-        self.session_parent_id = None
-        self._has_title = False
-        self.plan.reset()
-        spill.set_session(self.session_path)
-        self._set_header_title("")
-        await self._render_history()  # clears the pinned plan with the rest of the view
-        self._reflect_view_only()  # a fresh main session is drivable again
-        self._status("")
-        await self._say_system("new session started")
-
-    async def _switch_session(self, session_id: str) -> None:
-        """Load another session by id and show its history."""
-        self.session = ChatSession()
-        self.session_path = storage.SESSIONS_DIR / f"{session_id}.jsonl"
-        self.session.messages = storage.load_messages(self.session_path)
-        meta = storage.read_session_meta(self.session_path) or {}
-        self.session_depth = int(meta.get("depth", 0))
-        self.session_kind = str(meta.get("kind", "main"))
-        self.session_parent_id = meta.get("parent_id")
-        self._has_title = bool(meta.get("title"))
-        self.plan.reset()
-        spill.set_session(self.session_path)
-        self._set_header_title(meta.get("title", ""))
-        await self._render_history()  # replays this session's plan into the panel
-        self._reflect_view_only()
-        if self.session_kind == "impl":
-            self._set_mode("act")  # an impl session exists to act; planning is its parent's
-        if not self.view_only:
-            await self._repair_interrupted()  # a turn cut off mid-tool: fill + note
-        if self.view_only:  # opened a sub-agent transcript — announce it's read-only
-            await self._say_system(
-                f"🔒 보기 전용 — 서브에이전트가 자동 생성한 기록(깊이 {self.session_depth})입니다. "
-                "읽기만 가능해요. /new 로 새 세션을 시작하세요."
-            )
-        self._status("")
-
-    async def _repair_interrupted(self) -> None:
-        """Fill in the results a turn cut off mid-tool never produced.
-
-        The API demands a result for every tool_call, so each dangling call gets a
-        synthetic one, plus a note telling the model to reassess the real state
-        rather than trust a half-finished summary. Appended and persisted, so a
-        reopened session finds nothing left to repair.
-        """
-        dangling = storage.dangling_tool_calls(self.session.messages)
-        if not dangling:
-            return
-        for call in dangling:
-            # Name WHICH call was cut off: tool + subject, so three bash calls that
-            # ran at once stay distinguishable. Same IN-line the result card shows.
-            subject = tool_summary(call["name"], call["arguments"])
-            what = f"`{call['name']}` ({subject})" if subject else f"`{call['name']}`"
-            msg = {"role": "tool", "tool_call_id": call["id"],
-                   "content": f"Interrupted: the {what} call did not complete."}
-            self.session.messages.append(msg)
-            storage.append_message(self.session_path, msg)
-        note = {
-            "role": "user",
-            "content": (
-                "[system] The previous turn was interrupted before it finished. The "
-                "project may have changed on disk — re-check the actual state (files, "
-                "tests) and bring the plan's checklist into line with it before "
-                "continuing. If the last step did not complete, redo it."
-            ),
-        }
-        self.session.messages.append(note)
-        storage.append_message(self.session_path, note)
-        await self._say_system("↻ 이전 턴이 중단됐어요 — 상태를 다시 확인하고 이어갑니다.")
-
-    def _open_picker(self) -> None:
-        """The picker needs to know which session is open (deleting it must move
-        the app off the file first) and whether its turn is running (then it is
-        not deletable at all)."""
-        current = self.session_path.stem
-        locked = current if self._anything_running() else None
-        self.push_screen(SessionPicker(current=current, locked=locked), self._session_picked)
-
-    def _session_picked(self, result: str | None) -> None:
-        """SessionPicker dismissed — run the switch/new as an async worker."""
-        if result == "new":
-            self.run_worker(self._new_session(), exclusive=False)
-        elif result:
-            self.run_worker(self._switch_session(result), exclusive=False)
-        else:  # closed without choosing — the open session may have been renamed there
-            meta = storage.read_session_meta(self.session_path) or {}
-            self._set_header_title(meta.get("title", ""))
-            self._has_title = bool(meta.get("title"))
 
     async def _say_system(self, text: str) -> None:
         """Show an informational bubble (commands, status) — never part of the session."""
@@ -503,10 +341,10 @@ class AhaCodeApp(App):
             # Slash commands configure the app; they never reach the LLM
             # and are not recorded in the session.
             if text == "/new":
-                await self._new_session()
+                await self.sessions.new()
                 return
             if text == "/sessions":
-                self._open_picker()
+                self.sessions.open_picker()
                 return
             await self._say_system(self.commands.handle(text))
             return

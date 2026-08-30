@@ -137,12 +137,12 @@ async def test_a_submitted_plan_survives_reopening_the_session(monkeypatch):
         planner = app.session_path.stem
         assert app.plan.pending is True
 
-        await app._new_session()                  # walk away, as quitting would
+        await app.sessions.new()                  # walk away, as quitting would
         await pilot.pause()
         assert app.plan.pending is False
         assert not list(app.query(PlanGate))
 
-        await app._switch_session(planner)        # come back to it
+        await app.sessions.switch(planner)        # come back to it
         await pilot.pause()
         assert app.plan.pending is True     # the gate is waiting again
         assert len(list(app.query(PlanGate))) == 1
@@ -166,9 +166,9 @@ async def test_a_session_that_never_submitted_reopens_without_a_gate(monkeypatch
         await _ask(pilot, app, "생각 좀 해봐")
         planner = app.session_path.stem
 
-        await app._new_session()
+        await app.sessions.new()
         await pilot.pause()
-        await app._switch_session(planner)
+        await app.sessions.switch(planner)
         await pilot.pause()
         assert app.plan.pending is False
         assert not list(app.query(PlanGate))
@@ -297,7 +297,7 @@ async def test_approving_a_revised_plan_makes_a_sibling_not_a_deeper_child(monke
         await _settle(app, pilot)
         first = app.session_path.stem
 
-        await app._switch_session(planner)        # back to the planning session
+        await app.sessions.switch(planner)        # back to the planning session
         await pilot.pause()
         await _plan_mode(app, pilot)
         app.query_one("#prompt", PromptInput).focus()  # Enter must reach the prompt
@@ -429,7 +429,7 @@ async def test_a_reloaded_session_shows_the_plan_in_the_panel_not_a_tool_card(mo
     async with app.run_test() as pilot:
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
-        await app._render_history()
+        await app.sessions.render_history()
         await pilot.pause()
         assert [it["content"] for it in app.query_one(TodoPanel).items] == STEPS
         assert [b for b in app.query(ToolResultBlock) if "plan_submit" in b.title] == []
@@ -447,7 +447,7 @@ async def test_a_rejected_submission_still_shows_its_reason_on_reload(monkeypatc
     async with app.run_test() as pilot:
         await _plan_mode(app, pilot)
         await _ask(pilot, app, "풀어줘")
-        await app._render_history()
+        await app.sessions.render_history()
         await pilot.pause()
         cards = [b for b in app.query(ToolResultBlock) if "plan_submit" in b.title]
         assert len(cards) == 1 and "failed" in cards[0].title  # the rejection, as an error card

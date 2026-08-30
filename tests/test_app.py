@@ -122,7 +122,7 @@ async def test_restored_bash_is_one_card_titled_with_the_command(fake_llm):
              "content": "\n".join(f"line {i}" for i in range(20))},
             {"role": "assistant", "content": "done"},
         ]
-        await app._render_history()
+        await app.sessions.render_history()
         await pilot.pause()
         assert [b for b in app.query(Chatbox) if b.has_class("chatbox--tool-call")] == []
         cards = list(app.query(ToolResultBlock))
@@ -908,7 +908,7 @@ async def test_switching_sessions_restores_each_ones_plan(monkeypatch):
         await pilot.pause()
         assert app.query_one(TodoPanel).items == []
 
-        await app._switch_session(first.stem)  # back to the planning session
+        await app.sessions.switch(first.stem)  # back to the planning session
         await pilot.pause()
         panel = app.query_one(TodoPanel)
         assert [it["content"] for it in panel.items] == ["session one step"]
@@ -1558,7 +1558,7 @@ async def test_subagent_session_opens_read_only(fake_llm):
     _, child_stem = _seed_main_and_subagent()
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        await app._switch_session(child_stem)
+        await app.sessions.switch(child_stem)
         await pilot.pause()
 
         assert app.view_only is True
@@ -1619,7 +1619,7 @@ async def test_leaving_view_only_restores_driving(fake_llm):
     _, child_stem = _seed_main_and_subagent()
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        await app._switch_session(child_stem)
+        await app.sessions.switch(child_stem)
         await pilot.pause()
         assert app.view_only is True
 
@@ -2099,7 +2099,7 @@ async def test_switching_into_an_interrupted_session_fills_dangling_calls(monkey
     monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("ok")]))
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        await app._switch_session(other.stem)
+        await app.sessions.switch(other.stem)
         await pilot.pause()
         # the dangling call now has a synthetic tool result, then an interrupt note
         roles = [m["role"] for m in app.session.messages]
@@ -2124,7 +2124,7 @@ async def test_a_clean_session_is_not_touched_on_open(monkeypatch):
     monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("ok")]))
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        await app._switch_session(other.stem)
+        await app.sessions.switch(other.stem)
         await pilot.pause()
         assert [m["role"] for m in app.session.messages] == ["user", "assistant"]
 
@@ -2147,7 +2147,7 @@ async def test_parallel_dangling_calls_are_each_named_by_their_command(monkeypat
     monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("ok")]))
     app = AhaCodeApp()
     async with app.run_test() as pilot:
-        await app._switch_session(other.stem)
+        await app.sessions.switch(other.stem)
         await pilot.pause()
         results = {m["tool_call_id"]: m["content"] for m in app.session.messages if m.get("role") == "tool"}
         assert "python build_a.py" in results["b1"]

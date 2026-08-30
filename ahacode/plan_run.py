@@ -161,7 +161,7 @@ class PlanRun:
             child.stem, parent_id=parent_id, kind="impl", relation="handoff", depth=depth,
             model=config.load().name, title=storage.plan_title(plan),
         ))
-        await app._switch_session(child.stem)  # empty child; also flips the bar to act
+        await app.sessions.switch(child.stem)  # empty child; also flips the bar to act
         await app._say_system(
             f"↳ 계획 실행 세션 — {storage.display_path(plan)} 을 읽고 진행합니다 "
             f"(계획 세션 {parent_id} 의 자식)"
