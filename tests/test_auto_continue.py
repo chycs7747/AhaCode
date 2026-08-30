@@ -14,8 +14,9 @@ import pytest
 
 from ahacode import agent, client, config, storage
 from ahacode.app import AhaCodeApp
-from ahacode.events import TextDelta
+from ahacode.events import TextDelta, ToolCall, Usage
 from ahacode.tools import plan
+from ahacode.tools.base import Tool
 from ahacode.widgets.todo_panel import TodoPanel
 
 METRICS = {"prompt": 100, "gen": 10, "gen_seconds": 1.0, "ttft": 0.5, "model": "m"}
@@ -191,6 +192,76 @@ async def test_typing_clears_the_stall(monkeypatch):
 
 async def _noop():
     return None
+
+
+# --- the round backstop, which is what makes an uncapped run leavable -------
+
+@pytest.mark.asyncio
+async def test_an_uncapped_turn_ends_when_no_step_lands(monkeypatch):
+    """The case the whole backstop exists for: no turn cap, nobody watching, and
+    a model that will keep calling tools all night. should_pause ends the turn
+    between rounds, which hands it to the turn-level detector above."""
+    monkeypatch.setattr(config, "load",
+                        _cfg(impl_max_turns=0, stall_rounds=5, auto_continue_stall=3))
+    rounds = []
+
+    def stream(messages, tools=None):
+        rounds.append(1)
+        return iter([Usage(10, 5, 15),
+                     ToolCall(id=str(len(rounds)), name="read", arguments={"path": "a"})])
+
+    monkeypatch.setattr(client, "stream_chat", stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await _impl_app(pilot, app, done=0)
+        monkeypatch.setattr(app, "_registry_for_mode", lambda: {
+            "read": Tool(name="read", description="", parameters={},
+                         execute=lambda a: "body")})
+        monkeypatch.setattr(app, "_approve_tool", lambda call: True)
+        monkeypatch.setattr(app, "_auto_continue", _noop)   # judge one turn only
+        app.query_one("#prompt").text = "go"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert len(rounds) == 5, f"ran {len(rounds)} rounds against a limit of 5"
+    assert app._round_stalled
+
+
+@pytest.mark.asyncio
+async def test_a_completed_step_buys_more_rounds(monkeypatch):
+    """A slow but moving run must never be cut. Completing a step resets the
+    counter, so the limit bounds barren rounds — not rounds."""
+    monkeypatch.setattr(config, "load",
+                        _cfg(impl_max_turns=0, stall_rounds=3, auto_continue_stall=3))
+    rounds = []
+
+    def stream(messages, tools=None):
+        rounds.append(1)
+        # On round 3, a step lands — which should buy 3 more rounds.
+        if len(rounds) == 3:
+            return iter([Usage(10, 5, 15),
+                         ToolCall(id="p", name="todo_write",
+                                  arguments={"items": _steps(1)})])
+        return iter([Usage(10, 5, 15),
+                     ToolCall(id=str(len(rounds)), name="read", arguments={"path": "a"})])
+
+    monkeypatch.setattr(client, "stream_chat", stream)
+    app = AhaCodeApp()
+    async with app.run_test() as pilot:
+        await _impl_app(pilot, app, done=0)
+        monkeypatch.setattr(app, "_registry_for_mode", lambda: {
+            "read": Tool(name="read", description="", parameters={},
+                         execute=lambda a: "body"),
+            "todo_write": Tool(name="todo_write", description="", parameters={},
+                               execute=lambda a: "saved")})
+        monkeypatch.setattr(app, "_approve_tool", lambda call: True)
+        monkeypatch.setattr(app, "_auto_continue", _noop)
+        app.query_one("#prompt").text = "go"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    # 3 barren, then the step resets, then 3 more barren: 6, not 3.
+    assert len(rounds) == 6, f"the step bought no rounds back (ran {len(rounds)})"
 
 
 # --- the round cap ---------------------------------------------------------

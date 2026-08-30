@@ -41,7 +41,7 @@ class SettingsResult:
     "follow the global budget"."""
 
     __slots__ = ("base_url", "api_key", "model", "timeout",
-                 "max_parallel", "depth", "impl_max_turns", "auto_continue_stall",
+                 "max_parallel", "depth", "impl_max_turns", "auto_continue_stall", "stall_rounds",
                  "context_window", "compact_threshold", "keep_recent",
                  "thinking_budget", "reasoning_effort",
                  "plan_thinking", "impl_thinking", "subagent_thinking",
@@ -52,7 +52,7 @@ class SettingsResult:
                  context_window, compact_threshold, keep_recent,
                  thinking_budget, reasoning_effort,
                  plan_thinking, impl_thinking, subagent_thinking,
-                 no_think_after_tools, auto_continue_stall):
+                 no_think_after_tools, auto_continue_stall, stall_rounds):
         self.base_url = base_url
         self.api_key = api_key
         self.model = model
@@ -61,6 +61,7 @@ class SettingsResult:
         self.depth = depth
         self.impl_max_turns = impl_max_turns
         self.auto_continue_stall = auto_continue_stall
+        self.stall_rounds = stall_rounds
         self.context_window = context_window
         self.compact_threshold = compact_threshold
         self.keep_recent = keep_recent
@@ -89,6 +90,9 @@ _IMPL_TURNS = [("0  (무제한)", 0), ("10", 10), ("20", 20), ("30  (기본)", 3
                ("50", 50), ("100", 100)]
 # Turns in a row that finish no step before auto-continue gives up.
 _STALL = [("0  (자동 진행 끔)", 0), ("2", 2), ("3  (기본)", 3), ("5", 5), ("10", 10)]
+# The same rule inside one turn. Only this one bounds a turn that never ends, so 0
+# is offered but is the setting that makes an uncapped run unattendable.
+_STALL_ROUNDS = [("0  (끔)", 0), ("20", 20), ("40  (기본)", 40), ("80", 80), ("150", 150)]
 # Common local context windows; 0 turns compaction off entirely. The large end is
 # for servers that advertise it (this gateway's max_model_len is 512K) — but the KV
 # cache is what actually holds it, and it is shared with every parallel sub-agent,
@@ -201,9 +205,16 @@ class Settings(ModalScreen["SettingsResult | None"]):
             yield Label("자동 진행 중단 (완료 없는 턴)")
             yield Select(_STALL, value=_nearest(_STALL, cfg.auto_continue_stall),
                          allow_blank=False, id="settings-stall")
+            yield Label("자동 진행 중단 (완료 없는 라운드)")
+            yield Select(_STALL_ROUNDS,
+                         value=_nearest(_STALL_ROUNDS, cfg.stall_rounds),
+                         allow_blank=False, id="settings-stall-rounds")
             yield Label(
                 "계획 실행 세션은 미완 단계가 남아 있으면 스스로 다음 턴을 시작합니다. "
-                "단계가 하나도 완료되지 않은 턴이 이만큼 연속되면 멈추고 알려줍니다.",
+                "단계가 하나도 완료되지 않은 턴이 이만큼 연속되면 멈추고 알려줍니다. "
+                "라운드 쪽은 한 턴 안에서 같은 판단을 하며, 턴 상한을 무제한으로 두었을 때 "
+                "실행을 끝낼 수 있는 유일한 장치입니다. 단계가 하나라도 완료되면 둘 다 "
+                "초기화되므로, 느리지만 진행 중인 작업은 잘리지 않습니다.",
                 classes="settings-hint")
 
     def _context_pane(self, cfg) -> ComposeResult:
@@ -309,6 +320,7 @@ class Settings(ModalScreen["SettingsResult | None"]):
             depth=int(self._value("depth")),
             impl_max_turns=int(self._value("impl-turns")),
             auto_continue_stall=int(self._value("stall")),
+            stall_rounds=int(self._value("stall-rounds")),
             context_window=int(self._value("window")),
             compact_threshold=float(self._value("threshold")),
             keep_recent=int(self._value("keep-recent")),

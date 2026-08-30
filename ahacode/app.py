@@ -154,6 +154,12 @@ class AhaCodeApp(App):
         # opposed to how much of it there was (see _auto_continue).
         self._done_steps = 0
         self._stalled = 0
+        # Rounds since a step last completed, and whether that is why the turn in
+        # flight ended. The counter is written by the response worker and reset on
+        # the main thread when a step lands; a lost reset costs one extra round,
+        # which is why it is a plain int and not a lock.
+        self._rounds_since_step = 0
+        self._round_stalled = False
         latest = storage.latest_session()
         if latest:  # resume the most recent session
             self.session_path = latest
@@ -265,6 +271,7 @@ class AhaCodeApp(App):
             max_parallel_agents=result.max_parallel, subagent_depth=result.depth,
             impl_max_turns=result.impl_max_turns,
             auto_continue_stall=result.auto_continue_stall,
+            stall_rounds=result.stall_rounds,
             context_window=result.context_window, compact_threshold=result.compact_threshold,
             keep_recent_messages=result.keep_recent,
             thinking_token_budget=result.thinking_budget,
@@ -795,6 +802,10 @@ class AhaCodeApp(App):
                 f"✓ 계획 완료 — {len(items)}단계 모두 처리 · 결과 {storage.display_path(out)}"
             )
 
+    @staticmethod
+    def _finished_steps(panel: TodoPanel) -> int:
+        return len(panel.items) - len(panel.unfinished())
+
     async def _auto_continue(self) -> None:
         """Carry an impl session on to its next turn without being asked.
 
@@ -820,20 +831,25 @@ class AhaCodeApp(App):
         left = panel.unfinished()
         if not panel.items or not left:
             return  # no checklist to judge progress by, or the plan is finished
-        done = len(panel.items) - len(left)
+        done = self._finished_steps(panel)
         # Strictly greater: a turn that completes nothing is a stall even if it
         # produced text, tool calls, and a confident summary — all of which the
         # stalling turns did produce.
         self._stalled = 0 if done > self._done_steps else self._stalled + 1
         self._done_steps = done
+        # Naming the round backstop matters: "the turn ended" and "the turn was cut
+        # off after 40 rounds of getting nowhere" look identical from the outside,
+        # and they call for opposite responses from whoever reads this in the morning.
+        why = f" (단계 완료 없이 {self._rounds_since_step}라운드)" if self._round_stalled else ""
         if self._stalled >= cfg.auto_continue_stall:
             await self._say_system(
-                f"⏹ {self._stalled}턴 연속으로 완료된 단계가 없어 자동 진행을 멈췄습니다 "
-                f"({done}/{len(panel.items)} 완료). 막힌 곳을 보고 직접 지시해 주세요."
+                f"⏹ {self._stalled}턴 연속으로 완료된 단계가 없어 자동 진행을 멈췄습니다"
+                f"{why} — {done}/{len(panel.items)} 완료. "
+                f"막힌 곳: {left[0].get('content', '')[:60]}"
             )
             return
         await self._say_system(
-            f"▶ 자동 진행 {done}/{len(panel.items)} 완료 · 다음: "
+            f"▶ 자동 진행 {done}/{len(panel.items)} 완료{why} · 다음: "
             f"{left[0].get('content', '')[:60]} (Esc 로 중지)"
         )
         text = prompts.continue_prompt()
@@ -1229,7 +1245,16 @@ class AhaCodeApp(App):
                 # used to overwrite the parent's checklist wholesale. Same ownership
                 # test the plan gate uses, for the same reason.
                 if boxes.get("gate"):
-                    self.query_one(TodoPanel).update_todos(items)
+                    panel = self.query_one(TodoPanel)
+                    before = self._finished_steps(panel)
+                    panel.update_todos(items)
+                    if self._finished_steps(panel) > before:
+                        # A step landed. This is the ONLY thing that resets the
+                        # round counter, which is what makes the counter a stall
+                        # detector rather than a round cap under another name: a
+                        # run that keeps finishing steps never trips it, however
+                        # many rounds each step takes.
+                        self._rounds_since_step = 0
                 boxes["tool"].clear()
                 boxes["tool_buf"].clear()
                 self._status("● planning…")
@@ -1506,6 +1531,10 @@ class AhaCodeApp(App):
 
         def emit(event) -> None:
             if isinstance(event, Usage):  # accounting only — never a bubble
+                # One usage trailer per model call, so this is also the round
+                # counter the stall backstop needs — counted here rather than off
+                # tool calls, which arrive several to a round.
+                self._rounds_since_step += 1
                 stats["prompt"] += event.prompt_tokens
                 stats["completion"] += event.completion_tokens
                 # The LAST turn's prompt size is what the next turn has to fit under;
@@ -1523,6 +1552,27 @@ class AhaCodeApp(App):
             self.session_path, self.session_depth, container, worker, approve
         )
 
+        # The stall backstop, at round granularity. Without it "no turn cap" means
+        # no backstop at all: the turn-level detector in _auto_continue can only
+        # judge a turn that ENDED, and an uncapped turn that never stops calling
+        # tools never gives it the chance — which is exactly the run left going
+        # overnight. Read once per turn rather than per round: config.load() reads
+        # a file, and the limit cannot usefully change mid-turn.
+        stall_rounds = config.load().stall_rounds if self.session_kind == "impl" else 0
+        self._rounds_since_step = 0
+        self._round_stalled = False
+
+        def should_pause() -> bool:
+            """Stop the loop BETWEEN rounds — cleanly, the way a finished answer
+            does, so everything produced so far is kept and the caller decides
+            what happens next."""
+            if self._plan_gate_pending:
+                return True
+            if stall_rounds and self._rounds_since_step >= stall_rounds:
+                self._round_stalled = True
+                return True
+            return False
+
         # The turn's mode picks its thinking budget (config.thinking_budget_for):
         # plan thinks deep, impl shallow, a plain act turn uses the global.
         turn_mode = "plan" if self.mode == "plan" else ("impl" if self.session_kind == "impl" else None)
@@ -1537,7 +1587,7 @@ class AhaCodeApp(App):
                     ctx=ctx,                            # task delegates through this
                     max_turns=self._max_turns(),        # larger for an impl session
                     prompt_tokens=self._last_prompt_tokens,  # measured, for compaction
-                    should_pause=lambda: self._plan_gate_pending,  # the plan gate
+                    should_pause=should_pause,  # the plan gate, and the stall backstop
                 )
         except Exception as exc:
             # Server 500, timeout, connection refused... all become a bubble, not a crash.

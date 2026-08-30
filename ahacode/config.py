@@ -38,6 +38,13 @@ DEFAULT_IMPL_MAX_TURNS = 30  # turn cap for a session carrying out a whole plan;
 # was really trying to catch, and it catches it without cutting work that IS moving.
 # 0 turns auto-continue off (the old behaviour: ask after every turn).
 DEFAULT_AUTO_CONTINUE_STALL = 3
+# The same rule one level down: rounds inside ONE turn that complete no step before
+# the turn is ended and handed back to the stall detector above. This is what makes
+# impl_max_turns = 0 safe to leave running unattended — an uncapped turn that never
+# stops calling tools would otherwise never end, and a detector that only judges
+# finished turns would never get to judge it. Reset by any step completing, so a run
+# that is slow but moving is never cut. 0 disables it.
+DEFAULT_STALL_ROUNDS = 40
 DEFAULT_MAX_PARALLEL_AGENTS = 8  # cap on concurrent gateway requests (measured knee)
 DEFAULT_THINKING_TOKEN_BUDGET = 4096  # per-turn reasoning-token cap; 0 = unbounded
 DEFAULT_REASONING_EFFORT = "medium"   # OpenAI-style hint (low|medium|high|xhigh)
@@ -99,6 +106,9 @@ class ModelConfig:
     # Turns in a row an impl session may finish no step before it stops continuing
     # by itself. 0 = no auto-continue.
     auto_continue_stall: int = DEFAULT_AUTO_CONTINUE_STALL
+    # Rounds within one turn that finish no step before the turn ends. The backstop
+    # that makes an uncapped run (impl_max_turns = 0) safe to leave alone. 0 = off.
+    stall_rounds: int = DEFAULT_STALL_ROUNDS
     # Pre-approval rules, "tool:pattern" (see permissions.py). A tuple, not a
     # list, because this dataclass is frozen and must stay hashable.
     allow_rules: tuple[str, ...] = DEFAULT_ALLOW_RULES
@@ -167,6 +177,9 @@ impl_max_turns = {cfg.impl_max_turns}
 # An impl session with unfinished steps continues on its own. It stops after this
 # many turns in a row that complete no step. 0 = never continue by itself.
 auto_continue_stall = {cfg.auto_continue_stall}
+# The same rule inside one turn: rounds that complete no step before the turn ends
+# and hands back. What makes impl_max_turns = 0 safe to leave running unattended.
+stall_rounds = {cfg.stall_rounds}
 # Per-mode reasoning-token cap (optional). Absent = the mode uses the global
 # thinking_token_budget above. Lets plan think deep, impl / sub-agents shallow.{_mode_budget_lines(cfg)}
 # Max concurrent requests to the gateway across all agents (the single-GPU backend
@@ -269,4 +282,5 @@ def _build(data: dict) -> ModelConfig:
         auto_continue_stall=int(
             agent.get("auto_continue_stall", DEFAULT_AUTO_CONTINUE_STALL)
         ),
+        stall_rounds=int(agent.get("stall_rounds", DEFAULT_STALL_ROUNDS)),
     )
