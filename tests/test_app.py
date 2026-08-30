@@ -7,6 +7,7 @@ from textual.widgets import Checkbox, Select
 
 from ahacode import client, config, storage
 from ahacode.app import AhaCodeApp
+from ahacode.turn_view import TurnBoxes
 from ahacode.events import TextDelta, ToolCall
 from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.prompt_input import PromptInput
@@ -1705,9 +1706,9 @@ async def test_manual_scroll_up_during_stream_sticks():
 
         turn = Vertical(classes="turn")           # more streamed content arrives
         await sc.mount(turn)
-        boxes = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}, "call_args": {}}
+        boxes = TurnBoxes()
         for _ in range(5):
-            await app._render_event(ThinkingDelta("more "), boxes, turn)
+            await app.turn_view.render(ThinkingDelta("more "), boxes, turn)
         await pilot.pause()
         assert sc.scroll_y == 0                    # stayed put — not yanked to the bottom
 

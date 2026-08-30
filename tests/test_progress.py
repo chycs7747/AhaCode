@@ -11,7 +11,8 @@ import pytest
 from rich.cells import cell_len
 
 from ahacode import agent, client, config, storage
-from ahacode.app import _PHASE_ID, AhaCodeApp
+from ahacode.app import AhaCodeApp
+from ahacode.turn_view import _PHASE_ID, TurnBoxes
 from ahacode.events import Phase, TextDelta, ToolCall, ToolResult
 from ahacode.widgets.subagent_card import SubagentCard
 
@@ -27,10 +28,7 @@ def isolated_environment(monkeypatch, tmp_path):
 
 
 def _boxes(gate=True):
-    b = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}, "call_args": {}}
-    if gate:
-        b["gate"] = True
-    return b
+    return TurnBoxes(owns_session=gate)
 
 
 @pytest.mark.asyncio
@@ -38,7 +36,7 @@ async def test_a_running_tool_counts_up():
     app = AhaCodeApp()
     async with app.run_test() as pilot:
         container = app.query_one("#chat-container")
-        await app._render_event(
+        await app.turn_view.render(
             ToolCall(id="1", name="bash", arguments={"command": "pytest"}),
             _boxes(), container)
         app._running_tools["1"] = ("bash", time.monotonic() - 87)
@@ -87,7 +85,7 @@ async def test_parallel_tools_are_counted_not_listed():
         container = app.query_one("#chat-container")
         boxes = _boxes()
         for i in range(3):
-            await app._render_event(
+            await app.turn_view.render(
                 ToolCall(id=str(i), name="read", arguments={"path": f"{i}.py"}),
                 boxes, container)
         app._tick_progress()
@@ -100,11 +98,11 @@ async def test_a_finished_tool_stops_being_counted():
     async with app.run_test() as pilot:
         container = app.query_one("#chat-container")
         boxes = _boxes()
-        await app._render_event(
+        await app.turn_view.render(
             ToolCall(id="1", name="bash", arguments={"command": "echo hi"}),
             boxes, container)
         assert app._running_tools
-        await app._render_event(ToolResult("1", "bash", "hi"), boxes, container)
+        await app.turn_view.render(ToolResult("1", "bash", "hi"), boxes, container)
         assert not app._running_tools
 
 
@@ -115,7 +113,7 @@ async def test_a_subagents_tool_does_not_claim_the_status_line():
     app = AhaCodeApp()
     async with app.run_test() as pilot:
         container = app.query_one("#chat-container")
-        await app._render_event(
+        await app.turn_view.render(
             ToolCall(id="9", name="grep", arguments={"pattern": "x"}),
             _boxes(gate=False), container)          # a child's boxes carry no gate
         assert not app._running_tools
@@ -129,7 +127,7 @@ async def test_compaction_counts_up_like_a_tool():
     app = AhaCodeApp()
     async with app.run_test() as pilot:
         container = app.query_one("#chat-container")
-        await app._render_event(Phase(agent.COMPACTING), _boxes(), container)
+        await app.turn_view.render(Phase(agent.COMPACTING), _boxes(), container)
         assert agent.COMPACTING in app._last_status
         app._running_tools[_PHASE_ID] = (agent.COMPACTING, time.monotonic() - 122)
         app._tick_progress()
@@ -142,9 +140,9 @@ async def test_a_finished_compaction_stops_being_counted():
     async with app.run_test() as pilot:
         container = app.query_one("#chat-container")
         boxes = _boxes()
-        await app._render_event(Phase(agent.COMPACTING), boxes, container)
+        await app.turn_view.render(Phase(agent.COMPACTING), boxes, container)
         assert app._running_tools
-        await app._render_event(Phase(agent.COMPACTING, done=True), boxes, container)
+        await app.turn_view.render(Phase(agent.COMPACTING, done=True), boxes, container)
         assert not app._running_tools
 
 
@@ -155,7 +153,7 @@ async def test_a_subagents_compaction_does_not_claim_the_status_line():
     app = AhaCodeApp()
     async with app.run_test() as pilot:
         container = app.query_one("#chat-container")
-        await app._render_event(Phase(agent.COMPACTING), _boxes(gate=False), container)
+        await app.turn_view.render(Phase(agent.COMPACTING), _boxes(gate=False), container)
         assert not app._running_tools
 
 

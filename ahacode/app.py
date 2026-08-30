@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -12,7 +11,6 @@ from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.widgets import Button, Select
 from textual.worker import get_current_worker
-from rich.text import Text
 from rich.theme import Theme
 
 from ahacode import (
@@ -21,11 +19,10 @@ from ahacode import (
 from ahacode.commands import Commands
 from ahacode.plan_run import PlanRun
 from ahacode.tools import spill
-from ahacode.events import (
-    Notice, Phase, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage,
-)
-from ahacode.render import diff_stats, edit_diff_lines, tool_summary
+from ahacode.events import TextDelta, ThinkingDelta, Usage
+from ahacode.render import tool_summary
 from ahacode.session import ChatSession
+from ahacode.turn_view import _PHASE_ID, TurnBoxes, TurnView, edit_card  # noqa: F401
 from ahacode.widgets.approval_modal import ApprovalModal
 from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.header_bar import HeaderBar
@@ -33,18 +30,12 @@ from ahacode.widgets.settings import Settings, SettingsResult
 from ahacode.widgets.prompt_input import PromptInput
 from ahacode.widgets.session_picker import SessionPicker
 from ahacode.widgets.subagent_card import SubagentCard
-from ahacode.widgets.thinking import ThinkingBlock
 from ahacode.widgets.tool_result import ToolResultBlock
 from ahacode.widgets.todo_panel import TodoPanel
 from ahacode.widgets.model_bar import ModelBar
 
 
 # System prompts now live in ahacode/prompts.py (assembled per mode/model).
-
-# Harness phases share _running_tools with the tools so they get the same ticking
-# clock. This is the id they book it under: not a call id, so it cannot collide
-# with one, and a single slot because phases do not nest.
-_PHASE_ID = "\0phase"
 
 # Eye-friendly Markdown palette. Rich's defaults paint headings magenta and inline
 # code "bold cyan on black" — harsh on a dark terminal. Pushed onto the app console:
@@ -66,44 +57,10 @@ MARKDOWN_THEME = Theme(
     }
 )
 
-_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}
-
 # How long a quit waits for an orderly shutdown before leaving anyway. Long enough
 # for Textual to restore the terminal and for an in-flight one-line append to the
 # session file to land; short enough that a wedged worker is not the user's problem.
 QUIT_GRACE_SECONDS = 1.5
-
-
-def _tool_unescape(s: str) -> str:
-    """Decode a (possibly incomplete) JSON string value, escape by escape."""
-    out, i = [], 0
-    while i < len(s):
-        c = s[i]
-        if c == "\\" and i + 1 < len(s):
-            out.append(_ESCAPES.get(s[i + 1], s[i + 1]))
-            i += 2
-        else:
-            out.append(c)
-            i += 1
-    return "".join(out)
-
-
-def _render_tool_stream(name: str, args: str) -> str:
-    """Live label for a streaming tool call whose args JSON may be incomplete.
-
-    write is shown as a path header + streamed content (pull known fields out
-    early); every other tool shows its raw accumulating args.
-    """
-    if name == "write":
-        m = re.search(r'"path"\s*:\s*"((?:[^"\\]|\\.)*)"', args)
-        path = _tool_unescape(m.group(1)) if m else "…"
-        body = ""
-        cm = re.search(r'"content"\s*:\s*"', args)
-        if cm:
-            tail = re.sub(r'"\s*}?\s*$', "", args[cm.end():])
-            body = _tool_unescape(tail)
-        return f"🔧 write · {path}\n{body}"
-    return f"🔧 {name}  {args}"
 
 
 class AhaCodeApp(App):
@@ -124,6 +81,7 @@ class AhaCodeApp(App):
         self.session = ChatSession()
         self.commands = Commands(self)  # /model, /url, /allow, /think
         self.plan = PlanRun(self)  # the gate, the handoff, and the stall detector
+        self.turn_view = TurnView(self)  # events -> mounted bubbles and cards
         self.mode = "act"  # "act" (full tools) or "plan" (read-only + todo_write)
         self._last_status = ""
         self.auto_approve = False  # session-only: skip the approval modal when on
@@ -371,7 +329,7 @@ class AhaCodeApp(App):
                     except (json.JSONDecodeError, TypeError):
                         call_args[cid] = {}
                     if name == "edit":  # its result is skipped below
-                        await turn.mount(self._edit_card(call_args[cid]))
+                        await turn.mount(edit_card(call_args[cid]))
                     elif name == "todo_write":  # to the pinned panel, as when live
                         todo.update_todos(call_args[cid].get("items", []))
                     elif name == "plan_submit":  # the submitted plan IS the checklist
@@ -496,20 +454,6 @@ class AhaCodeApp(App):
             meta = storage.read_session_meta(self.session_path) or {}
             self._set_header_title(meta.get("title", ""))
             self._has_title = bool(meta.get("title"))
-
-    @staticmethod
-    def _edit_card(args: dict) -> Chatbox:
-        """Build the green edit-diff card (path title + count chip + -/+ lines) —
-        shared by the live turn and history restore."""
-        path = args.get("path", "?")
-        old, new = args.get("old_string", ""), args.get("new_string", "")
-        text, plain = edit_diff_lines(old, new)
-        added, removed = diff_stats(old, new)
-        box = Chatbox("", role="tool-diff")
-        box.set_rich(text, plain)
-        box.border_title = f"✏ edit · {path}"
-        box.border_subtitle = f"+{added} −{removed}"
-        return box
 
     async def _say_system(self, text: str) -> None:
         """Show an informational bubble (commands, status) — never part of the session."""
@@ -807,158 +751,6 @@ class AhaCodeApp(App):
         container.scroll_end(animate=False)
         self._status("")
 
-    def _fold_thinking(self, boxes: dict) -> None:
-        """Collapse this turn's thinking block once the reasoning is done.
-
-        The block stays open while it streams, then folds when the answer or a
-        tool call begins (auto-collapsing finished reasoning).
-        """
-        block = boxes["thinking"]
-        if block is not None:
-            block.done()
-            boxes["thinking"] = None
-
-    async def _render_event(
-        self, event, boxes: dict, container: VerticalScroll
-    ) -> None:
-        """Main-thread renderer: mount/append bubbles as the loop emits events.
-
-        Runs via call_from_thread (which awaits this coroutine), so each mount is
-        complete before the next append — no races with the worker thread. `boxes`
-        holds the current turn's live thinking/answer bubbles; a tool call ends a
-        turn, so the next thinking/text opens fresh bubbles.
-        """
-        if isinstance(event, Notice):
-            # Harness-authored, not the model's answer — the same neutral bubble a
-            # slash command gets. It ends the current answer, so the next TextDelta
-            # opens a fresh one below it.
-            self._fold_thinking(boxes)
-            boxes["answer"] = None
-            await container.mount(Chatbox(event.text, role="system"))
-        elif isinstance(event, Phase):
-            # Harness work with a duration, on the same clock the tools use: the
-            # point is a number that MOVES, because a static line is the picture a
-            # deadlock makes. A sub-agent's phases are skipped like its tools — its
-            # card carries its own clock, and the gate check tells the two apart.
-            if not boxes.get("gate"):
-                return
-            if event.done:
-                self._running_tools.pop(_PHASE_ID, None)
-            else:
-                self._running_tools[_PHASE_ID] = (event.name, time.monotonic())
-                self._status(f"● {event.name} · 0초")
-        elif isinstance(event, ThinkingDelta):
-            if boxes["thinking"] is None:
-                boxes["thinking"] = ThinkingBlock()  # foldable; starts expanded
-                await container.mount(boxes["thinking"])
-            boxes["thinking"].append_chunk(event.text)
-            self._status("● thinking…")
-        elif isinstance(event, TextDelta):
-            self._fold_thinking(boxes)  # answer starting → auto-collapse the reasoning
-            if boxes["answer"] is None:
-                # markdown=True: render the answer as Markdown so ```code``` and
-                # ```diff fences become highlighted blocks.
-                boxes["answer"] = Chatbox("", role="assistant", markdown=True)
-                await container.mount(boxes["answer"])
-            boxes["answer"].append_chunk(event.text)
-            self._status("● generating…")
-        elif isinstance(event, ToolCallDelta):
-            if event.name == "todo_write":
-                return  # todo_write shows in the panel on its final call, not a bubble
-            if event.name == "edit":
-                self._fold_thinking(boxes)
-                boxes["answer"] = None
-                self._status("● editing…")
-                return  # edit's coloured diff is rendered on the final ToolCall
-            self._fold_thinking(boxes)
-            boxes["answer"] = None
-            if event.name == "write":
-                # write streams its content live into one bubble
-                buf = boxes["tool_buf"].get(event.index, "") + event.fragment
-                boxes["tool_buf"][event.index] = buf
-                box = boxes["tool"].get(event.index)
-                if box is None:
-                    box = Chatbox("", role="tool-call")
-                    await container.mount(box)
-                    boxes["tool"][event.index] = box
-                box._content = _render_tool_stream(event.name, buf)
-                box.update(box._content)
-                self._status("● writing…")
-            else:
-                # bash / read / grep …: no call bubble — the result card shows the
-                # command in its title (IN) and the output in its body (OUT), the
-                # Claude Code shape. The status bar reports progress until it lands.
-                self._status(f"● running {event.name}…")
-        elif isinstance(event, ToolCall):
-            self._fold_thinking(boxes)  # fold reasoning; next turn opens fresh bubbles
-            boxes["answer"] = None
-            # Remember the call's input so the result card can title itself with it.
-            boxes.setdefault("call_args", {})[event.id] = event.arguments
-            # Only this loop's own tools drive the status line. A sub-agent reports
-            # inside its card, and with several running in parallel their tools would
-            # otherwise take turns overwriting each other in the one status line.
-            if boxes.get("gate"):
-                self._running_tools[event.id] = (event.name, time.monotonic())
-            if event.name == "todo_write":  # goes to the pinned panel, not a bubble
-                items = event.arguments.get("items", [])
-                # Only THIS loop owns the pinned plan. A sub-agent runs with its own
-                # boxes (no "gate" key); planning its private sub-task used to
-                # overwrite the parent's checklist wholesale.
-                if boxes.get("gate"):
-                    self.plan.note_todo_update(self.query_one(TodoPanel), items)
-                boxes["tool"].clear()
-                boxes["tool_buf"].clear()
-                self._status("● planning…")
-                return
-            if event.name == "plan_submit":  # the plan goes to the panel; the gate
-                if boxes.get("gate"):        # opens when its result confirms the save
-                    self.query_one(TodoPanel).update_todos(self.plan.items(event.arguments))
-                boxes["tool"].clear()
-                boxes["tool_buf"].clear()
-                self._status("● submitting plan…")
-                return
-            if event.name == "edit":  # green diff card (shared with history restore)
-                await container.mount(self._edit_card(event.arguments))
-                boxes["tool"].clear()
-                boxes["tool_buf"].clear()
-                self._status("● editing…")
-                return
-            # write streamed a live content bubble (kept); other tools show only the
-            # result card, so there's no call bubble to keep here.
-            boxes["tool"].clear()
-            boxes["tool_buf"].clear()
-            self._status(f"● running {event.name}…")
-        elif isinstance(event, ToolResult):
-            self._running_tools.pop(event.id, None)
-            if event.name == "todo_write":
-                return  # already reflected in the pinned panel
-            if event.name == "plan_submit" and not event.is_error and boxes.get("gate"):
-                # A rejected submission falls through to the error card below, so the
-                # user sees why; the model already has the reason and resubmits.
-                args = boxes.get("call_args", {}).get(event.id, {})
-                path = event.output.split(" (", 1)[0].removeprefix("Plan saved to ")
-                await self.plan.open(
-                    [it["content"] for it in self.plan.items(args)],
-                    str(args.get("summary", "")).strip(), path, container,
-                )
-                return
-            if event.name == "edit" and not event.is_error:
-                return  # a successful edit is already shown as the diff card
-            if event.name == "task":
-                return  # the sub-agent's own 🤖 card already shows its flow + result
-            # One foldable card: the command/path in the title (IN), the output in
-            # the body (OUT). Long output / errors fold away.
-            summary = tool_summary(event.name, boxes.get("call_args", {}).get(event.id, {}))
-            await container.mount(
-                ToolResultBlock(event.name, event.output, event.is_error, summary=summary)
-            )
-        # Follow the stream ONLY while _follow_output is set (a watcher on scroll_y
-        # drives it — see _update_follow), so a manual scroll-up during streaming
-        # STAYS off. The old per-chunk "near the bottom?" snap re-pinned every chunk,
-        # making it impossible to scroll away mid-answer.
-        if self._follow_output:
-            self.query_one("#chat-container", VerticalScroll).scroll_end(animate=False)
-
     def action_copy_answer(self) -> None:
         """Copy the last assistant answer to the system clipboard (OSC 52 — works over
         SSH). The TUI captures the mouse, so terminal drag-select is unreliable; this
@@ -1131,12 +923,12 @@ class AhaCodeApp(App):
             ))
             card = SubagentCard(description or "task", cfg.name)
             self.call_from_thread(container.mount, card)
-            child_boxes = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {}, "call_args": {}}
+            child_boxes = TurnBoxes()  # no owns_session: a child touches no session UI
 
             def child_emit(event) -> None:
                 if isinstance(event, Usage):
                     return  # child token accounting isn't surfaced in this slice
-                self.call_from_thread(self._render_event, event, child_boxes, card.body)
+                self.call_from_thread(self.turn_view.render, event, child_boxes, card.body)
 
             result = subagent.run(
                 prompt,
@@ -1163,11 +955,9 @@ class AhaCodeApp(App):
         """Run the agent loop in a thread, rendering its events into the chat."""
         worker = get_current_worker()
         container = turn  # the reply's blocks mount into this turn's rail container
-        # Current turn's live bubbles; _render_event fills these in on the main thread.
-        # "gate": only this loop may open the plan gate — a sub-agent's boxes carry
-        # no such key, so a child's todo_write can never pause its parent.
-        boxes: dict = {"thinking": None, "answer": None, "tool": {}, "tool_buf": {},
-                       "call_args": {}, "gate": True}
+        # This turn's live bubbles. owns_session: only the main loop may drive the
+        # status line, the pinned checklist and the plan gate.
+        boxes = TurnBoxes(owns_session=True)
 
         stats = {"prompt": 0, "completion": 0, "t_start": time.monotonic(), "t_first": None,
                  "last_prompt": None}
@@ -1188,7 +978,7 @@ class AhaCodeApp(App):
                 stats["t_first"] = time.monotonic()
             # Hop to the main thread to touch widgets. call_from_thread blocks the
             # worker until the UI has rendered — built-in backpressure.
-            self.call_from_thread(self._render_event, event, boxes, container)
+            self.call_from_thread(self.turn_view.render, event, boxes, container)
 
         approve = self._approve_tool
         ctx = self._make_subagent_ctx(
