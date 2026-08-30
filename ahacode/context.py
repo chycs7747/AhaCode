@@ -52,12 +52,10 @@ _MAX_MESSAGE_CHARS = 1200
 # ...but a message has to be worth reading. Below this an entry says nothing the
 # summary can use, so coverage stops being the thing worth buying.
 _MIN_MESSAGE_CHARS = 200
-# The transcript budget is a SHARE OF THE WINDOW, not a constant. It used to be a
-# flat 24,000 characters, which was survivable at a 32K window and quietly ruinous
-# above it: at 256K the stretch being condensed measured 795,118 characters and the
-# summarizer saw 23,740 of them — 3%, all from the oldest end, the other 97%
-# replaced by one "omitted" marker. That is not summarizing a session, it is
-# deleting it and writing a note about the beginning.
+# The transcript budget is a SHARE OF THE WINDOW, not a constant. A flat 24,000
+# characters survived a 32K window and was ruinous above it: at 256K the stretch
+# being condensed measured 795,118 characters and the summarizer saw 3% of them,
+# all from the oldest end. That is not summarizing a session but deleting it.
 _TRANSCRIPT_WINDOW_SHARE = 0.35
 _CHARS_PER_TOKEN = 3            # matches estimate_tokens' deliberate pessimism
 _MIN_TRANSCRIPT_CHARS = 24_000  # the old constant, now the floor rather than the cap

@@ -11,11 +11,10 @@ from ahacode.events import (
     Event, Notice, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, Usage,
 )
 
-# The mode of the turn currently being sent, per THREAD — so plan/impl/sub-agent
-# each pick their own thinking budget (config.thinking_budget_for). Thread-local
-# because parallel sub-agents run on separate pool threads; the context manager
-# saves and restores, so a sub-agent run on the SAME thread as its parent (the
-# sequential path) leaves the parent's mode intact when it returns.
+# The mode of the turn being sent, per THREAD, so plan/impl/sub-agent each pick
+# their own thinking budget (config.thinking_budget_for). Thread-local because
+# parallel sub-agents run on separate pool threads; the context manager saves and
+# restores, so a child on its parent's own thread leaves the parent's mode intact.
 _mode = threading.local()
 
 
@@ -38,28 +37,21 @@ def mode(name: str | None):
 # when tools are offered, completed ToolCalls are emitted once reassembled.
 
 # --- sampling profiles ------------------------------------------------------
-# How a model should be SAMPLED is a property of the model, not of the task, so it
-# belongs here beside the other provider-specific knobs rather than in config.toml.
+# How a model is SAMPLED is a property of the model, not of the task, so it lives
+# here beside the other provider knobs rather than in config.toml.
 #
-# Until now nothing was sent at all, which meant the server's own default governed
-# every request. That is worse than a wrong value: it is an INVISIBLE one. It changes
-# when the vLLM container is restarted with different flags or a different
-# generation_config.json, the app has no way to know, and an experiment run today
-# cannot be reproduced tomorrow. Measured on the gateway: with nothing sent, five
-# identical requests produced five different answers; with temperature=0 they were
-# byte-identical — so a per-request value does override the load-time default.
+# Sending nothing is worse than sending a wrong value: it hands the request to the
+# server's default, which moves with the vLLM container's flags and which the app
+# cannot see. Measured on the gateway — nothing sent: five identical requests, five
+# different answers; temperature=0: byte-identical. So a per-request value does
+# override the load-time default. A/B over 48 runs found no effect on solve rate,
+# turns or tokens, which is the point: this buys reproducibility, not quality.
 #
-# The values are Qwen's published recommendation, and they differ BY MODE — which
-# matters here because this app switches modes within a single conversation (see
-# no_think below). One server-side default cannot satisfy both.
-#
-# A/B measured across 48 runs: no effect on solve rate, turns or tokens (48/48 either
-# way). This is not here to make the model better; it is here so the app stops
-# depending on a setting it cannot see.
-#
-# Standard OpenAI fields go in the request body; top_k / min_p / repetition_penalty
-# are vLLM extensions and must ride in extra_body — which is also why the profile is
-# keyed by family: sending them to Anthropic or OpenAI would be rejected.
+# The values are Qwen's published recommendation and differ BY MODE, because this
+# app switches modes within one conversation (see no_think) and a single
+# server-side default cannot satisfy both. top_k / min_p / repetition_penalty are
+# vLLM extensions that must ride in extra_body — which is why the profile is keyed
+# by family: Anthropic or OpenAI would reject them.
 SAMPLING: dict[str, dict[str, dict]] = {
     "qwen": {
         "think":   {"kwargs": {"temperature": 1.0, "top_p": 0.95, "presence_penalty": 0.0},
@@ -101,10 +93,9 @@ def sampling_for(model: str, *, no_think: bool) -> tuple[dict, dict]:
 PROBE_TIMEOUT = 10.0
 
 # Endpoints that refused our vendor extensions, by base_url. Everything outside the
-# plain OpenAI request shape — enable_thinking, thinking_token_budget, top_k, min_p —
-# is an extension some servers take and others reject outright. Remembered so the
-# failed round trip that discovers it is paid once, not on every turn. reset() clears
-# it, which is also the way to re-probe a server you have since reconfigured.
+# plain OpenAI shape — enable_thinking, thinking_token_budget, top_k, min_p — is an
+# extension some servers reject outright, so the failed round trip that discovers it
+# is paid once. reset() clears this, which is how you re-probe a reconfigured server.
 _NO_EXTRAS: set[str] = set()
 
 _client: OpenAI | None = None
@@ -256,13 +247,11 @@ def _iter_events(chunks: Iterable) -> Iterator[Event]:
             finish_reason = choice.finish_reason
         delta = choice.delta
 
-        # Thinking arrives under a different key depending on the server: vLLM's
-        # reasoning parser and DeepSeek-shaped APIs use reasoning_content, while
-        # other builds and gateways use plain reasoning. Neither is in the SDK's
-        # typed model, hence the defensive getattr. Read BOTH — a server that speaks
-        # one while we look for the other is indistinguishable from a model that
-        # never thinks, which is exactly how this presented: no thinking block, no
-        # error, just a long silence before the answer.
+        # Thinking arrives under a different key per server: reasoning_content on
+        # vLLM's parser and DeepSeek-shaped APIs, plain reasoning elsewhere. Neither
+        # is in the SDK's typed model, hence the getattr. Read BOTH — looking for
+        # the wrong one is indistinguishable from a model that never thinks: no
+        # block, no error, just a long silence before the answer.
         for key in ("reasoning_content", "reasoning"):
             piece = getattr(delta, key, None)
             if isinstance(piece, str) and piece:
@@ -296,12 +285,10 @@ def _iter_events(chunks: Iterable) -> Iterator[Event]:
         try:
             arguments = json.loads(slot["args"] or "{}")
         except json.JSONDecodeError:
-            # Don't drop it. A dropped call can leave the turn with no tool call at
-            # all, which the agent loop reads as "final answer" and stops mid-task
-            # (measured: a local model emitting a malformed call twice ended the run
-            # each time). Emit the call carrying the parse failure so the loop feeds
-            # an error result back and the model resends it — the same way an
-            # execution error is surfaced, not a silent skip.
+            # Don't drop it: a turn left with no tool call reads as "final answer"
+            # to the agent loop, which then stops mid-task (measured — a malformed
+            # call ended the run both times). Emit the call carrying its parse
+            # failure so the loop feeds an error back and the model resends.
             yield ToolCall(id=slot["id"], name=slot["name"], arguments={},
                            parse_error="arguments were not valid JSON")
             continue
@@ -324,15 +311,13 @@ def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterat
         # tool, which would force its hand). Only sent alongside tools — some
         # servers reject tool_choice without a tools list.
         kwargs["tool_choice"] = "auto"
-    # Reasoning controls (vendor extensions passed via extra_body). Two mutually
-    # exclusive modes for this request:
-    #  - no-think turn: the last message is a tool result, so this turn just acts on
-    #    it. Disable thinking entirely (enable_thinking=False) — no budget/effort, they
-    #    are meaningless with thinking off. This stops the per-turn re-deliberation that
-    #    stacks into a multi-turn spiral (the budget only caps ONE turn).
-    #  - normal turn: thinking on, capped by thinking_token_budget; reasoning_effort is
-    #    a named hint. A server without its reasoning-config refuses the budget — handled
-    #    by the fallback below.
+    # Reasoning controls (vendor extensions, via extra_body). Two exclusive modes:
+    #  - no-think: the last message is a tool result, so this turn acts on it rather
+    #    than re-deliberating. enable_thinking=False, and no budget/effort — both are
+    #    meaningless with thinking off. The budget caps ONE turn; this is what stops
+    #    re-deliberation stacking into a multi-turn spiral.
+    #  - normal: thinking on, capped by thinking_token_budget, reasoning_effort as a
+    #    hint. A server without a reasoning-config refuses the budget (see fallback).
     extra = {}
     no_think = (
         cfg.no_think_after_tools
@@ -358,10 +343,9 @@ def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterat
     if extra and cfg.base_url not in _NO_EXTRAS:
         kwargs["extra_body"] = extra
     # Hold a global concurrency permit for the request's lifetime: taken here,
-    # released when this generator is exhausted or closed. All agents funnel through
-    # here, so this bounds true gateway concurrency (see _ensure_gate). The inner
-    # `with` closes the HTTP connection on every exit path — including when the
-    # caller abandons the generator mid-stream (GeneratorExit).
+    # released when this generator is exhausted or closed. Every agent funnels
+    # through here, so this is what bounds real gateway concurrency. The inner
+    # `with` closes the connection on every exit path, GeneratorExit included.
     gate, healed = yield from _wait_for_permit(cfg.timeout, cfg.max_parallel_agents)
     if healed:
         # Say it out loud rather than recovering in silence: a gate that had to be
@@ -435,14 +419,12 @@ def complete(messages: list[dict]) -> str:
     # happens to default to. A title or a summary is not a thinking task, so it takes
     # the non-thinking profile.
     sample_kwargs, sample_extra = sampling_for(cfg.name, no_think=True)
-    # ...and thinking itself is switched off to match, not just the sampling. This
-    # used to send the no-think profile to a model still doing full chain-of-thought,
-    # which is the worst of both: the sampling says "be decisive", the budget says
-    # "deliberate for 4096 tokens". Compaction runs here, so on a thinking model the
-    # summary of a long session paid a minutes-long reasoning pass before its first
-    # word — a wait with no stream behind it, which is how one measured six-minute
-    # compaction read as a frozen app. Nothing here needs deliberation: a title and a
-    # condensed transcript are both restatements of text already in the prompt.
+    # ...and thinking is switched off to match, not just the sampling — otherwise
+    # the sampling says "be decisive" while the budget says "deliberate for 4096
+    # tokens". Compaction runs here, so a thinking model paid a reasoning pass before
+    # the summary's first word: one measured six-minute compaction, no stream behind
+    # it, indistinguishable from a frozen app. Nothing here needs deliberation — a
+    # title and a condensed transcript both restate text already in the prompt.
     sample_extra["chat_template_kwargs"] = {"enable_thinking": False}
     if cfg.base_url in _NO_EXTRAS:
         sample_extra = {}

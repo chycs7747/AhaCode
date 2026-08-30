@@ -37,11 +37,10 @@ DEFAULT_MAX_TURNS = 10
 # exactly the seconds it is there to show. The Notice afterwards says the rest.
 COMPACTING = "압축 중"
 
-# Names models reach for that this project spells differently — mapped to the tool
-# that actually does the job. Not aliases: the call still fails. This exists so the
-# failure costs ONE turn instead of a run of them, because a model that invented
-# `run_python` answers a bare rejection by inventing `python`, then
-# `code_interpreter`. Only names with an unambiguous local equivalent belong here.
+# Names models reach for that this project spells differently, mapped to the tool
+# that does the job. NOT aliases — the call still fails; this only makes the failure
+# cost one turn instead of a run of them, because a model rejected over `run_python`
+# invents `python`, then `code_interpreter`. Unambiguous equivalents only.
 _INSTEAD_OF = {
     "bash": ("run_python", "python", "python3", "code_interpreter", "run_code",
              "execute_code", "execute", "exec", "shell", "terminal", "run_command"),
@@ -168,11 +167,10 @@ def _gate_tool(call: ToolCall, registry: dict, approve: ApproveFn | None):
         )
     tool = registry.get(call.name)
     if tool is None:
-        # "unknown tool: X" alone is a dead end. Point at the two things that
-        # resolve it: the set this turn actually has (it varies by mode, so the
-        # model cannot know it without being told) and the schemas already sitting
-        # in this request. Same principle as the parse_error branch above — say what
-        # to do next, not just what went wrong.
+        # "unknown tool: X" alone is a dead end. Name the two things that resolve
+        # it: this turn's actual set (it varies by mode, so the model cannot know it
+        # unless told) and the schemas already in this request. Same principle as
+        # the parse_error branch — say what to do next, not just what went wrong.
         return ToolResult(
             call.id, call.name,
             f"unknown tool: {call.name}. This turn's tools are: "
@@ -258,12 +256,11 @@ def run(
         messages.append(msg)
         appended.append(msg)
 
-    # max_turns <= 0 means no cap. The cap exists to stop a runaway loop, but on a
-    # session carrying out a plan it was stopping ORDINARY work: one measured turn
-    # spent all 30 rounds and 25 minutes and finished 0 of 3 steps, so every turn
-    # ended in the wrap-up below instead of at a completed step. Uncapped, the
-    # backstop moves to the caller, which can see something the round counter never
-    # could — whether the checklist is actually advancing (see app._auto_continue).
+    # max_turns <= 0 means no cap. The cap stops a runaway loop, but on a session
+    # carrying out a plan it stopped ORDINARY work: one measured turn spent all 30
+    # rounds and 25 minutes on 0 of 3 steps, ending in the wrap-up below rather than
+    # at a completed step. Uncapped, the backstop moves to the caller, which can see
+    # what a round counter cannot — whether the checklist advances (_auto_continue).
     rounds = itertools.count() if max_turns <= 0 else range(max_turns)
     for _ in rounds:
         if is_cancelled():
@@ -306,11 +303,10 @@ def run(
             return appended
 
         # --- run the requested tools, feed results back, then loop ---
-        # Approval/safety runs sequentially (so modals never race); execution then
-        # runs in PARALLEL when there is more than one runnable tool and all are
-        # parallelizable (a task fan-out). The global gate in client.py still bounds
-        # true gateway concurrency. Results are emitted/appended in call order so the
-        # tool messages line up with the assistant's tool_calls.
+        # Approval/safety runs sequentially so modals never race; execution then runs
+        # in PARALLEL when every runnable tool is parallelizable (a task fan-out),
+        # still bounded by client.py's gate. Results are emitted and appended in CALL
+        # order, so the tool messages line up with the assistant's tool_calls.
         gated = [(call, _gate_tool(call, registry, approve)) for call in calls]
         runnable = [(call, t) for call, t in gated if not isinstance(t, ToolResult)]
         if len(runnable) > 1 and all(tool.parallelizable for _, tool in runnable):
