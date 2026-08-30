@@ -9,3 +9,6 @@ dist/
 # All app-generated data — never commit. One hidden folder holds config.toml
 # (may carry an API key), sessions/ (private conversations), plans/, and scratch/.
 .ahacode/
+
+# Agent scratch: probe/repro logs written during a run, never source.
+*.log

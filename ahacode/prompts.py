@@ -157,14 +157,6 @@ CONTINUE_PROMPT = (
     "repeating work you have already done."
 )
 
-SYNTHESIS_SYSTEM = (
-    "You are AhaCode finishing a task that was carried out in phases. You are given "
-    "the original task and the concise result of each completed phase. Combine them "
-    "into one clear, complete final answer for the user, in their language. Do NOT "
-    "redo the work or invent new steps — synthesize what the phases produced. "
-    "Be concise."
-)
-
 # Context compaction: the oldest stretch of a long conversation is replaced by one
 # summary produced with this prompt. What matters is carrying DECISIONS and
 # CONSTRAINTS forward — an agent that forgets a constraint re-violates it, which is
@@ -289,7 +281,3 @@ def compact_system() -> str:
     """System prompt for condensing an over-long conversation (see context.py)."""
     return COMPACT_SYSTEM
 
-
-def synthesis_system() -> str:
-    """System prompt for /run's reduce step (combine phase results into a final answer)."""
-    return SYNTHESIS_SYSTEM

@@ -161,11 +161,6 @@ ApprovalModal {
     min-width: 12;
 }
 
-.chatbox--plan {
-    color: $text;
-    border-left: thick $secondary;   /* the plan/checklist stands out from tool output */
-}
-
 ModelBar #mode-select {
     width: 12;
 }

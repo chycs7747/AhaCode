@@ -325,21 +325,6 @@ def delete_session(session_id: str, base_dir: Path | None = None) -> list[str]:
     return ids
 
 
-def active_leaf(session_id: str, sessions: list[dict]) -> str:
-    """Follow the handoff chain down from `session_id` to the session a resume should
-    open: the newest handoff child at each level (plan → impl → …), skipping delegate
-    children (a task fan-out is not the lineage you continue). Returns `session_id`
-    itself when it has no handoff child."""
-    by_id = {s["id"]: s for s in sessions}
-    current = session_id
-    while True:
-        children = [s for s in sessions
-                    if s.get("parent_id") == current and s.get("relation") == "handoff"]
-        if not children:
-            return current
-        current = max(children, key=lambda s: s["id"])["id"]  # id is a timestamp
-
-
 def dangling_tool_calls(messages: list[dict]) -> list[dict]:
     """The last assistant turn's tool calls that never got a result — the mark of a
     turn cut off mid-tool (a Stop or Ctrl+D while a tool ran). Each is returned with
@@ -359,12 +344,6 @@ def dangling_tool_calls(messages: list[dict]) -> list[dict]:
             args = {}
         out.append({"id": c["id"], "name": fn.get("name", "tool"), "arguments": args})
     return out
-
-
-def dangling_tool_call_ids(messages: list[dict]) -> list[str]:
-    """Just the ids of dangling_tool_calls (kept for callers that only need them)."""
-    return [c["id"] for c in dangling_tool_calls(messages)]
-
 
 def build_tree(sessions: list[dict]) -> list[dict]:
     """Nest a flat header list into a tree by parent_id.

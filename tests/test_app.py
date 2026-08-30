@@ -2109,7 +2109,7 @@ async def test_switching_into_an_interrupted_session_fills_dangling_calls(monkey
         assert "`read`" in app.session.messages[2]["content"]
         assert "interrupted" in app.session.messages[3]["content"].lower()
         # persisted, so reopening finds nothing dangling
-        assert storage.dangling_tool_call_ids(storage.load_messages(other)) == []
+        assert storage.dangling_tool_calls(storage.load_messages(other)) == []
 
 
 @pytest.mark.asyncio
