@@ -1863,7 +1863,7 @@ async def test_a_stopped_run_stops_asking_for_approval(monkeypatch):
         call = ToolCall(id="t1", name="write", arguments={"path": "x.txt", "content": "hi"})
         # would block on a modal if it asked; returns straight away instead
         from ahacode.widgets.approval_modal import ApprovalModal
-        assert app._approve_tool(call) is False       # returned without blocking
+        assert app.runner.approve_tool(call) is False       # returned without blocking
         assert not isinstance(app.screen, ApprovalModal)  # and put nothing on screen
         # a new turn clears the stop
         app.query_one("#prompt", PromptInput).text = "hello"

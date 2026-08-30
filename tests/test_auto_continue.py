@@ -217,7 +217,7 @@ async def test_an_uncapped_turn_ends_when_no_step_lands(monkeypatch):
         monkeypatch.setattr(app, "_registry_for_mode", lambda: {
             "read": Tool(name="read", description="", parameters={},
                          execute=lambda a: "body")})
-        monkeypatch.setattr(app, "_approve_tool", lambda call: True)
+        monkeypatch.setattr(app.runner, "approve_tool", lambda call: True)
         monkeypatch.setattr(app.plan, "auto_continue", _noop)  # judge one turn only
         app.query_one("#prompt").text = "go"
         await pilot.press("enter")
@@ -254,7 +254,7 @@ async def test_a_completed_step_buys_more_rounds(monkeypatch):
                          execute=lambda a: "body"),
             "todo_write": Tool(name="todo_write", description="", parameters={},
                                execute=lambda a: "saved")})
-        monkeypatch.setattr(app, "_approve_tool", lambda call: True)
+        monkeypatch.setattr(app.runner, "approve_tool", lambda call: True)
         monkeypatch.setattr(app.plan, "auto_continue", _noop)
         app.query_one("#prompt").text = "go"
         await pilot.press("enter")

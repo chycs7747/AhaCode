@@ -13,25 +13,20 @@ from textual.widgets import Button, Select
 from textual.worker import get_current_worker
 from rich.theme import Theme
 
-from ahacode import (
-    agent, client, config, permissions, prompts, storage, subagent, tools,
-)
+from ahacode import client, config, prompts, storage, tools
 from ahacode.commands import Commands
 from ahacode.plan_run import PlanRun
+from ahacode.runner import TurnRunner
 from ahacode.tools import spill
-from ahacode.events import TextDelta, ThinkingDelta, Usage
 from ahacode.render import tool_summary
 from ahacode.session import ChatSession
 from ahacode.session_ctl import SessionControl
-from ahacode.turn_view import _PHASE_ID, TurnBoxes, TurnView, edit_card  # noqa: F401
-from ahacode.widgets.approval_modal import ApprovalModal
+from ahacode.turn_view import _PHASE_ID, TurnView  # noqa: F401  (_PHASE_ID: tests)
 from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.header_bar import HeaderBar
 from ahacode.widgets.settings import Settings, SettingsResult
 from ahacode.widgets.prompt_input import PromptInput
-from ahacode.widgets.session_picker import SessionPicker
 from ahacode.widgets.subagent_card import SubagentCard
-from ahacode.widgets.tool_result import ToolResultBlock
 from ahacode.widgets.todo_panel import TodoPanel
 from ahacode.widgets.model_bar import ModelBar
 
@@ -84,6 +79,7 @@ class AhaCodeApp(App):
         self.plan = PlanRun(self)  # the gate, the handoff, and the stall detector
         self.turn_view = TurnView(self)  # events -> mounted bubbles and cards
         self.sessions = SessionControl(self)  # new / switch / repair / replay
+        self.runner = TurnRunner(self)  # the worker side of a turn
         self.mode = "act"  # "act" (full tools) or "plan" (read-only + todo_write)
         self._last_status = ""
         self.auto_approve = False  # session-only: skip the approval modal when on
@@ -426,33 +422,6 @@ class AhaCodeApp(App):
         except (json.JSONDecodeError, TypeError, KeyError):
             return {}
 
-    @staticmethod
-    def _turn_metrics(stats: dict) -> dict:
-        """The turn's numbers, ready to record: the same quantities the status line
-        shows, kept as numbers so they can be summed later instead of re-parsed."""
-        gen = stats["completion"]
-        if not gen:
-            return {}
-        first = stats["t_first"] or stats["t_start"]
-        return {
-            "prompt": stats["prompt"],
-            "gen": gen,
-            "gen_seconds": round(max(time.monotonic() - first, 1e-9), 3),
-            "ttft": round((stats["t_first"] - stats["t_start"]) if stats["t_first"] else 0.0, 3),
-            "model": config.load().name,
-        }
-
-    @staticmethod
-    def _format_stats(stats: dict) -> str:
-        """One-line token/speed summary for the status bar (empty if no output)."""
-        gen = stats["completion"]
-        if not gen:
-            return ""
-        first = stats["t_first"] or stats["t_start"]
-        gen_elapsed = max(time.monotonic() - first, 1e-9)
-        ttft = (stats["t_first"] - stats["t_start"]) if stats["t_first"] else 0.0
-        return f"prompt {stats['prompt']} · gen {gen} · {gen / gen_elapsed:.0f} tok/s · ttft {ttft:.1f}s"
-
     def _status(self, text: str) -> None:
         """Push live turn status to the bar (empty = idle)."""
         self._last_status = text
@@ -681,183 +650,17 @@ class AhaCodeApp(App):
 
     @work(thread=True, exit_on_error=False)
     def generate_title(self, messages: list[dict], path) -> None:
-        """Ask the model for a short session title (background, non-streaming)."""
-        convo = "\n".join(
-            f"{m['role']}: {m.get('content', '')}"
-            for m in messages
-            if m.get("role") in ("user", "assistant") and m.get("content")
-        )[:1500]
-        try:
-            title = client.complete(
-                [{"role": "system", "content": prompts.title_system()}, {"role": "user", "content": convo}]
-            )
-        except Exception:
-            return  # a failed title is not worth surfacing; leave it untitled
-        title = title.strip().strip('"').strip()[:60]
-        if title:
-            self.call_from_thread(storage.set_title, path, title)
-            if path == self.session_path:  # not if the user already switched away
-                self.call_from_thread(self._set_header_title, title)
-
-    def _approve_tool(self, call) -> bool:
-        """Approval handshake for one tool call, shared by the agent loop and every
-        sub-agent. Auto-approve short-circuits; otherwise push a modal on the main
-        thread and block THIS worker thread on an Event until the user answers.
-        Parallel sub-agents each need approval at once but only one dialog can be on
-        screen, so they queue on the lock."""
-        # Rule-based pre-approval comes FIRST — that is what keeps a parallel fan-out
-        # from serialising behind a queue of dialogs (only one fits on screen). It
-        # cannot widen anything: _gate_tool ran the denylist before calling us, so a
-        # rule skips the question, never the safety gate.
-        if permissions.allowed(call.name, call.arguments):
-            return True
-        if self.auto_approve:  # denylist already hard-blocked the dangerous ones
-            return True
-        if getattr(self, "_stopping", False):
-            # The user has already stopped the run. Whatever is still queued behind the
-            # approval lock must not put another dialog on screen — answering "stop"
-            # once has to be enough, however many sub-agents were mid-flight.
-            return False
-        with self._approval_lock:
-            if getattr(self, "_stopping", False):  # stopped while we waited our turn
-                return False
-            # Cross-thread handshake: the loop runs on a worker thread but the modal
-            # lives on the main thread. Push it (non-blocking) via call_from_thread,
-            # then block here until the modal's dismiss callback sets the Event.
-            answered = threading.Event()
-            verdict: dict[str, bool] = {}
-
-            def ask() -> None:
-                def on_dismiss(approved: bool | None) -> None:
-                    verdict["ok"] = bool(approved)
-                    answered.set()
-
-                # Raw arguments → the modal renders a per-tool preview (write → code,
-                # edit → diff) inside a scrollable box.
-                self.push_screen(ApprovalModal(call.name, call.arguments), on_dismiss)
-
-            self.call_from_thread(ask)
-            answered.wait()
-            return verdict.get("ok", False)
-
-    def _make_subagent_ctx(self, parent_path, parent_depth, container, worker, approve):
-        """Build the AgentContext whose run_subagent spawns a child agent into a
-        nested card and runs it to completion.
-
-        run_subagent blocks, but agent.run puts parallelizable `task` calls on a
-        thread pool, so two delegations in one turn really do run CONCURRENTLY,
-        bounded only by the gateway's gate. A per-level factory: each child parents
-        to THIS level and mounts inside this card, so the tree nests at any depth —
-        and stops itself, since a child at the depth limit gets no task tool.
-        """
-        def run_subagent(prompt: str, description: str) -> str:
-            cfg = config.load()
-            child_depth = parent_depth + 1
-            child_path = storage.new_session_path()
-            storage.write_header(child_path, storage.make_header(
-                child_path.stem, parent_id=parent_path.stem, kind="subagent",
-                relation="delegate",  # a task fan-out — the ⑂ edge in the session tree
-                depth=child_depth, model=cfg.name, title=(description or prompt)[:40],
-            ))
-            card = SubagentCard(description or "task", cfg.name)
-            self.call_from_thread(container.mount, card)
-            child_boxes = TurnBoxes()  # no owns_session: a child touches no session UI
-
-            def child_emit(event) -> None:
-                if isinstance(event, Usage):
-                    return  # child token accounting isn't surfaced in this slice
-                self.call_from_thread(self.turn_view.render, event, child_boxes, card.body)
-
-            result = subagent.run(
-                prompt,
-                emit=child_emit,
-                approve=approve,  # the child's own bash/write are confirmed too
-                registry=tools.registry_for(child_depth, cfg.subagent_depth),
-                # a grandchild parents to THIS child, one level deeper, in its card
-                ctx=self._make_subagent_ctx(child_path, child_depth, card.body, worker, approve),
-                is_cancelled=lambda: worker.is_cancelled,
-            )
-            for msg in result.messages:
-                storage.append_message(child_path, msg)
-            # Fold the card now the child is done (its answer stays one click away).
-            tool_count = sum(1 for m in result.messages if m.get("role") == "tool")
-            self.call_from_thread(card.done, tool_count)
-            return result.result
-
-        return subagent.AgentContext(run_subagent=run_subagent, session_path=parent_path)
+        """Name an untitled session in the background. A shim: Textual's @work
+        needs the App's run_worker to start the thread, the work itself is the
+        runner's."""
+        self.runner.make_title(messages, path)
 
     # exclusive=True: a new message cancels the previous worker.
     # exit_on_error=False: a failing worker must not take the whole app down.
     @work(thread=True, exclusive=True, exit_on_error=False)
     def stream_response(self, messages: list[dict], turn) -> None:
         """Run the agent loop in a thread, rendering its events into the chat."""
-        worker = get_current_worker()
-        container = turn  # the reply's blocks mount into this turn's rail container
-        # This turn's live bubbles. owns_session: only the main loop may drive the
-        # status line, the pinned checklist and the plan gate.
-        boxes = TurnBoxes(owns_session=True)
-
-        stats = {"prompt": 0, "completion": 0, "t_start": time.monotonic(), "t_first": None,
-                 "last_prompt": None}
-
-        def emit(event) -> None:
-            if isinstance(event, Usage):  # accounting only — never a bubble
-                # One usage trailer per model call, so this is also the round
-                # counter the stall backstop needs — counted here rather than off
-                # tool calls, which arrive several to a round.
-                self.plan.rounds_since_step += 1
-                stats["prompt"] += event.prompt_tokens
-                stats["completion"] += event.completion_tokens
-                # The LAST turn's prompt size is what the next turn has to fit under;
-                # the running total above is only for the throughput readout.
-                stats["last_prompt"] = event.prompt_tokens
-                return
-            if stats["t_first"] is None and isinstance(event, (ThinkingDelta, TextDelta)):
-                stats["t_first"] = time.monotonic()
-            # Hop to the main thread to touch widgets. call_from_thread blocks the
-            # worker until the UI has rendered — built-in backpressure.
-            self.call_from_thread(self.turn_view.render, event, boxes, container)
-
-        approve = self._approve_tool
-        ctx = self._make_subagent_ctx(
-            self.session_path, self.session_depth, container, worker, approve
-        )
-
-        stall_rounds = self.plan.begin_turn()  # arms the round backstop for this turn
-
-        # The turn's mode picks its thinking budget (config.thinking_budget_for):
-        # plan thinks deep, impl shallow, a plain act turn uses the global.
-        turn_mode = "plan" if self.mode == "plan" else ("impl" if self.session_kind == "impl" else None)
-        try:
-            with client.mode(turn_mode):
-                new_messages = agent.run(
-                    messages,
-                    emit=emit,
-                    is_cancelled=lambda: worker.is_cancelled,
-                    approve=approve,                    # bash and friends are confirmed first
-                    registry=self._registry_for_mode(),  # plan mode = read-only subset
-                    ctx=ctx,                            # task delegates through this
-                    max_turns=self.plan.max_turns(),    # larger for an impl session
-                    prompt_tokens=self._last_prompt_tokens,  # measured, for compaction
-                    # the plan gate, and the round-level stall backstop
-                    should_pause=lambda: self.plan.should_pause(stall_rounds),
-                )
-        except Exception as exc:
-            # Server 500, timeout, connection refused... all become a bubble, not a crash.
-            summary = f"{type(exc).__name__}: {exc}"[:300]
-            self.post_message(self.ResponseFailed(summary))
-            return
-        if worker.is_cancelled:
-            # Stopped: keep every message that FINISHED (the loop returns whole
-            # assistant+tool rounds; the one in flight is dropped), so the transcript
-            # the model resumes from knows what it already did. Continue, never restart.
-            self.post_message(self.ResponseComplete(new_messages, "■ stopped", stats["last_prompt"]))
-            return
-        self.post_message(self.ResponseComplete(
-            new_messages, self._format_stats(stats), stats["last_prompt"],
-            self._turn_metrics(stats),
-        ))
-
+        self.runner.run(messages, turn, get_current_worker())
 
 app = AhaCodeApp
 
