@@ -19,6 +19,7 @@ from ahacode import (
     agent, client, config, permissions, prompts, storage, subagent, tools,
 )
 from ahacode.tools import plan as plan_tool  # non_actionable(): plan-step sanity check
+from ahacode.commands import Commands
 from ahacode.tools import spill
 from ahacode.events import (
     Notice, Phase, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, ToolResult, Usage,
@@ -122,6 +123,7 @@ class AhaCodeApp(App):
     def __init__(self) -> None:
         super().__init__()
         self.session = ChatSession()
+        self.commands = Commands(self)  # /model, /url, /allow, /think
         self.mode = "act"  # "act" (full tools) or "plan" (read-only + todo_write)
         self._last_status = ""
         self.auto_approve = False  # session-only: skip the approval modal when on
@@ -614,7 +616,7 @@ class AhaCodeApp(App):
             if text == "/sessions":
                 self._open_picker()
                 return
-            await self._say_system(self._handle_command(text))
+            await self._say_system(self.commands.handle(text))
             return
 
         self.session.add_user(text)
@@ -848,87 +850,22 @@ class AhaCodeApp(App):
         for bar in self.query(ModelBar).results(ModelBar):
             bar.set_status(text)
 
-    def _switch_model(self, name: str) -> str:
-        """Persist a model choice. The server actually loads it on the next request."""
-        config.save(replace(config.load(), name=name))
-        client.reset()  # next request picks up the new config
-        self.query_one(ModelBar).refresh_state()
-        return f"model switched to: {name} (loads on the next message — may take a while)"
+    def refresh_config_ui(self, *, reload_models: bool = False) -> None:
+        """Re-read the config into the chrome that displays it.
 
-    def _handle_command(self, text: str) -> str:
-        """Handle a /command typed into the chat input; returns the reply text."""
-        parts = text.split()
-        cmd, args = parts[0].lower(), parts[1:]
-        if cmd == "/help":
-            return (
-                "Commands:\n"
-                "  /model           show the current model and endpoint\n"
-                "  /model <name>    switch to a different model\n"
-                "  /url <base_url>  switch to a different endpoint\n"
-                "  /think <n>       per-turn thinking budget in tokens (off = unbounded)\n"
-                "  /allow           list the rules that skip the approval prompt\n"
-                "  /allow <rule>    add one, e.g. /allow bash:uv run pytest*\n"
-                "  /new             start a new session\n"
-                "  /sessions        switch between sessions\n"
-                "  /help            this message"
-            )
-        if cmd == "/model":
-            cfg = config.load()
-            if not args:
-                return f"model: {cfg.name}\nendpoint: {cfg.base_url}"
-            return self._switch_model(args[0])
-        if cmd == "/url":
-            cfg = config.load()
-            if not args:
-                return f"endpoint: {cfg.base_url}"
-            config.save(replace(cfg, base_url=args[0]))
-            client.reset()
-            bar = self.query_one(ModelBar)
-            bar.refresh_state()
-            bar.load_models()  # a new endpoint offers a new model list
-            self._set_header_endpoint()
-            return f"endpoint switched to: {args[0]}"
-        if cmd == "/allow":
-            cfg = config.load()
-            if not args:
-                if not cfg.allow_rules:
-                    return (
-                        "no allow rules — every side-effecting tool asks first.\n"
-                        "add one with e.g.  /allow bash:uv run pytest*"
-                    )
-                return "allow rules:\n" + "\n".join(f"  {r}" for r in cfg.allow_rules)
-            # Re-split on the raw text, not `parts`: a rule keeps its spaces
-            # ("bash:git status*" is one rule, not two words).
-            rule = text.split(maxsplit=1)[1].strip()
-            if ":" not in rule and rule not in tools.REGISTRY:
-                return f"unknown tool: {rule} — use  tool:pattern  (e.g. bash:ls*)"
-            if rule in cfg.allow_rules:
-                return f"already allowed: {rule}"
-            config.save(replace(cfg, allow_rules=(*cfg.allow_rules, rule)))
-            client.reset()
-            return f"allowed without asking: {rule}\n(the denylist still blocks dangerous commands)"
-        if cmd == "/think":
-            cfg = config.load()
-            if not args:
-                shown = f"{cfg.thinking_token_budget} tokens/turn" if cfg.thinking_token_budget else "off (unbounded)"
-                return f"thinking budget: {shown}  ·  reasoning_effort: {cfg.reasoning_effort}"
-            val = args[0].lower()
-            if val in ("off", "0", "none"):
-                budget = 0
-            elif val.isdigit():
-                budget = int(val)
-            else:
-                return "usage: /think <tokens>  |  /think off"
-            config.save(replace(cfg, thinking_token_budget=budget))
-            client.reset()
-            if not budget:
-                return "thinking budget: off (unbounded)"
-            return f"thinking budget: {budget} tokens/turn  (needs the server's reasoning-config to take effect)"
-        return f"unknown command: {cmd} — try /help"
+        The seam commands.py calls instead of importing widgets: a command edits
+        the config file, then says so here. reload_models is for /url alone — a
+        new endpoint offers a different model list, and fetching it is a request.
+        """
+        bar = self.query_one(ModelBar)
+        bar.refresh_state()
+        if reload_models:
+            bar.load_models()
+        self._set_header_endpoint()
 
     @on(ModelBar.ModelChosen)
     async def model_chosen(self, event: ModelBar.ModelChosen) -> None:
-        await self._say_system(self._switch_model(event.name))
+        await self._say_system(self.commands.switch_model(event.name))
 
     @on(ModelBar.ModeChosen)
     async def mode_chosen(self, event: ModelBar.ModeChosen) -> None:
