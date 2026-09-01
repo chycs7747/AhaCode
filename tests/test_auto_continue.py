@@ -1,4 +1,4 @@
-﻿"""An impl session carries itself, and knows when to stop trying.
+"""An impl session carries itself, and knows when to stop trying.
 
 A plan is a list of steps, and the loop was stopping after every turn to ask
 whether to go on — including the turns that ended because they ran out of rounds
