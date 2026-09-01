@@ -31,8 +31,6 @@ from ahacode.widgets.todo_panel import TodoPanel
 from ahacode.widgets.model_bar import ModelBar
 
 
-# System prompts now live in ahacode/prompts.py (assembled per mode/model).
-
 # Eye-friendly Markdown palette. Rich's defaults paint headings magenta and inline
 # code "bold cyan on black" — harsh on a dark terminal. Pushed onto the app console:
 # a Markdown renderable resolves these styles by name at draw time.
@@ -60,7 +58,14 @@ QUIT_GRACE_SECONDS = 1.5
 
 
 class AhaCodeApp(App):
-    """AhaCode: a Textual-based TUI agent client."""
+    """AhaCode: a Textual-based TUI agent client.
+
+    Method names carry the voice of what they do. An imperative verb ACTS
+    (`_save_settings` is what saves); a past participle REPORTS that something
+    already happened and this is the reaction to it (`_send_pressed`,
+    `model_chosen`). The sections below group by who does the calling: Textual
+    for the handlers, us for everything under them.
+    """
 
     CSS_PATH = "ahacode.tcss"
     # priority=True: checked before the focused widget's own bindings — the Input
@@ -114,6 +119,8 @@ class AhaCodeApp(App):
         self.session_kind = str(header.get("kind", "main"))
         self.session_parent_id = header.get("parent_id")
 
+    # --- what the worker posts back ------------------------------------------
+
     @dataclass
     class ResponseComplete(Message):
         """Posted by the worker once the agent loop finishes a response.
@@ -135,6 +142,8 @@ class AhaCodeApp(App):
         drops a fresh error bubble at the bottom of the chat."""
 
         error: str
+
+    # --- startup -------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         # Static skeleton only — chat bubbles are mounted at runtime.
@@ -166,76 +175,27 @@ class AhaCodeApp(App):
         self.watch(self._chat_scroller, "scroll_y", self._update_follow, init=False)
         self.query_one("#prompt", PromptInput).focus()  # not the header buttons
 
-    def _update_follow(self, scroll_y: float) -> None:
-        """Pin/unpin auto-scroll from the live scroll position: 'at the bottom' (within
-        a small tolerance for rounding) follows the stream; anything above stays put.
-        Fires on every scroll change, so it holds a cached scroller ref (no per-call
-        DOM query) — our own scroll_end re-confirms the flag, a user scroll-up clears it."""
-        self._follow_output = scroll_y >= self._chat_scroller.max_scroll_y - 2
-
-    def _set_header_title(self, title: str) -> None:
-        """Reflect the current session's title in the top bar."""
-        self.query_one(HeaderBar).set_title(title)
-
-    def _set_header_endpoint(self) -> None:
-        """Reflect the current server endpoint in the top bar."""
-        self.query_one(HeaderBar).set_endpoint(config.load().base_url)
+    # --- buttons -------------------------------------------------------------
+    # Past tense throughout: Textual calls these because the press already
+    # happened. Each one decides as little as possible and hands off.
 
     @on(Button.Pressed, "#settings-btn")
-    def _on_settings_button(self, event: Button.Pressed) -> None:
+    def _settings_pressed(self, event: Button.Pressed) -> None:
         event.stop()
-        self.push_screen(Settings(config.load()), self._settings_saved)
-
-    def _settings_saved(self, saved: "config.ModelConfig | None") -> None:
-        """Persist what the modal handed back and reset the client, so the next
-        request uses the new endpoint, model, timeout and gate size (the same path
-        /model and /url take, which set one field each)."""
-        if saved is None:
-            return
-        before = config.load()
-        config.save(saved)
-        client.reset()
-        self.refresh_config_ui()
-        self.run_worker(self._say_system(self._settings_summary(before, saved)),
-                        exclusive=False)
-
-    @staticmethod
-    def _settings_summary(before, saved) -> str:
-        """What changed, in one line. Endpoint and model lead and appear only when
-        they MOVED: they are the two that change what answers, and a silent switch
-        is the one worth noticing."""
-        def budget(v):
-            return "전역" if v is None else f"{v // 1024}K"
-
-        moved = []
-        if saved.base_url != before.base_url:
-            moved.append(f"엔드포인트 {saved.base_url}")
-        if saved.name != before.name:
-            moved.append(f"모델 {saved.name} (다음 메시지에 적용)")
-        lead = (" · ".join(moved) + " · ") if moved else ""
-        window = "압축 끔" if saved.context_window == 0 else f"{saved.context_window // 1024}K"
-        return (
-            f"Settings 저장 — {lead}최대 병렬 {saved.max_parallel_agents} · "
-            f"깊이 {saved.subagent_depth} · 컨텍스트 {window} · "
-            f"압축 {int(saved.compact_threshold * 100)}% · 사고 "
-            f"plan {budget(saved.plan_thinking_budget)}/"
-            f"impl {budget(saved.impl_thinking_budget)}/"
-            f"sub {budget(saved.subagent_thinking_budget)} · 도구후사고 "
-            f"{'끔' if saved.no_think_after_tools else '켬'}"
-        )
+        self.push_screen(Settings(config.load()), self._save_settings)
 
     @on(Button.Pressed, "#new-session-btn")
-    async def _on_new_session_button(self, event: Button.Pressed) -> None:
+    async def _new_session_pressed(self, event: Button.Pressed) -> None:
         event.stop()
         await self.sessions.new()
 
     @on(Button.Pressed, "#open-sessions-btn")
-    def _on_open_sessions_button(self, event: Button.Pressed) -> None:
+    def _open_sessions_pressed(self, event: Button.Pressed) -> None:
         event.stop()
         self.sessions.open_picker()
 
     @on(Button.Pressed, "#send-btn")
-    def _on_send_button(self, event: Button.Pressed) -> None:
+    def _send_pressed(self, event: Button.Pressed) -> None:
         event.stop()
         # The button doubles as Stop while ANYTHING runs (see action_stop) —
         # checking only the chat worker left it labelled ■ Stop but acting as Send.
@@ -244,45 +204,65 @@ class AhaCodeApp(App):
         else:
             self.query_one("#prompt", PromptInput).submit()
 
-    def _anything_running(self) -> bool:
-        worker = getattr(self, "_response_worker", None)
-        return worker is not None and worker.is_running
+    @on(Button.Pressed, "#plan-gate-run")
+    async def _plan_run_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.plan.settle("▶ 실행")
+        await self.plan.start_impl_session()
 
-    def _set_send_running(self, running: bool) -> None:
-        """Flip the composer button between Send (idle) and Stop (streaming).
+    @on(Button.Pressed, "#plan-gate-continue")
+    async def _plan_revise_pressed(self, event: Button.Pressed) -> None:
+        """✎ 수정 — the plan stays on screen; the user says what to change and the
+        next turn revises it (plan_submit again replaces the plan file)."""
+        event.stop()
+        self.plan.settle("✎ 수정 계속")
+        self.query_one("#prompt", PromptInput).focus()
 
-        query, not query_one: a turn can end after the composer is gone (quitting
-        mid-stream), and NoMatches raised from a tidy-up callback turns an orderly
-        shutdown into a crash. Nothing to update is a valid outcome here.
-        """
-        if not running:
-            # A cancelled turn never delivers the ToolResult that would retire its
-            # entry, and a leftover entry means _tick_progress counts on for work
-            # that stopped — the exact lie the counter exists to prevent.
-            self._running_tools.clear()
-        for btn in self.query("#send-btn").results(Button):
-            btn.label = "■ Stop" if running else "↑ Send"
-            btn.variant = "error" if running else "primary"
-        # Not in the status text: the hint cost 14 of the ~7 columns the composer
-        # leaves for status at 80 wide, crowding out the elapsed seconds entirely.
-        for prompt in self.query("#prompt").results(PromptInput):
-            if running:
-                prompt.border_subtitle = "Esc 로 중지"
-            elif not self.view_only:
-                prompt.border_subtitle = "Enter to send · Shift+Enter for newline"
+    # --- settings ------------------------------------------------------------
+    # Where the ⚙ button leads. `_save_settings` is the one that saves: at the
+    # moment it is called the modal has only handed its config back.
 
-    def _prune_empty_turn(self) -> None:
-        """Drop the turn's rail if the reply produced no blocks (immediate error)."""
-        turn = getattr(self, "_turn", None)
-        if turn is not None and turn.is_mounted and not turn.children:
-            turn.remove()
-        self._turn = None
+    def _save_settings(self, chosen: "config.ModelConfig | None") -> None:
+        """Persist what the modal handed back and reset the client, so the next
+        request uses the new endpoint, model, timeout and gate size (the same path
+        /model and /url take, which set one field each)."""
+        if chosen is None:
+            return
+        before = config.load()
+        config.save(chosen)
+        client.reset()
+        self.refresh_config_ui()
+        self.run_worker(self._say_system(self._settings_summary(before, chosen)),
+                        exclusive=False)
 
-    async def _say_system(self, text: str) -> None:
-        """Show an informational bubble (commands, status) — never part of the session."""
-        container = self.query_one("#chat-container", VerticalScroll)
-        await container.mount(Chatbox(text, role="system"))
-        container.scroll_end(animate=False)
+    @staticmethod
+    def _settings_summary(before, after) -> str:
+        """What changed, in one line. Endpoint and model lead and appear only when
+        they MOVED: they are the two that change what answers, and a silent switch
+        is the one worth noticing."""
+        def budget(v):
+            return "전역" if v is None else f"{v // 1024}K"
+
+        moved = []
+        if after.base_url != before.base_url:
+            moved.append(f"엔드포인트 {after.base_url}")
+        if after.name != before.name:
+            moved.append(f"모델 {after.name} (다음 메시지에 적용)")
+        lead = (" · ".join(moved) + " · ") if moved else ""
+        window = "압축 끔" if after.context_window == 0 else f"{after.context_window // 1024}K"
+        return (
+            f"Settings 저장 — {lead}최대 병렬 {after.max_parallel_agents} · "
+            f"깊이 {after.subagent_depth} · 컨텍스트 {window} · "
+            f"압축 {int(after.compact_threshold * 100)}% · 사고 "
+            f"plan {budget(after.plan_thinking_budget)}/"
+            f"impl {budget(after.impl_thinking_budget)}/"
+            f"sub {budget(after.subagent_thinking_budget)} · 도구후사고 "
+            f"{'끔' if after.no_think_after_tools else '켬'}"
+        )
+
+    # --- the composer and the model bar --------------------------------------
+    # Widget messages, so past tense again: the choice has been made, and these
+    # say what follows from it.
 
     @on(PromptInput.Submitted)
     async def user_submitted(self, event: PromptInput.Submitted) -> None:
@@ -347,6 +327,107 @@ class AhaCodeApp(App):
         await container.mount(Chatbox(text, role="user"))
         await self._start_turn()
 
+    @on(ModelBar.ModelChosen)
+    async def model_chosen(self, event: ModelBar.ModelChosen) -> None:
+        await self._say_system(self.commands.switch_model(event.name))
+
+    @on(ModelBar.ModeChosen)
+    async def mode_chosen(self, event: ModelBar.ModeChosen) -> None:
+        if event.mode == self.mode:
+            return  # programmatic re-sync from the Select, not a real switch
+        self.mode = event.mode
+        if self.mode == "plan":
+            await self._say_system("plan mode ON — read-only tools; the model plans, not acts.")
+        else:
+            await self._say_system("act mode — full tools (bash asks first).")
+
+    @on(ModelBar.AutoApproveChanged)
+    async def auto_approve_changed(self, event: ModelBar.AutoApproveChanged) -> None:
+        if event.value == self.auto_approve:
+            return  # programmatic re-sync, not a real toggle
+        self.auto_approve = event.value
+        if event.value:
+            await self._say_system(
+                "auto-approve ON — tools run without asking "
+                "(dangerous commands are still blocked)."
+            )
+        else:
+            await self._say_system("auto-approve OFF — tools ask first.")
+
+    # --- key bindings --------------------------------------------------------
+
+    def action_copy_answer(self) -> None:
+        """Copy the last assistant answer to the system clipboard (OSC 52 — works over
+        SSH). The TUI captures the mouse, so terminal drag-select is unreliable; this
+        gives a one-key copy of the reply. The full transcript also lives in the
+        session JSONL for anything more."""
+        text = next(
+            (m["content"] for m in reversed(self.session.messages)
+             if m.get("role") == "assistant" and m.get("content")),
+            "",
+        )
+        if not text:
+            self.notify("복사할 답변이 아직 없어요.", severity="warning", timeout=2)
+            return
+        self.copy_to_clipboard(text)
+        self.notify("답변을 클립보드에 복사했어요.", timeout=2)
+
+    def action_stop(self) -> None:
+        """Cancel whatever is in flight (cooperative — the loops check is_cancelled).
+
+        Two workers can now run at once (a chat turn and a plan run live in different
+        exclusive groups), and "stop" means stop what is running — so both are checked.
+        """
+        # Raised before anything else: sub-agents queue on the approval lock, so a stop
+        # must be visible to the ones still waiting or each pops its own modal after
+        # the user has already said stop.
+        self._stopping = True
+        stopped = False
+        worker = getattr(self, "_response_worker", None)
+        if worker is not None and worker.is_running:
+            worker.cancel()
+            stopped = True
+        if stopped:
+            self._set_status("■ stopped")
+            self._set_send_running(False)
+            # Fold the pinned plan: a stopped run is when the user wants the chat
+            # area back, and the plan is the widest thing on screen. Presentation
+            # only — the steps survive. query, not query_one: this can be called
+            # from the approval modal, whose screen is not the one being queried.
+            for panel in self.query(TodoPanel):
+                panel.set_collapsed(True)
+
+    async def action_quit(self) -> None:
+        """Quit means quit, whatever a worker is stuck on.
+
+        Textual restores the terminal promptly, then the process waits on its
+        threads — and a worker blocked on a socket read holds that for the whole
+        request timeout (15 minutes by default). The cooperative stop is checked
+        only between events, so nothing the user presses reaches a blocked read.
+
+        Closing the response would unblock this one read and leave the next kind of
+        stuck call to bring the bug back. So: ask the workers to stop, then go
+        anyway once an in-flight session append has had time to land. Nearly always
+        the process is gone before the timer fires.
+        """
+        self._stopping = True
+        worker = getattr(self, "_response_worker", None)
+        if worker is not None and worker.is_running:
+            worker.cancel()
+        # Headless means run_test: there is no terminal being held hostage, and the
+        # process to leave would be the test runner's. The backstop is for a real
+        # session, where a wedged worker is the user's problem.
+        if not self.is_headless:
+            leave = threading.Timer(QUIT_GRACE_SECONDS, self._force_exit)
+            leave.daemon = True  # never the reason the process stays up
+            leave.start()
+        self.exit()
+
+    def _force_exit(self) -> None:  # seam: tests replace this rather than dying
+        os._exit(0)
+
+    # --- a turn, start to finish ---------------------------------------------
+
     async def _start_turn(self) -> None:
         """Mount a fresh turn rail and run the agent loop over the current history.
 
@@ -367,17 +448,60 @@ class AhaCodeApp(App):
         # grounded by a system prompt: act gets the agent prompt, plan the planner.
         base = prompts.plan_system() if self.mode == "plan" else prompts.act_system()
         history = [{"role": "system", "content": base}, *self.session.messages]
-        self._status("● waiting…")
+        self._set_status("● waiting…")
         self._stopping = False  # a new turn clears a previous stop
         self._response_worker = self.stream_response(history, self._turn)
         self._set_send_running(True)  # the Send button becomes Stop
 
-    def _set_mode(self, mode: str) -> None:
-        """Switch modes from code: set the field FIRST — the Select's handler no-ops
-        when its value already matches, so this never re-triggers itself."""
-        if self.mode != mode:
-            self.mode = mode
-            self.query_one("#mode-select", Select).value = mode
+    # exclusive=True: a new message cancels the previous worker.
+    # exit_on_error=False: a failing worker must not take the whole app down.
+    @work(thread=True, exclusive=True, exit_on_error=False)
+    def stream_response(self, messages: list[dict], turn) -> None:
+        """Run the agent loop in a thread, rendering its events into the chat."""
+        self.runner.run(messages, turn, get_current_worker())
+
+    def _anything_running(self) -> bool:
+        worker = getattr(self, "_response_worker", None)
+        return worker is not None and worker.is_running
+
+    @on(ResponseComplete)
+    async def response_complete(self, event: ResponseComplete) -> None:
+        self._set_send_running(False)  # turn done — Stop reverts to Send
+        self._prune_empty_turn()
+        # Shared state is only ever touched on the main thread. Persist the whole
+        # turn — assistant text, tool calls, and tool results alike.
+        for msg in event.messages:
+            self.session.messages.append(msg)
+            storage.append_message(self.session_path, msg)
+        if event.metrics:
+            # Recorded, not just shown: the status line is gone the moment the next
+            # turn starts, and "how fast has this been?" had no answer afterwards.
+            storage.append_stats(self.session_path, event.metrics)
+        self._write_transcript_turn(event)
+        self._set_status(event.stats)
+        if event.prompt_tokens:
+            self._last_prompt_tokens = event.prompt_tokens
+        # First real reply of an untitled session -> generate a title in the background.
+        if not self._has_title and any(m.get("role") == "assistant" for m in self.session.messages):
+            self._has_title = True
+            self.generate_title(list(self.session.messages), self.session_path)
+        # An impl session exists to finish its plan, and behind a folded panel
+        # "finished talking" looks the same as "finished the plan". So: snapshot
+        # where it stands after every turn, and say so.
+        if self.session_kind == "impl" and event.messages:
+            await self.plan.snapshot_progress()
+            await self.plan.auto_continue()
+
+    @on(ResponseFailed)
+    async def response_failed(self, event: ResponseFailed) -> None:
+        self._set_send_running(False)
+        self._prune_empty_turn()
+        container = self.query_one("#chat-container", VerticalScroll)
+        await container.mount(
+            Chatbox(f"⚠ {event.error}\n(check the server, then try again)", role="error")
+        )
+        container.scroll_end(animate=False)
+        self._set_status("")
 
     def _write_transcript_turn(self, event: "AhaCodeApp.ResponseComplete") -> None:
         """Append this turn to the session's readable transcript.
@@ -411,67 +535,14 @@ class AhaCodeApp(App):
         except (json.JSONDecodeError, TypeError, KeyError):
             return {}
 
-    def _status(self, text: str) -> None:
-        """Push live turn status to the bar (empty = idle)."""
-        self._last_status = text
-        # query, not query_one — same reason as _set_send_running. _last_status above
-        # is the state; the bar is only its display, so no bar is not an error.
-        for bar in self.query(ModelBar).results(ModelBar):
-            bar.set_status(text)
+    @work(thread=True, exit_on_error=False)
+    def generate_title(self, messages: list[dict], path) -> None:
+        """Name an untitled session in the background. A shim: Textual's @work
+        needs the App's run_worker to start the thread, the work itself is the
+        runner's."""
+        self.runner.make_title(messages, path)
 
-    def refresh_config_ui(self, *, reload_models: bool = False) -> None:
-        """Re-read the config into the chrome that displays it.
-
-        The seam commands.py calls instead of importing widgets: a command edits
-        the config file, then says so here. reload_models is for /url alone — a
-        new endpoint offers a different model list, and fetching it is a request.
-        """
-        bar = self.query_one(ModelBar)
-        bar.refresh_state()
-        if reload_models:
-            bar.load_models()
-        self._set_header_endpoint()
-
-    @on(ModelBar.ModelChosen)
-    async def model_chosen(self, event: ModelBar.ModelChosen) -> None:
-        await self._say_system(self.commands.switch_model(event.name))
-
-    @on(ModelBar.ModeChosen)
-    async def mode_chosen(self, event: ModelBar.ModeChosen) -> None:
-        if event.mode == self.mode:
-            return  # programmatic re-sync from the Select, not a real switch
-        self.mode = event.mode
-        if self.mode == "plan":
-            await self._say_system("plan mode ON — read-only tools; the model plans, not acts.")
-        else:
-            await self._say_system("act mode — full tools (bash asks first).")
-
-    @on(ModelBar.AutoApproveChanged)
-    async def auto_approve_changed(self, event: ModelBar.AutoApproveChanged) -> None:
-        if event.value == self.auto_approve:
-            return  # programmatic re-sync, not a real toggle
-        self.auto_approve = event.value
-        if event.value:
-            await self._say_system(
-                "auto-approve ON — tools run without asking "
-                "(dangerous commands are still blocked)."
-            )
-        else:
-            await self._say_system("auto-approve OFF — tools ask first.")
-
-    @on(Button.Pressed, "#plan-gate-run")
-    async def _on_plan_gate_run(self, event: Button.Pressed) -> None:
-        event.stop()
-        self.plan.settle("▶ 실행")
-        await self.plan.start_impl_session()
-
-    @on(Button.Pressed, "#plan-gate-continue")
-    async def _on_plan_gate_continue(self, event: Button.Pressed) -> None:
-        """✎ 수정 — the plan stays on screen; the user says what to change and the
-        next turn revises it (plan_submit again replaces the plan file)."""
-        event.stop()
-        self.plan.settle("✎ 수정 계속")
-        self.query_one("#prompt", PromptInput).focus()
+    # --- what the open session is --------------------------------------------
 
     @property
     def view_only(self) -> bool:
@@ -482,15 +553,12 @@ class AhaCodeApp(App):
         session_depth — the same axis as the task gate — so the lock can't drift."""
         return self.session_depth > 0
 
-    def _reflect_view_only(self) -> None:
-        """Mirror the read-only state in the composer's hint line (the up-front
-        signal, before a blocked keypress teaches it the hard way)."""
-        prompt = self.query_one("#prompt", PromptInput)
-        prompt.border_subtitle = (
-            "🔒 보기 전용 · /new 로 새 세션"
-            if self.view_only
-            else "Enter to send · Shift+Enter for newline"
-        )
+    def _set_mode(self, mode: str) -> None:
+        """Switch modes from code: set the field FIRST — the Select's handler no-ops
+        when its value already matches, so this never re-triggers itself."""
+        if self.mode != mode:
+            self.mode = mode
+            self.query_one("#mode-select", Select).value = mode
 
     def _registry_for_mode(self) -> dict:
         """The tools this session may use this turn. Plan mode stays read-only (no
@@ -508,60 +576,84 @@ class AhaCodeApp(App):
             }
         return tools.registry_for(self.session_depth, config.load().subagent_depth)
 
-    @on(ResponseComplete)
-    async def response_complete(self, event: ResponseComplete) -> None:
-        self._set_send_running(False)  # turn done — Stop reverts to Send
-        self._prune_empty_turn()
-        # Shared state is only ever touched on the main thread. Persist the whole
-        # turn — assistant text, tool calls, and tool results alike.
-        for msg in event.messages:
-            self.session.messages.append(msg)
-            storage.append_message(self.session_path, msg)
-        if event.metrics:
-            # Recorded, not just shown: the status line is gone the moment the next
-            # turn starts, and "how fast has this been?" had no answer afterwards.
-            storage.append_stats(self.session_path, event.metrics)
-        self._write_transcript_turn(event)
-        self._status(event.stats)
-        if event.prompt_tokens:
-            self._last_prompt_tokens = event.prompt_tokens
-        # First real reply of an untitled session -> generate a title in the background.
-        if not self._has_title and any(m.get("role") == "assistant" for m in self.session.messages):
-            self._has_title = True
-            self.generate_title(list(self.session.messages), self.session_path)
-        # An impl session exists to finish its plan, and behind a folded panel
-        # "finished talking" looks the same as "finished the plan". So: snapshot
-        # where it stands after every turn, and say so.
-        if self.session_kind == "impl" and event.messages:
-            await self.plan.snapshot_progress()
-            await self.plan.auto_continue()
+    # --- the chrome ----------------------------------------------------------
+    # Everything here is imperative: each one WRITES the state it is named for
+    # into a widget. The collaborators reach the screen through these.
 
-    @on(ResponseFailed)
-    async def response_failed(self, event: ResponseFailed) -> None:
-        self._set_send_running(False)
-        self._prune_empty_turn()
+    def _set_status(self, text: str) -> None:
+        """Push live turn status to the bar (empty = idle)."""
+        self._last_status = text
+        # query, not query_one — same reason as _set_send_running. _last_status above
+        # is the state; the bar is only its display, so no bar is not an error.
+        for bar in self.query(ModelBar).results(ModelBar):
+            bar.set_status(text)
+
+    def _set_send_running(self, running: bool) -> None:
+        """Flip the composer button between Send (idle) and Stop (streaming).
+
+        query, not query_one: a turn can end after the composer is gone (quitting
+        mid-stream), and NoMatches raised from a tidy-up callback turns an orderly
+        shutdown into a crash. Nothing to update is a valid outcome here.
+        """
+        if not running:
+            # A cancelled turn never delivers the ToolResult that would retire its
+            # entry, and a leftover entry means _tick_progress counts on for work
+            # that stopped — the exact lie the counter exists to prevent.
+            self._running_tools.clear()
+        for btn in self.query("#send-btn").results(Button):
+            btn.label = "■ Stop" if running else "↑ Send"
+            btn.variant = "error" if running else "primary"
+        # Not in the status text: the hint cost 14 of the ~7 columns the composer
+        # leaves for status at 80 wide, crowding out the elapsed seconds entirely.
+        for prompt in self.query("#prompt").results(PromptInput):
+            if running:
+                prompt.border_subtitle = "Esc 로 중지"
+            elif not self.view_only:
+                prompt.border_subtitle = "Enter to send · Shift+Enter for newline"
+
+    def _set_header_title(self, title: str) -> None:
+        """Reflect the current session's title in the top bar."""
+        self.query_one(HeaderBar).set_title(title)
+
+    def _set_header_endpoint(self) -> None:
+        """Reflect the current server endpoint in the top bar."""
+        self.query_one(HeaderBar).set_endpoint(config.load().base_url)
+
+    def refresh_config_ui(self, *, reload_models: bool = False) -> None:
+        """Re-read the config into the chrome that displays it.
+
+        The seam commands.py calls instead of importing widgets: a command edits
+        the config file, then says so here. reload_models is for /url alone — a
+        new endpoint offers a different model list, and fetching it is a request.
+        """
+        bar = self.query_one(ModelBar)
+        bar.refresh_state()
+        if reload_models:
+            bar.load_models()
+        self._set_header_endpoint()
+
+    def _reflect_view_only(self) -> None:
+        """Mirror the read-only state in the composer's hint line (the up-front
+        signal, before a blocked keypress teaches it the hard way)."""
+        prompt = self.query_one("#prompt", PromptInput)
+        prompt.border_subtitle = (
+            "🔒 보기 전용 · /new 로 새 세션"
+            if self.view_only
+            else "Enter to send · Shift+Enter for newline"
+        )
+
+    async def _say_system(self, text: str) -> None:
+        """Show an informational bubble (commands, status) — never part of the session."""
         container = self.query_one("#chat-container", VerticalScroll)
-        await container.mount(
-            Chatbox(f"⚠ {event.error}\n(check the server, then try again)", role="error")
-        )
+        await container.mount(Chatbox(text, role="system"))
         container.scroll_end(animate=False)
-        self._status("")
 
-    def action_copy_answer(self) -> None:
-        """Copy the last assistant answer to the system clipboard (OSC 52 — works over
-        SSH). The TUI captures the mouse, so terminal drag-select is unreliable; this
-        gives a one-key copy of the reply. The full transcript also lives in the
-        session JSONL for anything more."""
-        text = next(
-            (m["content"] for m in reversed(self.session.messages)
-             if m.get("role") == "assistant" and m.get("content")),
-            "",
-        )
-        if not text:
-            self.notify("복사할 답변이 아직 없어요.", severity="warning", timeout=2)
-            return
-        self.copy_to_clipboard(text)
-        self.notify("답변을 클립보드에 복사했어요.", timeout=2)
+    def _prune_empty_turn(self) -> None:
+        """Drop the turn's rail if the reply produced no blocks (immediate error)."""
+        turn = getattr(self, "_turn", None)
+        if turn is not None and turn.is_mounted and not turn.children:
+            turn.remove()
+        self._turn = None
 
     def _tick_progress(self) -> None:
         """Once a second, say how long the running work has been running.
@@ -579,77 +671,17 @@ class AhaCodeApp(App):
         oldest = min(self._running_tools.values(), key=lambda v: v[1])
         seconds = int(now - oldest[1])
         if len(self._running_tools) > 1:
-            self._status(f"● 도구 {len(self._running_tools)}개 · {seconds}초")
+            self._set_status(f"● 도구 {len(self._running_tools)}개 · {seconds}초")
         else:
-            self._status(f"● {oldest[0]} · {seconds}초")
+            self._set_status(f"● {oldest[0]} · {seconds}초")
 
-    def _force_exit(self) -> None:  # seam: tests replace this rather than dying
-        os._exit(0)
+    def _update_follow(self, scroll_y: float) -> None:
+        """Pin/unpin auto-scroll from the live scroll position: 'at the bottom' (within
+        a small tolerance for rounding) follows the stream; anything above stays put.
+        Fires on every scroll change, so it holds a cached scroller ref (no per-call
+        DOM query) — our own scroll_end re-confirms the flag, a user scroll-up clears it."""
+        self._follow_output = scroll_y >= self._chat_scroller.max_scroll_y - 2
 
-    async def action_quit(self) -> None:
-        """Quit means quit, whatever a worker is stuck on.
-
-        Textual restores the terminal promptly, then the process waits on its
-        threads — and a worker blocked on a socket read holds that for the whole
-        request timeout (15 minutes by default). The cooperative stop is checked
-        only between events, so nothing the user presses reaches a blocked read.
-
-        Closing the response would unblock this one read and leave the next kind of
-        stuck call to bring the bug back. So: ask the workers to stop, then go
-        anyway once an in-flight session append has had time to land. Nearly always
-        the process is gone before the timer fires.
-        """
-        self._stopping = True
-        worker = getattr(self, "_response_worker", None)
-        if worker is not None and worker.is_running:
-            worker.cancel()
-        # Headless means run_test: there is no terminal being held hostage, and the
-        # process to leave would be the test runner's. The backstop is for a real
-        # session, where a wedged worker is the user's problem.
-        if not self.is_headless:
-            leave = threading.Timer(QUIT_GRACE_SECONDS, self._force_exit)
-            leave.daemon = True  # never the reason the process stays up
-            leave.start()
-        self.exit()
-
-    def action_stop(self) -> None:
-        """Cancel whatever is in flight (cooperative — the loops check is_cancelled).
-
-        Two workers can now run at once (a chat turn and a plan run live in different
-        exclusive groups), and "stop" means stop what is running — so both are checked.
-        """
-        # Raised before anything else: sub-agents queue on the approval lock, so a stop
-        # must be visible to the ones still waiting or each pops its own modal after
-        # the user has already said stop.
-        self._stopping = True
-        stopped = False
-        worker = getattr(self, "_response_worker", None)
-        if worker is not None and worker.is_running:
-            worker.cancel()
-            stopped = True
-        if stopped:
-            self._status("■ stopped")
-            self._set_send_running(False)
-            # Fold the pinned plan: a stopped run is when the user wants the chat
-            # area back, and the plan is the widest thing on screen. Presentation
-            # only — the steps survive. query, not query_one: this can be called
-            # from the approval modal, whose screen is not the one being queried.
-            for panel in self.query(TodoPanel):
-                panel.set_collapsed(True)
-
-    @work(thread=True, exit_on_error=False)
-    def generate_title(self, messages: list[dict], path) -> None:
-        """Name an untitled session in the background. A shim: Textual's @work
-        needs the App's run_worker to start the thread, the work itself is the
-        runner's."""
-        self.runner.make_title(messages, path)
-
-    # exclusive=True: a new message cancels the previous worker.
-    # exit_on_error=False: a failing worker must not take the whole app down.
-    @work(thread=True, exclusive=True, exit_on_error=False)
-    def stream_response(self, messages: list[dict], turn) -> None:
-        """Run the agent loop in a thread, rendering its events into the chat."""
-        self.runner.run(messages, turn, get_current_worker())
 
 app = AhaCodeApp
 

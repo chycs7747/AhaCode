@@ -167,14 +167,14 @@ class TurnView:
             self.app._running_tools.pop(_PHASE_ID, None)
         else:
             self.app._running_tools[_PHASE_ID] = (event.name, time.monotonic())
-            self.app._status(f"● {event.name} · 0초")
+            self.app._set_status(f"● {event.name} · 0초")
 
     async def _thinking(self, event, boxes, container) -> None:
         if boxes.thinking is None:
             boxes.thinking = ThinkingBlock()  # foldable; starts expanded
             await container.mount(boxes.thinking)
         boxes.thinking.append_chunk(event.text)
-        self.app._status("● thinking…")
+        self.app._set_status("● thinking…")
 
     async def _text(self, event, boxes, container) -> None:
         boxes.fold_thinking()  # answer starting → auto-collapse the reasoning
@@ -184,20 +184,20 @@ class TurnView:
             boxes.answer = Chatbox("", role="assistant", markdown=True)
             await container.mount(boxes.answer)
         boxes.answer.append_chunk(event.text)
-        self.app._status("● generating…")
+        self.app._set_status("● generating…")
 
     async def _tool_delta(self, event, boxes, container) -> None:
         if event.name == "todo_write":
             return  # shows in the panel on its final call, not a bubble
         boxes.end_answer()
         if event.name == "edit":
-            self.app._status("● editing…")
+            self.app._set_status("● editing…")
             return  # edit's coloured diff is rendered on the final ToolCall
         if event.name != "write":
             # bash / read / grep …: no call bubble — the result card shows the
             # command in its title (IN) and the output in its body (OUT), the
             # Claude Code shape. The status bar reports progress until it lands.
-            self.app._status(f"● running {event.name}…")
+            self.app._set_status(f"● running {event.name}…")
             return
         # write streams its content live into one bubble
         buf = boxes.tool_buf.get(event.index, "") + event.fragment
@@ -209,7 +209,7 @@ class TurnView:
             boxes.tool[event.index] = box
         box._content = render_tool_stream(event.name, buf)
         box.update(box._content)
-        self.app._status("● writing…")
+        self.app._set_status("● writing…")
 
     async def _tool_call(self, event, boxes, container) -> None:
         app = self.app
@@ -227,18 +227,18 @@ class TurnView:
                 app.plan.note_todo_update(
                     app.query_one(TodoPanel), event.arguments.get("items", [])
                 )
-            app._status("● planning…")
+            app._set_status("● planning…")
         elif event.name == "plan_submit":  # the plan goes to the panel; the gate
             if boxes.owns_session:        # opens when its result confirms the save
                 app.query_one(TodoPanel).update_todos(app.plan.items(event.arguments))
-            app._status("● submitting plan…")
+            app._set_status("● submitting plan…")
         elif event.name == "edit":  # green diff card (shared with history restore)
             await container.mount(edit_card(event.arguments))
-            app._status("● editing…")
+            app._set_status("● editing…")
         else:
             # write streamed a live content bubble; every other tool shows only its
             # result card, so there is no call bubble to keep.
-            app._status(f"● running {event.name}…")
+            app._set_status(f"● running {event.name}…")
 
     async def _tool_result(self, event, boxes, container) -> None:
         app = self.app

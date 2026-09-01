@@ -75,7 +75,7 @@ class PlanRun:
         # scrolling that does nothing; the scroller is #chat-container, one level up.
         app._follow_output = True
         app.call_after_refresh(self.reveal)
-        app._status("⏸ 계획 승인 대기")
+        app._set_status("⏸ 계획 승인 대기")
 
     def reveal(self) -> None:
         """Bring the gate's buttons on screen, after layout has caught up.

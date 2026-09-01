@@ -57,7 +57,7 @@ class SessionControl:
         app._set_header_title(meta.get("title", ""))
         await self.render_history()
         app._reflect_view_only()
-        app._status("")
+        app._set_status("")
 
     async def new(self) -> None:
         """Start a fresh session (new file + header) and clear the view."""
