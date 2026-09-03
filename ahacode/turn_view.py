@@ -1,12 +1,6 @@
-"""The live turn on screen: canonical events in, mounted widgets out.
-
-The counterpart to render.py, which builds widget-free previews. This module
-does the mounting, and it is the ONLY place that knows an event's shape maps to
-a bubble, a card, or the pinned panel.
-
-It runs on the main thread via call_from_thread, which awaits each call — so a
-mount completes before the next append and nothing races the worker.
-"""
+"""The live turn on screen: canonical events in, mounted widgets out. The only
+place that knows which event becomes a bubble, a card, or the pinned panel.
+Runs on the main thread via call_from_thread."""
 
 from __future__ import annotations
 
@@ -25,9 +19,8 @@ from ahacode.widgets.thinking import ThinkingBlock
 from ahacode.widgets.todo_panel import TodoPanel
 from ahacode.widgets.tool_result import ToolResultBlock
 
-# Harness phases share _running_tools with the tools so they get the same ticking
-# clock. This is the id they book it under: not a call id, so it cannot collide
-# with one, and a single slot because phases do not nest.
+# Harness phases share the running-tool clock; this is the id they book it under.
+# Not a call id, so it cannot collide with one; one slot, since phases do not nest.
 _PHASE_ID = "\0phase"
 
 _ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}
@@ -35,27 +28,21 @@ _ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}
 
 @dataclass
 class TurnBoxes:
-    """One turn's live bubbles, plus who owns the session-level UI.
+    """One turn's live bubbles, plus whether it owns the session-level UI.
 
-    `owns_session` is the ownership test the renderer asks before touching
-    anything outside its own container: the pinned checklist, the status line,
-    the plan gate. Only the main loop's boxes set it, so a sub-agent planning
-    its private sub-task cannot overwrite the parent's checklist, and its
-    plan_submit cannot pause the parent's loop.
-
-    It used to be a "gate" key that had to be ABSENT — a permission bit encoded
-    as a missing dict entry, which is how the sub-agent overwrite got in.
+    Only the main loop's boxes set `owns_session`, so a sub-agent cannot touch the
+    pinned checklist, the status line, or the plan gate.
     """
 
     thinking: ThinkingBlock | None = None
     answer: Chatbox | None = None
-    tool: dict = field(default_factory=dict)       # stream index -> live bubble
-    tool_buf: dict = field(default_factory=dict)   # stream index -> accumulated args
+    tool: dict = field(default_factory=dict)  # stream index -> live bubble
+    tool_buf: dict = field(default_factory=dict)  # stream index -> accumulated args
     call_args: dict = field(default_factory=dict)  # call id -> parsed arguments
     owns_session: bool = False
 
     def clear_tools(self) -> None:
-        """A finished tool call ends the live write-bubble, whatever it was."""
+        """A finished tool call ends the live write bubble."""
         self.tool.clear()
         self.tool_buf.clear()
 
@@ -72,7 +59,14 @@ class TurnBoxes:
 
 
 def tool_unescape(s: str) -> str:
-    """Decode a (possibly incomplete) JSON string value, escape by escape."""
+    """Decode a possibly incomplete JSON string value, escape by escape.
+
+    Args:
+        s: The raw string body, without its quotes.
+
+    Returns:
+        The decoded text.
+    """
     out, i = [], 0
     while i < len(s):
         c = s[i]
@@ -86,10 +80,14 @@ def tool_unescape(s: str) -> str:
 
 
 def render_tool_stream(name: str, args: str) -> str:
-    """Live label for a streaming tool call whose args JSON may be incomplete.
+    """The live label for a streaming tool call whose argument JSON may be incomplete.
 
-    write is shown as a path header + streamed content (pull known fields out
-    early); every other tool shows its raw accumulating args.
+    Args:
+        name: The tool name.
+        args: The arguments received so far.
+
+    Returns:
+        write: a path header plus the streamed content; other tools: the raw args.
     """
     if name == "write":
         m = re.search(r'"path"\s*:\s*"((?:[^"\\]|\\.)*)"', args)
@@ -104,8 +102,15 @@ def render_tool_stream(name: str, args: str) -> str:
 
 
 def edit_card(args: dict) -> Chatbox:
-    """The green edit-diff card (path title + count chip + -/+ lines) — shared by
-    the live turn and history restore."""
+    """The edit-diff card (path title, count chip, -/+ lines), shared by the live
+    turn and the history replay.
+
+    Args:
+        args: The edit call's arguments.
+
+    Returns:
+        The mounted-ready bubble.
+    """
     path = args.get("path", "?")
     old, new = args.get("old_string", ""), args.get("new_string", "")
     text, plain = edit_diff_lines(old, new)
@@ -118,17 +123,21 @@ def edit_card(args: dict) -> Chatbox:
 
 
 class TurnView:
-    """Mounts the events of one turn into its container.
-
-    Holds the app for the three things that are session-wide rather than
-    turn-wide: the status line, the running-tool clock, and the plan gate. Each
-    is guarded by boxes.owns_session, so a sub-agent's view touches none of them.
-    """
+    """Mounts the events of one turn into its container. Holds the app for the
+    session-wide things (status line, running-tool clock, plan gate), each guarded
+    by boxes.owns_session."""
 
     def __init__(self, app) -> None:
         self.app = app
 
     async def render(self, event, boxes: TurnBoxes, container: VerticalScroll) -> None:
+        """Mount one event.
+
+        Args:
+            event: Any canonical event.
+            boxes: The turn's live bubbles.
+            container: Where new widgets mount.
+        """
         handler = {
             Notice: self._notice,
             Phase: self._phase,
@@ -140,28 +149,18 @@ class TurnView:
         }.get(type(event))
         if handler is not None:
             await handler(event, boxes, container)
-        # Follow the stream ONLY while _follow_output is set (a watcher on scroll_y
-        # drives it — see _update_follow), so a manual scroll-up during streaming
-        # STAYS off. The old per-chunk "near the bottom?" snap re-pinned every chunk,
-        # making it impossible to scroll away mid-answer.
+        # Follow the stream only while pinned to the bottom, so a scroll-up stays off.
         if self.app._follow_output:
             self.app.query_one("#chat-container", VerticalScroll).scroll_end(animate=False)
 
     # --- one method per event ------------------------------------------------
 
     async def _notice(self, event, boxes, container) -> None:
-        # Harness-authored, not the model's answer — the same neutral bubble a
-        # slash command gets. It ends the current answer, so the next TextDelta
-        # opens a fresh one below it.
-        boxes.end_answer()
+        boxes.end_answer()  # the next TextDelta opens a fresh bubble below the notice
         await container.mount(Chatbox(event.text, role="system"))
 
     async def _phase(self, event, boxes, container) -> None:
-        # Harness work with a duration, on the same clock the tools use: the point
-        # is a number that MOVES, because a static line is the picture a deadlock
-        # makes. A sub-agent's phases are skipped like its tools — its card carries
-        # its own clock.
-        if not boxes.owns_session:
+        if not boxes.owns_session:  # a sub-agent's card carries its own clock
             return
         if event.done:
             self.app._running_tools.pop(_PHASE_ID, None)
@@ -171,16 +170,14 @@ class TurnView:
 
     async def _thinking(self, event, boxes, container) -> None:
         if boxes.thinking is None:
-            boxes.thinking = ThinkingBlock()  # foldable; starts expanded
+            boxes.thinking = ThinkingBlock()
             await container.mount(boxes.thinking)
         boxes.thinking.append_chunk(event.text)
         self.app._set_status("● thinking…")
 
     async def _text(self, event, boxes, container) -> None:
-        boxes.fold_thinking()  # answer starting → auto-collapse the reasoning
+        boxes.fold_thinking()
         if boxes.answer is None:
-            # markdown=True: render the answer as Markdown so ```code``` and
-            # ```diff fences become highlighted blocks.
             boxes.answer = Chatbox("", role="assistant", markdown=True)
             await container.mount(boxes.answer)
         boxes.answer.append_chunk(event.text)
@@ -188,15 +185,13 @@ class TurnView:
 
     async def _tool_delta(self, event, boxes, container) -> None:
         if event.name == "todo_write":
-            return  # shows in the panel on its final call, not a bubble
+            return  # shows in the panel on the final call
         boxes.end_answer()
         if event.name == "edit":
             self.app._set_status("● editing…")
-            return  # edit's coloured diff is rendered on the final ToolCall
+            return  # the diff card is rendered on the final ToolCall
         if event.name != "write":
-            # bash / read / grep …: no call bubble — the result card shows the
-            # command in its title (IN) and the output in its body (OUT), the
-            # Claude Code shape. The status bar reports progress until it lands.
+            # No call bubble: the result card carries the input in its title.
             self.app._set_status(f"● running {event.name}…")
             return
         # write streams its content live into one bubble
@@ -213,41 +208,34 @@ class TurnView:
 
     async def _tool_call(self, event, boxes, container) -> None:
         app = self.app
-        boxes.end_answer()  # fold reasoning; the next turn opens fresh bubbles
-        # Remember the call's input so the result card can title itself with it.
-        boxes.call_args[event.id] = event.arguments
-        # Only this loop's own tools drive the status line. A sub-agent reports
-        # inside its card, and with several running in parallel their tools would
-        # otherwise take turns overwriting each other in the one status line.
-        if boxes.owns_session:
+        boxes.end_answer()
+        boxes.call_args[event.id] = event.arguments  # the result card titles itself with it
+        if boxes.owns_session:  # only this loop's tools drive the status line
             app._running_tools[event.id] = (event.name, time.monotonic())
         boxes.clear_tools()
-        if event.name == "todo_write":  # goes to the pinned panel, not a bubble
+        if event.name == "todo_write":
             if boxes.owns_session:
                 app.plan.note_todo_update(
                     app.query_one(TodoPanel), event.arguments.get("items", [])
                 )
             app._set_status("● planning…")
-        elif event.name == "plan_submit":  # the plan goes to the panel; the gate
-            if boxes.owns_session:        # opens when its result confirms the save
+        elif event.name == "plan_submit":  # the gate opens when the result confirms the save
+            if boxes.owns_session:
                 app.query_one(TodoPanel).update_todos(app.plan.items(event.arguments))
             app._set_status("● submitting plan…")
-        elif event.name == "edit":  # green diff card (shared with history restore)
+        elif event.name == "edit":
             await container.mount(edit_card(event.arguments))
             app._set_status("● editing…")
         else:
-            # write streamed a live content bubble; every other tool shows only its
-            # result card, so there is no call bubble to keep.
             app._set_status(f"● running {event.name}…")
 
     async def _tool_result(self, event, boxes, container) -> None:
         app = self.app
         app._running_tools.pop(event.id, None)
         if event.name == "todo_write":
-            return  # already reflected in the pinned panel
+            return  # already in the pinned panel
         if event.name == "plan_submit" and not event.is_error and boxes.owns_session:
-            # A rejected submission falls through to the error card below, so the
-            # user sees why; the model already has the reason and resubmits.
+            # A rejected submission falls through to the error card, so the user sees why.
             args = boxes.call_args.get(event.id, {})
             path = event.output.split(" (", 1)[0].removeprefix("Plan saved to ")
             await app.plan.open(
@@ -256,11 +244,9 @@ class TurnView:
             )
             return
         if event.name == "edit" and not event.is_error:
-            return  # a successful edit is already shown as the diff card
+            return  # already shown as the diff card
         if event.name == "task":
-            return  # the sub-agent's own 🤖 card already shows its flow + result
-        # One foldable card: the command/path in the title (IN), the output in the
-        # body (OUT). Long output / errors fold away.
+            return  # the sub-agent's own card shows its flow and result
         summary = tool_summary(event.name, boxes.call_args.get(event.id, {}))
         await container.mount(
             ToolResultBlock(event.name, event.output, event.is_error, summary=summary)

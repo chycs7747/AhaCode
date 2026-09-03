@@ -1,10 +1,5 @@
-"""The /commands typed into the chat input.
-
-They configure the app: none of them reaches the model, and none is recorded in
-the session. Each returns the text to show, which the app mounts as a system
-bubble — so this module needs no widgets, only the config it edits and the one
-callback that tells the app its settings moved.
-"""
+"""The slash commands typed into the chat: they edit the config and return the
+text to show. None reaches the model or the session file."""
 
 from __future__ import annotations
 
@@ -27,15 +22,23 @@ HELP = """Commands:
 class Commands:
     """Runs one slash command against the config.
 
-    Holds the app only to announce that settings moved (refresh_config_ui) —
-    /new and /sessions never arrive here, because they change what the running
-    worker is persisting into and so are handled by the app itself.
+    Holds the app only to announce that settings moved. /new and /sessions never
+    arrive here: they change what the running worker persists into, so the app
+    handles them itself.
     """
 
     def __init__(self, app) -> None:
         self.app = app
 
     def handle(self, text: str) -> str:
+        """Run one command line.
+
+        Args:
+            text: The full line, starting with "/".
+
+        Returns:
+            The text to show the user.
+        """
         parts = text.split()
         cmd, args = parts[0].lower(), parts[1:]
         run = {
@@ -50,9 +53,16 @@ class Commands:
         return run()
 
     def switch_model(self, name: str) -> str:
-        """Persist a model choice. The server loads it on the next request."""
+        """Persist a model choice; the server loads it on the next request.
+
+        Args:
+            name: The model id.
+
+        Returns:
+            The text to show the user.
+        """
         config.save(replace(config.load(), name=name))
-        client.reset()  # next request picks up the new config
+        client.reset()
         self.app.refresh_config_ui()
         return f"model switched to: {name} (loads on the next message — may take a while)"
 
@@ -68,7 +78,7 @@ class Commands:
             return f"endpoint: {cfg.base_url}"
         config.save(replace(cfg, base_url=args[0]))
         client.reset()
-        self.app.refresh_config_ui(reload_models=True)  # a new endpoint, a new model list
+        self.app.refresh_config_ui(reload_models=True)
         return f"endpoint switched to: {args[0]}"
 
     def _allow(self, args: list[str], text: str) -> str:
@@ -78,8 +88,7 @@ class Commands:
                 return ("no allow rules — every side-effecting tool asks first.\n"
                         "add one with e.g.  /allow bash:uv run pytest*")
             return "allow rules:\n" + "\n".join(f"  {r}" for r in cfg.allow_rules)
-        # Re-split on the raw text, not `args`: a rule keeps its spaces
-        # ("bash:git status*" is one rule, not two words).
+        # Re-split the raw text: a rule keeps its spaces ("bash:git status*" is one rule).
         rule = text.split(maxsplit=1)[1].strip()
         if ":" not in rule and rule not in tools.REGISTRY:
             return f"unknown tool: {rule} — use  tool:pattern  (e.g. bash:ls*)"
