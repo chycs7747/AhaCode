@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from textual.containers import VerticalScroll
 
-from ahacode import agent, config, prompts, storage
+from ahacode import agent, config, prompts, storage, workspace
 from ahacode.tools import plan as plan_tool
 from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.plan_gate import PlanGate
@@ -163,10 +163,10 @@ class PlanRun:
         ))
         await app.sessions.switch(child.stem)  # empty child; also flips the bar to act
         await app._say_system(
-            f"↳ 계획 실행 세션 — {storage.display_path(plan)} 을 읽고 진행합니다 "
+            f"↳ 계획 실행 세션 — {workspace.display_path(plan)} 을 읽고 진행합니다 "
             f"(계획 세션 {parent_id} 의 자식)"
         )
-        await self._seed_turn(prompts.handoff_prompt(storage.display_path(plan)), show=True)
+        await self._seed_turn(prompts.handoff_prompt(workspace.display_path(plan)), show=True)
 
     async def _seed_turn(self, text: str, *, show: bool) -> None:
         """Put one user message into the session and run a turn on it.
@@ -242,7 +242,7 @@ class PlanRun:
             return  # nothing declared yet — the model has not mirrored the plan
         left = panel.unfinished()
         parent = app.session_parent_id or app.session_path.stem
-        plan = storage.plan_path(storage.SESSIONS_DIR / f"{parent}.jsonl")
+        plan = storage.plan_path(workspace.SESSIONS_DIR / f"{parent}.jsonl")
         summary = next(
             (m["content"] for m in reversed(app.session.messages)
              if m.get("role") == "assistant" and m.get("content")), "",
@@ -255,11 +255,11 @@ class PlanRun:
         if left:
             await app._say_system(
                 f"⏸ 미완 항목 {len(left)}개 — 이어서 하려면 입력하세요 "
-                f"(다음: {left[0].get('content', '')[:60]}) · 진행 기록 {storage.display_path(out)}"
+                f"(다음: {left[0].get('content', '')[:60]}) · 진행 기록 {workspace.display_path(out)}"
             )
         else:
             await app._say_system(
-                f"✓ 계획 완료 — {len(items)}단계 모두 처리 · 결과 {storage.display_path(out)}"
+                f"✓ 계획 완료 — {len(items)}단계 모두 처리 · 결과 {workspace.display_path(out)}"
             )
 
     async def auto_continue(self) -> None:

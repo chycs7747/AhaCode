@@ -13,10 +13,10 @@ from __future__ import annotations
 import re
 import subprocess
 
-from ahacode import config, shell
+from ahacode import config, shell, workspace
 from ahacode.text import elide, line_count
 from ahacode.tools import spill
-from ahacode.tools.base import PROJECT_ROOT, Tool
+from ahacode.tools.base import Tool
 
 # A hung command must not freeze the agent, but the cap has to clear the commands
 # an agent actually runs: this project's own test suite takes 55-75s, and it is the
@@ -91,7 +91,7 @@ def _bash(args: dict) -> str:
     # sees errors too, and the command gets its own process group so a timeout can
     # kill the whole tree. Which shell that is — and how to kill it — is per-platform;
     # shell.py owns that.
-    proc = shell.popen(args["command"], cwd=PROJECT_ROOT)
+    proc = shell.popen(args["command"], cwd=workspace.PROJECT_ROOT)
     try:
         out, _ = proc.communicate(timeout=seconds)
         return _finish(out, proc.returncode)
@@ -128,7 +128,7 @@ def _spilled(out: str) -> str:
     path = spill.write(out, prefix="bash")
     if path is None:  # no place to write it — degrade to the old truncation
         return elide(out, _MAX_OUTPUT_CHARS)
-    where = spill.relative(path)
+    where = workspace.display_path(path)
     header = (
         f"[output was {len(out):,} chars / {line_count(out):,} lines — saved in full to {where}\n"
         f" read it with read(path=\"{where}\", offset=…, limit=…), "

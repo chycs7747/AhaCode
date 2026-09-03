@@ -7,14 +7,15 @@ about surface first.
 
 from __future__ import annotations
 
-from ahacode.tools.base import PROJECT_ROOT, Tool, resolve_path
+from ahacode import workspace
+from ahacode.tools.base import Tool
 from ahacode.tools.walk import iter_files
 
 _MAX_RESULTS = 200  # guard rail so one search can't flood the model's context
 
 
 def _glob(args: dict) -> str:
-    root = resolve_path(args["path"]) if args.get("path") else PROJECT_ROOT
+    root = workspace.resolve_path(args["path"]) if args.get("path") else workspace.PROJECT_ROOT
     matches = [p for p in iter_files(root, args["pattern"]) if p.is_file()]
     # Newest first: recency is the best cheap proxy for "relevant to this task".
     matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
@@ -25,7 +26,7 @@ def _glob(args: dict) -> str:
     # as_posix, not str: on Windows str() yields ahacode\agent.py, and the model then
     # echoes backslashes back into bash — where they are escape characters, not
     # separators. Forward slashes are accepted as paths on every platform.
-    lines = [p.relative_to(PROJECT_ROOT).as_posix() if p.is_relative_to(PROJECT_ROOT) else str(p)
+    lines = [p.relative_to(workspace.PROJECT_ROOT).as_posix() if p.is_relative_to(workspace.PROJECT_ROOT) else str(p)
              for p in shown]
     if len(matches) > len(shown):
         lines.append(f"... ({len(matches) - len(shown)} more; narrow the pattern)")

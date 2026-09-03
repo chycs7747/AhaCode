@@ -12,7 +12,7 @@ from dataclasses import replace
 
 import pytest
 
-from ahacode import agent, client, config, storage
+from ahacode import agent, client, config
 from ahacode.app import AhaCodeApp
 from ahacode.events import TextDelta, ToolCall, Usage
 from ahacode.tools import plan
@@ -24,8 +24,6 @@ METRICS = {"prompt": 100, "gen": 10, "gen_seconds": 1.0, "ttft": 0.5, "model": "
 
 @pytest.fixture(autouse=True)
 def offline(monkeypatch, tmp_path):
-    monkeypatch.setattr(storage, "SESSIONS_DIR", tmp_path)
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.toml")
     monkeypatch.setattr(client, "list_models", lambda *a, **k: ["m"])
     monkeypatch.setattr(client, "complete", lambda m: "")
     monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("ok")]))

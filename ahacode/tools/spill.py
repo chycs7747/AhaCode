@@ -19,8 +19,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from ahacode import storage
-from ahacode.tools import base
+from ahacode import workspace
 
 # The spilled file itself is capped too: an unbounded command (`yes`, a runaway
 # build log) must not be able to fill the disk.
@@ -42,7 +41,7 @@ def set_session(session_path: Path | None) -> None:
 
 def target_dir() -> Path:
     """Where spills go. Created on demand — most sessions never spill at all."""
-    return _session_dir or (storage.SESSIONS_DIR / "tool-output")
+    return _session_dir or (workspace.SESSIONS_DIR / "tool-output")
 
 
 def write(text: str, prefix: str = "out") -> Path | None:
@@ -62,14 +61,3 @@ def write(text: str, prefix: str = "out") -> Path | None:
         return path
     except OSError:
         return None
-
-
-def relative(path: Path) -> str:
-    """The path as the model should refer to it.
-
-    Measured against the SAME root the tools resolve against (tools.base), not
-    storage's — the whole point is that `read`/`grep` take this string straight back.
-    Accessed through the module so the root stays swappable in tests.
-    """
-    root = base.PROJECT_ROOT
-    return str(path.relative_to(root)) if path.is_relative_to(root) else str(path)

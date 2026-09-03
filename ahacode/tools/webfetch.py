@@ -23,6 +23,7 @@ import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 
+from ahacode import workspace
 from ahacode.text import elide, line_count
 from ahacode.tools import spill
 from ahacode.tools.base import Tool
@@ -178,7 +179,7 @@ def _finish(text: str) -> str:
     path = spill.write(text, prefix="webfetch")
     if path is None:  # nowhere to spill — degrade to truncation
         return elide(text, _MAX_OUTPUT_CHARS)
-    where = spill.relative(path)
+    where = workspace.display_path(path)
     header = (
         f"[page was {len(text):,} chars / {line_count(text):,} lines — saved in full to {where}\n"
         f" read it with read(path=\"{where}\", offset=…, limit=…), "

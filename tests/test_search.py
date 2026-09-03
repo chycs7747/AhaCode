@@ -2,6 +2,7 @@
 
 import pytest
 
+from ahacode import workspace
 from ahacode.tools import glob as glob_mod
 from ahacode.tools import grep as grep_mod
 from ahacode.tools import walk
@@ -24,10 +25,7 @@ def project(tmp_path, monkeypatch):
     (tmp_path / "__pycache__" / "agent.pyc").write_text("def run():\n", encoding="utf-8")
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "config.py").write_text("def run():\n", encoding="utf-8")
-    # Both tools resolve relative paths and report results against the project root.
-    for mod in (glob_mod, grep_mod):
-        monkeypatch.setattr(mod, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr("ahacode.tools.base.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(workspace, "PROJECT_ROOT", tmp_path)
     return tmp_path
 
 

@@ -1,17 +1,19 @@
-from ahacode import storage
+from pathlib import Path
+
+from ahacode import storage, workspace
 
 
 def test_the_suite_never_writes_into_the_working_copy():
-    """Every directory the app generates into is redirected away from ./.ahacode."""
-    real = storage.PROJECT_ROOT / ".ahacode"
-    for name in ("SESSIONS_DIR", "PLANS_DIR"):
-        path = getattr(storage, name)
-        assert not path.is_relative_to(real), f"{name} still points at {path}"
+    """Every path the app reads or writes under .ahacode/ is redirected in tests."""
+    real = (workspace.AHACODE_DIR, Path.home() / ".ahacode")
+    for name in ("SESSIONS_DIR", "PLANS_DIR", "CONFIG_PATH", "GLOBAL_CONFIG_PATH"):
+        path = getattr(workspace, name)
+        assert not any(path.is_relative_to(r) for r in real), f"{name} still points at {path}"
 
 
 def test_append_and_load_roundtrip(tmp_path):
     """What we save must come back identical (roundtrip check)."""
-    path = storage.new_session_path(base_dir=tmp_path)
+    path = storage.new_session_path()
     storage.append_message(path, {"role": "user", "content": "hello"})
     storage.append_message(path, {"role": "assistant", "content": "hi there"})
 
@@ -29,15 +31,15 @@ def test_load_missing_file_returns_empty(tmp_path):
 def test_latest_session_picks_newest(tmp_path):
     (tmp_path / "2026-08-17_100000.jsonl").write_text("{}\n")
     (tmp_path / "2026-08-18_090000.jsonl").write_text("{}\n")
-    assert storage.latest_session(base_dir=tmp_path).name == "2026-08-18_090000.jsonl"
+    assert storage.latest_session().name == "2026-08-18_090000.jsonl"
 
 
 def test_latest_session_empty_dir(tmp_path):
-    assert storage.latest_session(base_dir=tmp_path) is None
+    assert storage.latest_session() is None
 
 
 def test_header_roundtrip(tmp_path):
-    p = storage.new_session_path(base_dir=tmp_path)
+    p = storage.new_session_path()
     h = storage.make_header(p.stem, kind="subagent", parent_id="root1",
                             depth=2, model="qwen3-4b", title="bench")
     storage.write_header(p, h)
@@ -45,14 +47,14 @@ def test_header_roundtrip(tmp_path):
 
 
 def test_load_messages_skips_header_line(tmp_path):
-    p = storage.new_session_path(base_dir=tmp_path)
+    p = storage.new_session_path()
     storage.write_header(p, storage.make_header(p.stem, title="t"))
     storage.append_message(p, {"role": "user", "content": "hi"})
     assert storage.load_messages(p) == [{"role": "user", "content": "hi"}]
 
 
 def test_read_header_none_for_legacy_file(tmp_path):
-    p = storage.new_session_path(base_dir=tmp_path)
+    p = storage.new_session_path()
     storage.append_message(p, {"role": "user", "content": "hi"})  # no header
     assert storage.read_header(p) is None
 
@@ -63,7 +65,7 @@ def test_list_sessions_reads_headers_and_synthesizes_legacy(tmp_path):
     p2 = tmp_path / "2026-01-02_000000.jsonl"
     storage.append_message(p2, {"role": "user", "content": "legacy hi"})  # no header
 
-    sessions = storage.list_sessions(base_dir=tmp_path)
+    sessions = storage.list_sessions()
     assert [s["id"] for s in sessions] == ["2026-01-01_000000", "2026-01-02_000000"]
     assert sessions[0]["title"] == "withheader"
     assert sessions[1]["title"] == "legacy hi"  # synthesized from the first user message
@@ -88,7 +90,7 @@ def test_build_tree_orphan_becomes_root(tmp_path):
 
 
 def test_set_title_and_read_session_meta_last_wins(tmp_path):
-    p = storage.new_session_path(base_dir=tmp_path)
+    p = storage.new_session_path()
     storage.write_header(p, storage.make_header(p.stem, title=""))
     storage.append_message(p, {"role": "user", "content": "hi"})
     storage.set_title(p, "first title")
@@ -100,7 +102,7 @@ def test_set_title_and_read_session_meta_last_wins(tmp_path):
 
 
 def test_read_session_meta_none_for_legacy(tmp_path):
-    p = storage.new_session_path(base_dir=tmp_path)
+    p = storage.new_session_path()
     storage.append_message(p, {"role": "user", "content": "hi"})  # no header
     assert storage.read_session_meta(p) is None
 
@@ -111,7 +113,7 @@ def test_new_session_path_unique_under_threads(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
 
     with ThreadPoolExecutor(max_workers=8) as ex:
-        paths = list(ex.map(lambda _: storage.new_session_path(base_dir=tmp_path), range(8)))
+        paths = list(ex.map(lambda _: storage.new_session_path(), range(8)))
     assert len(set(paths)) == 8
 
 
@@ -123,11 +125,11 @@ def test_latest_session_skips_subagent(tmp_path):
     sub = tmp_path / "2026-08-23_110000.jsonl"  # newer, but a spawned child
     storage.write_header(sub, storage.make_header(
         sub.stem, kind="subagent", parent_id=main.stem, depth=1))
-    assert storage.latest_session(base_dir=tmp_path).name == main.name
+    assert storage.latest_session().name == main.name
 
 
 def test_header_relation_roundtrip(tmp_path):
-    p = storage.new_session_path(base_dir=tmp_path)
+    p = storage.new_session_path()
     h = storage.make_header(p.stem, kind="impl", parent_id="plan1", relation="handoff")
     storage.write_header(p, h)
     assert storage.read_session_meta(p)["relation"] == "handoff"
@@ -139,7 +141,7 @@ def test_header_relation_defaults_to_none():
 
 def test_header_without_relation_field_still_loads(tmp_path):
     # A header written before the field existed: relation is simply absent.
-    p = storage.new_session_path(base_dir=tmp_path)
+    p = storage.new_session_path()
     old = {k: v for k, v in storage.make_header(p.stem, kind="subagent").items()
            if k != "relation"}
     storage.write_header(p, old)
@@ -150,8 +152,7 @@ def test_header_without_relation_field_still_loads(tmp_path):
 
 # --- plan files --------------------------------------------------------------
 
-def test_plan_path_is_named_after_the_session(monkeypatch, tmp_path):
-    monkeypatch.setattr(storage, "PLANS_DIR", tmp_path / "plans")
+def test_plan_path_is_named_after_the_session(tmp_path):
     assert storage.plan_path(tmp_path / "2026-08-26_1200.jsonl") == tmp_path / "plans" / "2026-08-26_1200.md"
 
 
@@ -166,7 +167,7 @@ def test_write_plan_creates_the_directory_and_renders_markdown(tmp_path):
 
 
 def test_display_path_is_project_relative_inside_the_root():
-    assert storage.display_path(storage.PROJECT_ROOT / "plans" / "x.md") == "plans/x.md"
+    assert workspace.display_path(workspace.PROJECT_ROOT / "plans" / "x.md") == "plans/x.md"
 
 
 def test_result_file_sits_beside_the_plan_and_snapshots_the_checklist(tmp_path):
@@ -197,7 +198,7 @@ def test_latest_session_resumes_into_an_impl_session(tmp_path):
     sub = tmp_path / "2026-08-26_100200.jsonl"
     storage.write_header(sub, storage.make_header(
         sub.stem, kind="subagent", relation="delegate", parent_id=impl.stem, depth=1))
-    assert storage.latest_session(base_dir=tmp_path) == impl
+    assert storage.latest_session() == impl
 
 
 # --- resume: interrupted repair ----------------------------------------------

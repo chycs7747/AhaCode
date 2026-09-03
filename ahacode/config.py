@@ -11,15 +11,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from ahacode.workspace import GLOBAL_DIR, PROJECT_ROOT
-
-# Written with commented defaults on first run, and the file /url and /model
-# update unless the project has claimed an override of its own.
-GLOBAL_CONFIG_PATH = GLOBAL_DIR / "config.toml"
-# ./.ahacode/config.toml — optional, and grouped with sessions/ and plans/ under the
-# one hidden folder, kept out of git. Never created automatically: a project only
-# gets an override when you write one.
-CONFIG_PATH = PROJECT_ROOT / ".ahacode" / "config.toml"
+from ahacode import workspace
 
 # A first run has to point somewhere, and the only defensible somewhere is this
 # machine: a private address baked in as the default fails for everyone but its
@@ -233,7 +225,9 @@ def save(cfg: ModelConfig, path: Path | None = None) -> None:
     configures every project — the endpoint is set once — while /model in a project
     that has claimed an override stays local to it.
     """
-    path = path or (CONFIG_PATH if CONFIG_PATH.exists() else GLOBAL_CONFIG_PATH)
+    path = path or (
+        workspace.CONFIG_PATH if workspace.CONFIG_PATH.exists() else workspace.GLOBAL_CONFIG_PATH
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_render(cfg), encoding="utf-8")
 
@@ -249,9 +243,9 @@ def load(path: Path | None = None) -> ModelConfig:
         if not path.exists():
             save(DEFAULTS, path)
         return _build(_read(path))
-    if not GLOBAL_CONFIG_PATH.exists():
-        save(DEFAULTS, GLOBAL_CONFIG_PATH)
-    return _build(_layer(_read(GLOBAL_CONFIG_PATH), _read(CONFIG_PATH)))
+    if not workspace.GLOBAL_CONFIG_PATH.exists():
+        save(DEFAULTS, workspace.GLOBAL_CONFIG_PATH)
+    return _build(_layer(_read(workspace.GLOBAL_CONFIG_PATH), _read(workspace.CONFIG_PATH)))
 
 
 def _build(data: dict) -> ModelConfig:

@@ -5,7 +5,7 @@ import pytest
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Checkbox, Select
 
-from ahacode import client, config, storage
+from ahacode import client, config, storage, workspace
 from ahacode.app import AhaCodeApp
 from ahacode.turn_view import TurnBoxes
 from ahacode.events import TextDelta, ToolCall
@@ -22,8 +22,6 @@ def isolated_environment(monkeypatch, tmp_path):
     caches its config — every app test must run against private temporaries
     with a fresh client cache.
     """
-    monkeypatch.setattr(storage, "SESSIONS_DIR", tmp_path)
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.toml")
     # The model bar fetches /v1/models on mount — keep tests offline.
     monkeypatch.setattr(client, "list_models", lambda: ["qwen38", "qwen3-4b"])
     # Auto-title runs after a turn as a background worker that would hit the network;
@@ -453,7 +451,7 @@ async def test_unknown_command_suggests_help():
 @pytest.mark.asyncio
 async def test_restore_on_startup(tmp_path):
     """An existing session file must be restored as bubbles on startup."""
-    p = storage.new_session_path(base_dir=tmp_path)
+    p = storage.new_session_path()
     storage.append_message(p, {"role": "user", "content": "earlier message"})
     storage.append_message(p, {"role": "assistant", "content": "earlier reply"})
 
@@ -1332,7 +1330,7 @@ async def test_task_tool_spawns_subagent(monkeypatch):
         assert card.collapsed and "✓" in card.title
 
         # 2) the child ran as its own session file, nested under the parent
-        headers = [storage.read_header(p) for p in storage.SESSIONS_DIR.glob("*.jsonl")]
+        headers = [storage.read_header(p) for p in workspace.SESSIONS_DIR.glob("*.jsonl")]
         subs = [h for h in headers if h and h.get("kind") == "subagent"]
         assert len(subs) == 1
         assert subs[0]["depth"] == 1 and subs[0]["parent_id"] is not None
@@ -1431,7 +1429,7 @@ async def test_parallel_task_fanout(monkeypatch):
         await pilot.pause()
 
         assert len(app.query(SubagentCard)) == 2  # two nested cards
-        subs = [h for h in (storage.read_header(p) for p in storage.SESSIONS_DIR.glob("*.jsonl"))
+        subs = [h for h in (storage.read_header(p) for p in workspace.SESSIONS_DIR.glob("*.jsonl"))
                 if h and h.get("kind") == "subagent"]
         assert len(subs) == 2
         # both results injected in call order (t1 then t2), matching the tool_calls
@@ -1523,7 +1521,7 @@ async def test_grandchild_nests_under_child(monkeypatch):
         await pilot.pause()
 
         main_id = app.session_path.stem
-        headers = [h for h in (storage.read_header(p) for p in storage.SESSIONS_DIR.glob("*.jsonl")) if h]
+        headers = [h for h in (storage.read_header(p) for p in workspace.SESSIONS_DIR.glob("*.jsonl")) if h]
         child = next(h for h in headers if h["depth"] == 1)
         grand = next(h for h in headers if h["depth"] == 2)
         # the tree threads correctly: child -> main, grandchild -> child (NOT main)

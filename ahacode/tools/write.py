@@ -7,11 +7,12 @@ code (quoting/escaping/indent mistakes)."""
 
 from __future__ import annotations
 
-from ahacode.tools.base import Tool, resolve_path
+from ahacode import workspace
+from ahacode.tools.base import Tool
 
 
 def _write(args: dict) -> str:
-    target = resolve_path(args["path"])
+    target = workspace.resolve_path(args["path"])
     target.parent.mkdir(parents=True, exist_ok=True)  # create intermediate dirs
     content = args.get("content", "")
     target.write_text(content, encoding="utf-8")  # utf-8 explicit (cp949 default on KR Windows)

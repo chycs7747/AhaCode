@@ -16,7 +16,7 @@ session's to ask for.
 
 from __future__ import annotations
 
-from ahacode import storage
+from ahacode import storage, workspace
 from ahacode.tools.base import Tool
 from ahacode.tools.plan import coerce_items, non_actionable
 
@@ -72,7 +72,7 @@ def _plan_submit(args: dict, ctx) -> str:
         body=str(args.get("body", "")).strip(),
     )
     return (
-        f"Plan saved to {storage.display_path(path)} ({len(steps)} steps)."
+        f"Plan saved to {workspace.display_path(path)} ({len(steps)} steps)."
         f"{note(steps)} Planning is complete — stop here and wait for the user's decision."
     )
 

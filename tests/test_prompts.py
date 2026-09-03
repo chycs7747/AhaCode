@@ -8,13 +8,12 @@ from dataclasses import replace
 
 import pytest
 
-from ahacode import config, prompts, storage, subagent
+from ahacode import config, prompts, subagent, workspace
 
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     """Private config so prompts see a known model (env block reads config.load())."""
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.toml")
     config.save(replace(config.DEFAULTS, name="qwen38"))
     yield
 
@@ -30,7 +29,7 @@ def test_act_system_has_the_key_sections():
 def test_act_system_injects_live_environment():
     out = prompts.act_system()
     assert "# Environment" in out
-    assert str(storage.PROJECT_ROOT) in out  # cwd
+    assert str(workspace.PROJECT_ROOT) in out  # cwd
     assert "qwen38" in out                            # active model
 
 

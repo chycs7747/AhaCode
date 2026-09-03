@@ -8,19 +8,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
-
-# Tools resolve relative paths / run commands against the project root, so the
-# agent's "workspace" matches where AhaCode was launched — which is what
-# workspace.PROJECT_ROOT is. Re-exported here because every tool module imports it
-# from base, and because the tests swap it per-module to sandbox a run.
-from ahacode.workspace import PROJECT_ROOT
-
-
-def resolve_path(path: str) -> Path:
-    """Resolve a tool path against the project root (absolute paths pass through)."""
-    p = Path(path)
-    return p if p.is_absolute() else (PROJECT_ROOT / p)
 
 
 @dataclass(frozen=True)

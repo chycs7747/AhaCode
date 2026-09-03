@@ -6,11 +6,12 @@ to supply more context. requires_approval=True (it changes the filesystem)."""
 
 from __future__ import annotations
 
-from ahacode.tools.base import Tool, resolve_path
+from ahacode import workspace
+from ahacode.tools.base import Tool
 
 
 def _edit(args: dict) -> str:
-    target = resolve_path(args["path"])
+    target = workspace.resolve_path(args["path"])
     text = target.read_text(encoding="utf-8")
     old, new = args["old_string"], args["new_string"]
     count = text.count(old)

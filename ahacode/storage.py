@@ -10,36 +10,28 @@ import json
 import shutil
 from pathlib import Path
 
-from ahacode.workspace import PROJECT_ROOT  # the launch directory — see workspace.py
-
-# Every file the app generates lives under here, so the project root stays clean and
-# .gitignore needs one line. On-demand mkdir (below) creates the subdirs as needed.
-AHACODE_DIR = PROJECT_ROOT / ".ahacode"
-SESSIONS_DIR = AHACODE_DIR / "sessions"
-# One plan file per planning session, named after it, so plan ↔ session is 1:1
-# and a later session can be handed the path alone.
-PLANS_DIR = AHACODE_DIR / "plans"
+from ahacode import workspace
 
 
-def new_session_path(base_dir: Path | None = None) -> Path:
-    """Return a path for a new session file, atomically claiming the name by creating
-    an empty file. The claim closes a race where two threads spawning sub-agents in
-    the same second would otherwise compute the same name and clobber each other
-    (parallel task fan-out); the header/messages are appended right after."""
-    base_dir = base_dir or SESSIONS_DIR
-    base_dir.mkdir(parents=True, exist_ok=True)
-    # No colons in the timestamp — Windows forbids them in file names.
-    stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    path = base_dir / f"{stamp}.jsonl"
+def new_session_path() -> Path:
+    """Claim a path for a new session file by creating it empty.
+
+    Creating the file is what makes the name unique: two sub-agents spawned in the
+    same second would otherwise compute the same timestamp.
+
+    Returns:
+        The claimed, empty .jsonl path under workspace.SESSIONS_DIR.
+    """
+    workspace.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")  # no colons: Windows
+    path = workspace.SESSIONS_DIR / f"{stamp}.jsonl"
     n = 2
     while True:
         try:
-            # O_CREAT|O_EXCL: create-and-claim in one atomic step, so two racing
-            # callers can never be handed the same path.
             path.touch(exist_ok=False)
             return path
-        except FileExistsError:  # taken (existing session, or a concurrent claim) — bump
-            path = base_dir / f"{stamp}_{n}.jsonl"
+        except FileExistsError:
+            path = workspace.SESSIONS_DIR / f"{stamp}_{n}.jsonl"
             n += 1
 
 
@@ -75,21 +67,20 @@ def load_messages(path: Path) -> list[dict]:
 RESUMABLE_KINDS = frozenset({"main", "impl"})
 
 
-def latest_session(base_dir: Path | None = None) -> Path | None:
+def latest_session() -> Path | None:
     """Most recent session the user was driving, to resume on startup, or None.
 
     An impl session counts: after a Ctrl+D mid-plan the newest file IS the impl
     session, and reopening its planning parent instead would invite "이어서 해"
     in plan mode — which cannot act and would spawn a fresh sibling instead.
-    Skips sub-agent (and fork) sessions: those are spawned by an agent as children,
+    Skips sub-agent sessions: those are spawned by an agent as children,
     not conversations the user opened, and are depth-gated out of the `task` tool.
     Legacy headerless files count as main and stay resumable.
     """
-    base_dir = base_dir or SESSIONS_DIR
-    if not base_dir.exists():
+    if not workspace.SESSIONS_DIR.exists():
         return None
     # File names are timestamps, so reverse order == newest first.
-    for path in sorted(base_dir.glob("*.jsonl"), reverse=True):
+    for path in sorted(workspace.SESSIONS_DIR.glob("*.jsonl"), reverse=True):
         header = read_header(path)
         if header is None or header.get("kind") in RESUMABLE_KINDS:
             return path
@@ -133,7 +124,7 @@ def make_header(
         "relation": relation,
         "depth": depth,
         "model": model,
-        "cwd": str(cwd or PROJECT_ROOT),
+        "cwd": str(cwd or workspace.PROJECT_ROOT),
         "title": title,
     }
 
@@ -194,14 +185,13 @@ def _legacy_header(path: Path) -> dict:
     return make_header(path.stem, kind="main", title=(title[:40] or path.stem))
 
 
-def list_sessions(base_dir: Path | None = None) -> list[dict]:
+def list_sessions() -> list[dict]:
     """Every session's header (newest last), synthesizing one for legacy files."""
-    base_dir = base_dir or SESSIONS_DIR
-    if not base_dir.exists():
+    if not workspace.SESSIONS_DIR.exists():
         return []
     return [
         read_session_meta(path) or _legacy_header(path)
-        for path in sorted(base_dir.glob("*.jsonl"))
+        for path in sorted(workspace.SESSIONS_DIR.glob("*.jsonl"))
     ]
 
 
@@ -219,16 +209,15 @@ def descendants(session_id: str, sessions: list[dict]) -> list[str]:
     return out
 
 
-def delete_session(session_id: str, base_dir: Path | None = None) -> list[str]:
+def delete_session(session_id: str) -> list[str]:
     """Delete a session and everything that hangs off it: its descendants (a child
     transcript without its parent is noise), each one's spilled tool output, and
     the plan / result files named after it. Returns the ids removed."""
-    base_dir = base_dir or SESSIONS_DIR
-    ids = descendants(session_id, list_sessions(base_dir))
+    ids = descendants(session_id, list_sessions())
     for sid in ids:
-        (base_dir / f"{sid}.jsonl").unlink(missing_ok=True)
-        shutil.rmtree(base_dir / f"{sid}-out", ignore_errors=True)
-        for extra in (PLANS_DIR / f"{sid}.md", PLANS_DIR / f"{sid}.result.md"):
+        (workspace.SESSIONS_DIR / f"{sid}.jsonl").unlink(missing_ok=True)
+        shutil.rmtree(workspace.SESSIONS_DIR / f"{sid}-out", ignore_errors=True)
+        for extra in (workspace.PLANS_DIR / f"{sid}.md", workspace.PLANS_DIR / f"{sid}.result.md"):
             extra.unlink(missing_ok=True)
     return ids
 
@@ -273,7 +262,7 @@ def build_tree(sessions: list[dict]) -> list[dict]:
 
 def plan_path(session_path: Path) -> Path:
     """Where the plan written in `session_path` lives: plans/{session}.md."""
-    return PLANS_DIR / f"{session_path.stem}.md"
+    return workspace.PLANS_DIR / f"{session_path.stem}.md"
 
 
 def result_path(plan: Path) -> Path:
@@ -296,7 +285,7 @@ def write_result(
     lines = [
         f"# {head} — {plan.name}",
         "",
-        f"- plan: {display_path(plan)}",
+        f"- plan: {workspace.display_path(plan)}",
         f"- session: {session_id}",
         "",
         "## Steps",
@@ -307,18 +296,6 @@ def write_result(
         lines += ["", "## Latest summary", "", summary]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def display_path(path: Path) -> str:
-    """A path as the model and user should see it — project-relative when inside."""
-    try:
-        return path.relative_to(PROJECT_ROOT).as_posix()
-    except ValueError:
-        # Outside the project — still as_posix, not str: this string is handed to the
-        # model, which puts it straight into read() and into bash, where a Windows
-        # backslash is an escape character rather than a separator. Forward slashes
-        # are accepted as paths on Windows too; the drive letter survives either way.
-        return path.as_posix()
 
 
 def plan_title(path: Path) -> str:

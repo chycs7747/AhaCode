@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from ahacode import config, storage
+from ahacode import client, workspace
 
 # Anything that would start another test run of this project. Matched as COMMANDS,
 # not as substrings: pytest's own tmp_path is C:\...\pytest-of-<user>\pytest-91\...,
@@ -27,35 +27,19 @@ _RECURSIVE = tuple(
 
 
 @pytest.fixture(autouse=True)
-def isolated_config(monkeypatch, tmp_path):
-    """Point BOTH config layers at tmp, for every test.
+def isolated_workspace(monkeypatch, tmp_path):
+    """Point every path under .ahacode/ at tmp, so no test touches the real one.
 
-    config.load() reads the global file on every call and creates it on first run,
-    and config.save() writes to whichever layer is in play — so without this a test
-    run writes settings into the developer's home and into the working copy's own
-    .ahacode/, then reads them back, making results depend on the machine it ran on.
-    A project config left behind that way also outranks the global one at runtime,
-    which is a confusing thing to debug long after the test that wrote it.
-
-    Tests needing a specific project override still patch config.CONFIG_PATH in their
-    own fixture; a module-level autouse fixture runs after this one, so theirs wins.
+    The session directory is tmp_path itself, so a test can drop a .jsonl there
+    directly. The client caches its config, so it is reset around each test.
     """
-    monkeypatch.setattr(config, "GLOBAL_CONFIG_PATH", tmp_path / "global-config.toml")
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "project-config.toml")
-
-
-@pytest.fixture(autouse=True)
-def isolated_output_dirs(monkeypatch, tmp_path):
-    """Point everything the app GENERATES at tmp, for every test.
-
-    Test files patch the directory they assert on and leave the rest pointing at the
-    working copy, so any output a test does not care about lands in the developer's
-    own .ahacode/ — a run of the suite left 48 transcripts of the fake model saying
-    "Hello! How can I help you today?" among the real ones. A test that patches its
-    own directory still wins: a module-level autouse fixture runs after this one.
-    """
-    for name in ("SESSIONS_DIR", "PLANS_DIR"):
-        monkeypatch.setattr(storage, name, tmp_path / name.lower())
+    monkeypatch.setattr(workspace, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(workspace, "PLANS_DIR", tmp_path / "plans")
+    monkeypatch.setattr(workspace, "CONFIG_PATH", tmp_path / "config.toml")
+    monkeypatch.setattr(workspace, "GLOBAL_CONFIG_PATH", tmp_path / "global-config.toml")
+    client.reset()
+    yield
+    client.reset()
 
 
 @pytest.fixture(autouse=True)

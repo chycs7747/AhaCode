@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from ahacode.tools.base import Tool, resolve_path
+from ahacode import workspace
+from ahacode.tools.base import Tool
 
 _MAX_LINES = 2000  # guard rail so one read can't flood the model's context
 
 
 def _read(args: dict) -> str:
-    target = resolve_path(args["path"])
+    target = workspace.resolve_path(args["path"])
     # utf-8 explicit: the platform default may differ (cp949 on Korean Windows).
     lines = target.read_text(encoding="utf-8").splitlines()
 

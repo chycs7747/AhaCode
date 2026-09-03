@@ -3,9 +3,7 @@ which of enable_thinking / thinking_token_budget / top_k / min_p exist at all, s
 server that rejects them must degrade to a plain request instead of failing every
 turn — and must not keep paying for the discovery."""
 
-import tempfile
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 
@@ -32,9 +30,6 @@ class _Response:
 
 @pytest.fixture(autouse=True)
 def endpoint(monkeypatch):
-    tmp = Path(tempfile.mkdtemp())
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp / "c.toml")
-    monkeypatch.setattr(config, "GLOBAL_CONFIG_PATH", tmp / "g.toml")
     cfg = replace(config.DEFAULTS, base_url="http://elsewhere:1234/v1", name="qwen3")
     monkeypatch.setattr(client, "_ensure_client", lambda: (_Picky(), cfg))
     monkeypatch.setattr(client, "_wait_for_permit", _ungated)

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import re
 
-from ahacode.tools.base import PROJECT_ROOT, Tool, resolve_path
+from ahacode import workspace
+from ahacode.tools.base import Tool
 from ahacode.tools.walk import iter_files, read_text_or_none
 
 _MAX_MATCHES = 100    # guard rail so one search can't flood the model's context
@@ -20,7 +21,7 @@ def _grep(args: dict) -> str:
     # re.compile validates the pattern here, so a bad regex surfaces as a tool error
     # the model can correct, rather than a traceback mid-walk.
     regex = re.compile(args["pattern"])
-    root = resolve_path(args["path"]) if args.get("path") else PROJECT_ROOT
+    root = workspace.resolve_path(args["path"]) if args.get("path") else workspace.PROJECT_ROOT
     pattern = args.get("glob") or "**/*"
 
     hits: list[str] = []
@@ -34,7 +35,7 @@ def _grep(args: dict) -> str:
             continue
         # as_posix so a Windows result reads ahacode/grep.py, not ahacode\grep.py —
         # the model feeds these paths straight back into read() and into bash.
-        name = path.relative_to(PROJECT_ROOT).as_posix() if path.is_relative_to(PROJECT_ROOT) else str(path)
+        name = path.relative_to(workspace.PROJECT_ROOT).as_posix() if path.is_relative_to(workspace.PROJECT_ROOT) else str(path)
         matched_here = False
         for lineno, line in enumerate(text.splitlines(), start=1):
             if not regex.search(line):

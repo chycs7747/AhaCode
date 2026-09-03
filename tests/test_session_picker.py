@@ -3,7 +3,7 @@
 import pytest
 from textual.widgets import Button, Input, Label, ListView, Static
 
-from ahacode import client, config, storage
+from ahacode import client, storage
 from ahacode.app import AhaCodeApp
 from ahacode.events import TextDelta
 from ahacode.widgets.prompt_input import PromptInput
@@ -12,9 +12,6 @@ from ahacode.widgets.session_picker import SessionPicker, SessionRow
 
 @pytest.fixture(autouse=True)
 def isolated_environment(monkeypatch, tmp_path):
-    monkeypatch.setattr(storage, "SESSIONS_DIR", tmp_path)
-    monkeypatch.setattr(storage, "PLANS_DIR", tmp_path / "plans")
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.toml")
     monkeypatch.setattr(client, "list_models", lambda: ["qwen38"])
     monkeypatch.setattr(client, "complete", lambda messages: "")
     monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("hi")]))

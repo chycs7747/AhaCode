@@ -5,7 +5,7 @@ import pytest
 from dataclasses import replace
 from textual.widgets import Button, ContentSwitcher, Input, Label, Select
 
-from ahacode import client, config, storage
+from ahacode import client, config
 from ahacode.app import AhaCodeApp
 from ahacode.events import TextDelta
 from ahacode.widgets.settings import Settings
@@ -13,8 +13,6 @@ from ahacode.widgets.settings import Settings
 
 @pytest.fixture(autouse=True)
 def isolated_environment(monkeypatch, tmp_path):
-    monkeypatch.setattr(storage, "SESSIONS_DIR", tmp_path)
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.toml")
     monkeypatch.setattr(client, "list_models", lambda *a, **k: ["qwen38"])
     monkeypatch.setattr(client, "complete", lambda m: "")
     monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("hi")]))
