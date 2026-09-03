@@ -71,10 +71,9 @@ def test_bash_runs_when_approved():
 
 
 def test_a_batch_of_pure_reads_runs_in_parallel():
-    """Several independent reads in one assistant message execute concurrently. Each
-    tool blocks on a shared barrier that only releases once BOTH are inside it, so
-    the turn can finish only if the two ran at the same time — a serial path would
-    deadlock the first call until it times out."""
+    """Independent reads in one message run concurrently: each blocks on a barrier that
+    only releases once both are inside it.
+    """
     import threading
 
     barrier = threading.Barrier(2, timeout=3)
@@ -176,11 +175,7 @@ def _closing_stream(closed, events):
 
 
 def test_a_stopped_turn_closes_the_stream():
-    """The loop owns the stream's lifetime, and stopping mid-turn is the path that
-    forgets it. client.stream_chat holds the process-wide concurrency permit inside
-    that generator, so a stream left suspended holds the permit too -- leak
-    max_parallel_agents of them and every later request blocks on acquire() forever,
-    which presents as an app frozen with no CPU and no network."""
+    """Stopping mid-turn closes the stream, so its concurrency permit is released."""
     closed = []
     stream = _closing_stream(closed, [TextDelta("a"), TextDelta("b"), TextDelta("c")])
     # False at the top of the loop so the turn actually starts, True once the first

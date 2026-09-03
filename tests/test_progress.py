@@ -1,9 +1,4 @@
-"""Long work has to look different from stuck work.
-
-A status line reading `running bash…` that never changes is the same picture as a
-frozen app — which is how a 120-second test run and a real deadlock came to look
-alike. Everything here is about the elapsed second that tells them apart.
-"""
+"""Running work shows an elapsed clock, so long work looks different from stuck work."""
 
 import time
 

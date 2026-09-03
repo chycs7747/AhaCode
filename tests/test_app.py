@@ -107,10 +107,7 @@ async def test_restored_bash_is_one_card_titled_with_the_command(fake_llm):
 
 @pytest.mark.asyncio
 async def test_bracketed_content_renders_without_markup_crash(fake_llm):
-    """Regression: model/tool text with '[' — file dumps (list[dict], arr[0]),
-    JSON, markdown links — must render literally, not be parsed as Rich markup.
-    This crashed the app with MarkupError the moment a tool returned Python source
-    (run_test re-raises app._exception on exit, so a markup crash fails here)."""
+    """Text with '[' (list[dict], JSON, markdown links) renders literally, never as Rich markup."""
     app = AhaCodeApp()
     async with app.run_test() as pilot:
         container = app.query_one("#chat-container")
@@ -1376,10 +1373,9 @@ def test_gate_caps_concurrent_requests(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_parallel_task_fanout(monkeypatch):
-    """Two task calls in one turn spawn two sub-agents concurrently: two nested
-    cards, two child sessions, both results injected in call order. The fake stream
-    is hit from parallel threads, so it branches on message content (thread-safe),
-    not a shared counter."""
+    """Two task calls in one turn spawn two sub-agents concurrently: two cards, two child
+    sessions, both results in call order.
+    """
     from ahacode.events import ToolCall
     from ahacode.widgets.subagent_card import SubagentCard
 

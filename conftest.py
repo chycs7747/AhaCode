@@ -1,11 +1,5 @@
-"""Test-wide safety net.
-
-The bash tool really executes what it is given, so a test that hands it `pytest`
-re-runs this entire suite — which contains that test, which does it again. It is a
-fork bomb: one such test reached ~460 processes and a load average of 198 before it
-was noticed, because a timeout kills only the shell and leaves the tree orphaned.
-
-A comment would not have prevented it. This does.
+"""Test-wide fixtures: a private .ahacode/, offline app doubles, and a guard against a
+test launching the suite from inside itself.
 """
 
 import re
@@ -18,11 +12,8 @@ import pytest
 from ahacode import client, workspace
 from ahacode.events import TextDelta, ThinkingDelta
 
-# Anything that would start another test run of this project. Matched as COMMANDS,
-# not as substrings: pytest's own tmp_path is C:\...\pytest-of-<user>\pytest-91\...,
-# so a plain `in` test flags every command that merely touches a temp file. The
-# lookarounds reject a hit that is glued to a path separator, a word character, or a
-# hyphen — which is every path-shaped occurrence, and none of the real invocations.
+# Anything that would start another test run of this project, matched as a command
+# rather than a substring: pytest's own tmp_path contains "pytest-of-<user>".
 _RECURSIVE = tuple(
     re.compile(rf"(?<![\w./\\-]){pattern}(?![\w./\\-])")
     for pattern in (r"pytest", r"uv\s+run", r"tox")
@@ -31,10 +22,8 @@ _RECURSIVE = tuple(
 
 @pytest.fixture(autouse=True)
 def isolated_workspace(monkeypatch, tmp_path):
-    """Point every path under .ahacode/ at tmp, so no test touches the real one.
-
-    The session directory is tmp_path itself, so a test can drop a .jsonl there
-    directly. The client caches its config, so it is reset around each test.
+    """Point every path under .ahacode/ at tmp. The session directory is tmp_path itself,
+    so a test can drop a .jsonl there; the client's cached config is reset around each test.
     """
     monkeypatch.setattr(workspace, "SESSIONS_DIR", tmp_path)
     monkeypatch.setattr(workspace, "PLANS_DIR", tmp_path / "plans")

@@ -1,3 +1,8 @@
+"""The composer footer: model, mode and auto-approve controls, the live status,
+and the Send button."""
+
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 from textual import on, work
@@ -10,12 +15,8 @@ from ahacode import client, config
 
 
 class Checkmark(Checkbox):
-    """Checkbox that shows a ✓ when on and a truly empty box when off.
-
-    Textual always draws BUTTON_INNER (its default off-state just dims it, so a
-    mark still shows); we render a space when off so the box is genuinely empty
-    until checked.
-    """
+    """A Checkbox that shows ✓ when on and a truly empty box when off; Textual's
+    default only dims the mark."""
 
     BUTTON_INNER = "✓"
 
@@ -38,12 +39,11 @@ class Checkmark(Checkbox):
 
 
 class ToggleSelect(Select):
-    """A Select whose button also *closes* the open menu when clicked again.
+    """A Select whose button also closes the open menu when clicked again.
 
-    Textual's default double-fires: clicking the button while the menu is open
-    first blurs the overlay (Dismiss → close) and then the button's own Toggle
-    re-opens it, so a second click never closes it. We remember a just-happened
-    lost-focus dismiss and swallow the Toggle that immediately follows it.
+    Textual's default double-fires: the click blurs the overlay (Dismiss) and then
+    the button's own Toggle re-opens it. A just-happened lost-focus dismiss is
+    remembered and the Toggle that follows it swallowed.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -52,17 +52,12 @@ class ToggleSelect(Select):
 
     @on(SelectOverlay.Dismiss)
     def _select_overlay_dismiss(self, event: SelectOverlay.Dismiss) -> None:
-        # prevent_default() breaks the MRO dispatch loop before Select's own
-        # handler runs (ToggleSelect is first in the MRO), so ours fully replaces it.
         event.stop()
-        event.prevent_default()
+        event.prevent_default()  # replaces Select's own handler
         self.expanded = False
         if event.lost_focus:
-            # A click on the button blurs the overlay first; block the reopen the
-            # button's Toggle would do next. Cleared on the next frame, so the very
-            # next click (a fresh open) and click-away both still work.
             self._suppress_reopen = True
-            self.call_after_refresh(self._allow_reopen)
+            self.call_after_refresh(self._allow_reopen)  # the next click is a fresh open
         else:
             self.focus()
 
@@ -72,21 +67,16 @@ class ToggleSelect(Select):
     @on(SelectCurrent.Toggle)
     def _select_current_toggle(self, event: SelectCurrent.Toggle) -> None:
         event.stop()
-        event.prevent_default()  # replace Select's base toggle (see above)
+        event.prevent_default()
         if self._suppress_reopen:
             self._suppress_reopen = False
-            return  # the blur already closed it — don't reopen
+            return
         self.expanded = not self.expanded
 
 
 class ModelBar(Horizontal):
-    """Composer footer under the prompt: mode + model + auto-approve controls, a
-    live status/stats readout, and the Send button.
-
-    The model picker is filled from the server's /v1/models. Picking an entry (or
-    changing mode / auto-approve) posts a message so the app can persist it — the
-    app owns config and client state, the bar only displays and reports.
-    """
+    """The composer footer. It only displays and reports: picking a model, a mode
+    or auto-approve posts a message, and the app owns the state."""
 
     @dataclass
     class ModelChosen(Message):
@@ -105,15 +95,11 @@ class ModelBar(Horizontal):
         self._names: list[str] = []
 
     def compose(self):
-        # Composer footer: model on the left, live status in the flexible middle,
-        # and the mode + auto-approve controls next to Send on the right (Claude
-        # Code's shape — the "what happens when I send" cluster is together). The
-        # endpoint moved to the HeaderBar; it's connection identity, not a control.
-        cfg = config.load()  # seed the model + allow_blank=False → no empty entry
+        cfg = config.load()
         yield ToggleSelect(
             [(cfg.name, cfg.name)], value=cfg.name, allow_blank=False, id="model-select"
         )
-        yield Static(id="status")  # live status / token stats (flexible middle)
+        yield Static(id="status")
         yield ToggleSelect(
             [("act", "act"), ("plan", "plan")],
             value="act",
@@ -121,8 +107,6 @@ class ModelBar(Horizontal):
             id="mode-select",
         )
         yield Checkmark("auto-approve", value=False, id="auto-approve")
-        # Send button: a click alternative to Enter; the app flips it to "Stop"
-        # while a turn is streaming. Button.Pressed bubbles to the app.
         yield Button("↑ Send", id="send-btn", variant="primary")
 
     def on_mount(self) -> None:
@@ -130,21 +114,28 @@ class ModelBar(Horizontal):
         self.load_models()
 
     def set_status(self, text: str) -> None:
-        """Show live turn status in the bar (empty string = idle)."""
+        """Show live turn status; "" is idle.
+
+        Args:
+            text: The status line.
+        """
         self.query_one("#status", Static).update(text)
 
     def refresh_state(self, names: list[str] | None = None) -> None:
-        """Sync the bar with config.toml; optionally replace the option list."""
+        """Sync the bar with config.toml.
+
+        Args:
+            names: A replacement model list, when one was fetched.
+        """
         cfg = config.load()
         if names is not None:
             self._names = list(names)
-        # cfg.name always first: set_options (allow_blank=False) transiently selects
-        # the first option, so keeping the current model there avoids a spurious
-        # Select.Changed that would look like the user picked another model.
+        # cfg.name first: set_options transiently selects the first option, and a
+        # different one there would look like the user picking another model.
         self._names = [cfg.name, *[n for n in self._names if n != cfg.name]]
         select = self.query_one("#model-select", Select)
         select.set_options([(n, n) for n in self._names])
-        select.value = cfg.name  # explicit, in case set_options left it elsewhere
+        select.value = cfg.name
 
     @work(thread=True, exit_on_error=False)
     def load_models(self) -> None:
@@ -159,15 +150,15 @@ class ModelBar(Horizontal):
     def model_changed(self, event: Select.Changed) -> None:
         event.stop()  # the raw Select event stays inside the bar
         if event.value is Select.NULL or event.value == config.load().name:
-            return  # programmatic re-sync, not a user choice
+            return  # a programmatic re-sync, not a user choice
         self.post_message(self.ModelChosen(str(event.value)))
 
     @on(Select.Changed, "#mode-select")
     def mode_changed(self, event: Select.Changed) -> None:
-        event.stop()  # the raw Select event stays inside the bar
+        event.stop()
         self.post_message(self.ModeChosen(str(event.value)))
 
     @on(Checkbox.Changed, "#auto-approve")
     def auto_approve_changed(self, event: Checkbox.Changed) -> None:
-        event.stop()  # the raw Checkbox event stays inside the bar
+        event.stop()
         self.post_message(self.AutoApproveChanged(event.value))

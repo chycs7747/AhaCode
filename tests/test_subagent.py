@@ -1,7 +1,5 @@
-"""Step 1 of sub-agents (roadmap ⑤): the pure core — the ctx seam, the sub-agent
-runner, and the task tool — all exercised with a scripted fake stream, no gateway
-or UI. Mirrors how agent.py itself is tested: inject the stream, assert on events
-and the resulting transcript.
+"""The sub-agent core: the ctx seam, the runner, and the task tool, driven by a
+scripted fake stream.
 """
 
 from ahacode import agent, subagent, tools
@@ -125,10 +123,9 @@ def test_final_text_helper():
 
 
 def test_parallel_tool_calls_overlap():
-    """A turn of parallelizable calls runs them concurrently — proven with a barrier
-    that only releases if all three threads reach it at once — and results append in
-    call order (so they line up with the assistant's tool_calls). Deterministic: no
-    reliance on lucky scheduling."""
+    """Parallelizable calls run concurrently (a barrier releases only when all three
+    arrive) and their results append in call order.
+    """
     import threading
 
     barrier = threading.Barrier(3, timeout=3)

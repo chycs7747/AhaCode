@@ -1,30 +1,14 @@
-"""Settings: every config.toml field that is worth changing without opening the
-file, grouped into tabs down the left edge.
+"""The settings modal: every config.toml field worth changing, on four tabs down
+the left edge (연결, 에이전트, 컨텍스트, 사고).
 
-Four groups, because they answer four different questions:
-- 연결   — which server, as what, and which model on it.
-- 에이전트 — how many agents run at once and how deep they may nest.
-- 컨텍스트 — how much history a request may carry before it is condensed.
-- 사고   — how many reasoning tokens each kind of turn may spend.
-
-The tabs are Buttons over a ContentSwitcher rather than TabbedContent, because
-TabbedContent puts its tabs on top and the list here is a left rail. Every pane
-stays mounted (the switcher toggles display), so a save reads all four whichever
-one is showing.
-
-The 연결 tab is the reason this exists. Endpoint, key and model used to be
-reachable only through /url and /model, which set them *independently* — and a
-model name is only meaningful for the server that serves it. Here 모델 불러오기
-asks the address in the box (not the saved one) for its /v1/models and offers only
-what came back, so the pair cannot drift apart. Listing is a GET and loads nothing;
-picking a model here does not send a request either — the server sees it on the
-next message.
-
-Save persists via config.save + client.reset (which rebuilds the client and
-resizes the semaphore); the modal returns the edited ModelConfig, or None on cancel.
+The 연결 tab asks the address in the box for its /v1/models, so the endpoint and
+the model name cannot drift apart. Every pane stays mounted, so a save reads all
+four. The modal returns the edited ModelConfig, or None on cancel.
 """
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 from textual import on, work
 from textual.app import ComposeResult
@@ -32,84 +16,56 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, ContentSwitcher, Input, Label, Select
 
-from dataclasses import replace
-
 from ahacode import client, config
 
 
 TABS = [("connection", "연결"), ("agent", "에이전트"),
         ("context", "컨텍스트"), ("thinking", "사고")]
 
-# Seconds a request may block between chunks. Long options exist because a cold
-# model load on the gateway can take minutes before the first token arrives.
+# The options each Select offers. A config value set by hand lands on the nearest.
 _TIMEOUT = [("30s", 30.0), ("60s", 60.0), ("120s", 120.0), ("300s", 300.0),
             ("600s", 600.0), ("900s", 900.0)]
-# Bounds match the measured knee (≤8 concurrent) and the tree design (depth 0–3).
 _PARALLEL = [(f"{n}  ({'직렬' if n == 1 else '병렬 ' + str(n)})", n) for n in range(1, 9)]
 _DEPTH = [("0  (위임 끔)", 0), ("1  (기본)", 1), ("2", 2), ("3", 3)]
-# Turn cap for a session carrying out a whole plan — larger than an ordinary turn's.
-# 0 removes it: the stall detector below is then the only thing that ends a run,
-# which is the right backstop but the only one, so it is not the default.
 _IMPL_TURNS = [("0  (무제한)", 0), ("10", 10), ("20", 20), ("30  (기본)", 30),
                ("50", 50), ("100", 100)]
-# Turns in a row that finish no step before auto-continue gives up.
 _STALL = [("0  (자동 진행 끔)", 0), ("2", 2), ("3  (기본)", 3), ("5", 5), ("10", 10)]
-# The same rule inside one turn. Only this one bounds a turn that never ends, so 0
-# is offered but is the setting that makes an uncapped run unattendable.
 _STALL_ROUNDS = [("0  (끔)", 0), ("20", 20), ("40  (기본)", 40), ("80", 80), ("150", 150)]
-# Common local context windows; 0 turns compaction off entirely. The large end is
-# for servers that advertise it (this gateway's max_model_len is 512K) — but the KV
-# cache is what actually holds it, and it is shared with every parallel sub-agent,
-# so the biggest window is not always the fastest one.
 _WINDOW = [("0  (압축 끔)", 0), ("8K", 8192), ("16K", 16384), ("32K", 32768),
            ("64K", 65536), ("128K", 131072), ("192K", 196608), ("256K", 262144)]
-# The fraction of the window at which the oldest stretch is condensed.
 _THRESHOLD = [("70%", 0.7), ("80%", 0.8), ("90%", 0.9), ("95%", 0.95)]
-# Newest messages always kept verbatim when the oldest are summarised.
 _KEEP_RECENT = [("2", 2), ("4", 4), ("6  (기본)", 6), ("8", 8), ("12", 12)]
-# Per-mode thinking budget. -1 is the "전역" sentinel (Select needs a real value,
-# not None); mapped back to None on save so the mode follows the global budget.
+# A per-mode budget of None means "follow the global one"; a Select needs a real
+# value for it, so -1 stands in and is mapped back on save.
 _GLOBAL = -1
-# "전역 따름", not "전역": the pane also has a field literally called 전역 사고 예산,
-# so the bare word read as "this mode IS the global one" rather than "this mode has
-# no value of its own and takes that one".
 _THINK = [("전역 따름", _GLOBAL), ("1K", 1024), ("2K", 2048), ("4K", 4096),
           ("8K", 8192), ("16K", 16384)]
-# The global budget itself has no "전역" to fall back to; 0 means unbounded.
 _THINK_GLOBAL = [("0  (무제한)", 0), ("1K", 1024), ("2K", 2048), ("4K", 4096),
                  ("8K", 8192), ("16K", 16384)]
-# An OpenAI-style hint; servers that don't map it ignore it.
 _EFFORT = [("low", "low"), ("medium", "medium"), ("high", "high"), ("xhigh", "xhigh")]
-# Whether a turn that just got a tool result also thinks. 켬 = it thinks (analyses
-# the result, capped by the budget); 끔 = it skips thinking and just acts, which
-# stops a local model re-deliberating every turn. The stored flag is the inverse
-# (no_think_after_tools), so 켬 maps to False and 끔 to True.
+# The stored flag is no_think_after_tools, the inverse of what the label says.
 _AFTER_TOOLS = [("켬 (사고함)", False), ("끔 (사고 안 함)", True)]
 
 
 def _nearest(options, value):
-    """The listed value closest to `value`, so a config set by hand still lands on
-    a real option instead of leaving the Select blank."""
+    """The listed value closest to `value`, so a hand-set config lands on a real option."""
     return min((v for _, v in options), key=lambda v: abs(v - value))
 
 
 def _think_value(override):
-    """A per-mode budget (int | None) → the Select value: the global sentinel when
-    None, else the nearest listed budget."""
+    """A per-mode budget (int | None) as its Select value."""
     return _GLOBAL if override is None else _nearest([o for o in _THINK if o[1] != _GLOBAL], override)
 
 
 class Settings(ModalScreen["config.ModelConfig | None"]):
-    """dismiss(SettingsResult) = save · dismiss(None) = cancel."""
+    """dismiss(ModelConfig) saves, dismiss(None) cancels."""
 
     BINDINGS = [("escape", "cancel", "Close")]
 
     def __init__(self, cfg) -> None:
         super().__init__()
         self._cfg = cfg
-        # Whatever the server reports replaces this; until then the configured name
-        # is the only one we know exists, and it must stay selectable.
-        self._models = [cfg.name]
+        self._models = [cfg.name]  # until the server reports, the configured name is all we know
 
     # --- layout ----------------------------------------------------------
 
@@ -243,12 +199,11 @@ class Settings(ModalScreen["config.ModelConfig | None"]):
 
     @work(exclusive=True, thread=True)
     def _load_models(self, base_url: str, api_key: str) -> None:
-        """Ask the typed endpoint for its models, off the UI thread — it is a network
-        call and a wrong address takes the full probe timeout to fail."""
+        """Ask the typed endpoint for its models off the UI thread."""
         try:
             names = client.list_models(base_url=base_url, api_key=api_key)
             self.app.call_from_thread(self._models_arrived, names, None)
-        except Exception as exc:  # any transport/HTTP failure is the user's answer
+        except Exception as exc:
             self.app.call_from_thread(self._models_arrived, [], f"{type(exc).__name__}")
 
     def _models_arrived(self, names: list[str], error: str | None) -> None:
@@ -257,7 +212,7 @@ class Settings(ModalScreen["config.ModelConfig | None"]):
             status.update(f"실패: {error}" if error else "모델이 없습니다")
             return
         select = self.query_one("#settings-model", Select)
-        keep = select.value  # survive the reload when the server still offers it
+        keep = select.value  # survives the reload when the server still offers it
         self._models = names
         select.set_options([(n, n) for n in names])
         select.value = keep if keep in names else names[0]
@@ -275,8 +230,7 @@ class Settings(ModalScreen["config.ModelConfig | None"]):
     @on(Button.Pressed, "#settings-save")
     def _save(self, event: Button.Pressed) -> None:
         event.stop()
-        # replace(), not a fresh ModelConfig: the fields this modal does not own
-        # (allow_rules, bash_timeout) carry through untouched.
+        # replace(): the fields this modal does not own carry through untouched.
         self.dismiss(replace(
             self._cfg,
             base_url=self.query_one("#settings-base-url", Input).value.strip() or self._cfg.base_url,

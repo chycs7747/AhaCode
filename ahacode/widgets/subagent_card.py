@@ -1,16 +1,5 @@
-"""SubagentCard: the nested 🤖 task card a spawned sub-agent renders into.
-
-A foldable Collapsible (same family as ThinkingBlock / ToolResultBlock) whose body
-is a live container: the child agent's events (thinking → tools → answer) are
-rendered into `.body` through the app's normal _render_event, one nesting level in,
-so a delegated task reads as one connected sub-flow inside the parent's turn. The
-purple left rail on the body distinguishes a spawned sub-agent from the parent's
-own green turn rail.
-
-It stays expanded while the child works (you watch the flow), then folds itself on
-done() with a ✓ tool-count chip — the parent's synthesis is what reads inline, and
-the child's full transcript is one click away (Claude Code's collapsed-subtask look).
-"""
+"""The nested 🤖 card a spawned sub-agent renders into: expanded while the child
+works, folded with a ✓ chip when it is done."""
 
 from __future__ import annotations
 
@@ -21,16 +10,14 @@ from textual.widgets import Collapsible
 
 
 class SubagentCard(Collapsible):
-    # NOTE: don't name a helper `_title` — Collapsible uses self._title internally
-    # for its CollapsibleTitle widget, so a method of that name gets shadowed on init.
+    # No helper named `_title`: Collapsible uses self._title for its title widget.
     def __init__(self, description: str, model: str) -> None:
         self._desc = description
         self._model = model
         self._t0 = time.monotonic()
         self._elapsed = 0
         self._done = False
-        # The child's events mount into this container (via the app's _render_event).
-        self._body = Vertical(classes="subagent-body")
+        self._body = Vertical(classes="subagent-body")  # the child's events mount here
         super().__init__(self._body, title=self._label(), collapsed=False)
         self.add_class("subagent-card")
 
@@ -42,12 +29,8 @@ class SubagentCard(Collapsible):
         return f"{base} · {self._elapsed}초" if self._elapsed else base
 
     def tick(self) -> None:
-        """Count up while the child works.
-
-        Each card carries its own clock because a fan-out runs several at once and
-        the single status line cannot speak for all of them — and a card that sits
-        there unchanged for two minutes is indistinguishable from one that is stuck.
-        """
+        """Count up while the child works; each card has its own clock, since one
+        status line cannot speak for several parallel children."""
         if self._done:
             return
         seconds = int(time.monotonic() - self._t0)
@@ -60,8 +43,11 @@ class SubagentCard(Collapsible):
         return self._body
 
     def done(self, tool_count: int = 0) -> None:
-        """Child finished — show a ✓ chip and fold the card. Collapsible.title is a
-        reactive, so assigning it re-renders the header (_watch_title)."""
+        """Show the ✓ chip and fold the card.
+
+        Args:
+            tool_count: How many tool calls the child made.
+        """
         self._done = True
         self._elapsed = int(time.monotonic() - self._t0)
         self.title = self._label(done=True, tools=tool_count)

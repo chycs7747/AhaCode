@@ -58,12 +58,8 @@ _TALL = (100, 50)
 
 
 async def _settle(app, pilot):
-    """Wait until the app goes quiet, not just until the current worker ends.
-
-    workers.wait_for_complete() waits for the workers running when it is called, and
-    an approved plan chains turns — the gate starts the impl session, and that turn's
-    tool result starts the next one. Waiting once can return in the gap between two
-    of them, before the end-of-plan notice has been posted.
+    """Wait until the app goes quiet: an approved plan chains turns, so waiting for the
+    current worker once can return between two of them.
     """
     for _ in range(6):
         await app.workers.wait_for_complete()
@@ -77,11 +73,8 @@ async def _plan_mode(app, pilot):
 
 
 async def _ask(pilot, app, text):
-    """Send a message and let the screen settle before the test clicks anything.
-
-    Two pauses, not one: opening the gate mounts the card AND reveals the pinned plan
-    panel, so the layout reflows twice. Clicking on the first frame's coordinates
-    misses the button — which is a test-timing artefact, not something a human hits.
+    """Send a message and let the screen settle; the gate mounts a card and reveals the
+    panel, so the layout reflows twice.
     """
     app.query_one("#prompt", PromptInput).text = text
     await pilot.press("enter")
@@ -92,12 +85,8 @@ async def _ask(pilot, app, text):
 
 @pytest.mark.asyncio
 async def test_the_gate_is_reachable_on_a_small_terminal(monkeypatch):
-    """The gate must fit on the screen the plan was written on.
-
-    The pinned panel grows one row per step, and a 12-step plan took 15 of an 80x24
-    terminal's 24 rows — leaving the chat 2, which is less than the gate card the
-    same plan had just opened. The loop then sat blocked on buttons that could not
-    be scrolled to: nothing was broken, and nothing could be answered either.
+    """The gate's buttons can be scrolled to on an 80x24 terminal even when the pinned
+    panel holds a long plan.
     """
     steps = [f"{i + 1}단계: 구체적인 작업 항목을 적는다" for i in range(12)]
     _stream_turns(monkeypatch, [[_submit(*steps)], [TextDelta("did it")]])

@@ -88,15 +88,7 @@ def test_bash_falls_back_to_truncation_when_it_cannot_spill(tmp_path, monkeypatc
 
 @needs_posix_shell
 def test_non_ascii_output_comes_back_intact(tmp_path):
-    """Output is decoded as UTF-8, not as the machine's locale.
-
-    text=True decodes with the locale encoding, which on a Korean Windows box is
-    cp949: the first UTF-8 byte from `cat` on a Korean file killed the reader
-    thread, communicate() returned None, and the tool raised "object of type
-    'NoneType' has no len()". Every command whose output held a non-ASCII character
-    failed that way — which, in a project whose plans and comments are Korean, is
-    most of them.
-    """
+    """Output is decoded as UTF-8, not as the machine's locale (cp949 on Korean Windows)."""
     from ahacode.tools import bash as bash_mod
 
     f = tmp_path / "korean.txt"
@@ -149,12 +141,8 @@ def test_timeout_keeps_the_partial_output(tmp_path, monkeypatch):
 
 
 def test_timeout_kills_the_whole_process_tree():
-    """A timeout must not leave the command's children running.
-
-    subprocess.run's own timeout kills only the shell, so anything it launched is
-    orphaned and keeps burning CPU — a few timed-out `uv run pytest` calls once left
-    ~140 stray processes behind. The command gets its own process group and the
-    GROUP is killed.
+    """A timeout kills the command's process group, not just the shell, so its children
+    do not survive.
     """
     import os
 
@@ -216,11 +204,9 @@ def test_registry_and_approval_flags():
 
 
 def test_only_pure_reads_are_parallelizable():
-    """The safety envelope for one-turn tool batching: the pure reads may run
-    concurrently, everything that touches the filesystem (or whose effects can't be
-    proven absent, like bash) stays serial. The agent loop only takes the parallel
-    path when ALL calls in a batch are parallelizable, so a lone False here forces
-    the whole batch back to serial."""
+    """Only the pure reads are parallelizable; one non-parallelizable call forces the
+    whole batch serial.
+    """
     for name in ("read", "glob", "grep", "webfetch"):  # webfetch is a network read
         assert tools.REGISTRY[name].parallelizable is True, name
     for name in ("write", "edit", "bash", "todo_write"):

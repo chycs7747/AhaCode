@@ -1,11 +1,5 @@
-"""An impl session carries itself, and knows when to stop trying.
-
-A plan is a list of steps, and the loop was stopping after every turn to ask
-whether to go on — including the turns that ended because they ran out of rounds
-rather than because they finished anything. One measured turn spent 30 rounds and
-25 minutes and completed 0 of 3 steps, then asked. These tests pin the two halves
-of the fix: keep going while steps are being completed, and give up when they are
-not.
+"""An impl session carries itself on while steps complete, and stops after turns in a
+row that finish nothing.
 """
 
 from dataclasses import replace

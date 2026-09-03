@@ -1,7 +1,6 @@
-"""Vendor extensions are not portable. vLLM, Ollama and llama.cpp disagree about
-which of enable_thinking / thinking_token_budget / top_k / min_p exist at all, so a
-server that rejects them must degrade to a plain request instead of failing every
-turn — and must not keep paying for the discovery."""
+"""A server that rejects vendor extensions (enable_thinking, thinking_token_budget,
+top_k, min_p) gets a plain request instead, and is remembered.
+"""
 
 from dataclasses import replace
 
@@ -94,9 +93,7 @@ def test_the_rejection_is_paid_once():
 
 
 def test_complete_degrades_too():
-    """Titling and context compaction run through complete(); an endpoint that
-    rejects extras there would fail every compaction, which is how a long session
-    stops working."""
+    """complete() degrades on a refused extra the same way stream_chat does; compaction runs through it."""
     _Picky.seen.clear()
     assert client.complete([{"role": "user", "content": "title this"}]) == "titled"
     assert not _Picky.seen[-1].get("extra_body")

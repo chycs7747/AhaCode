@@ -219,10 +219,9 @@ def _phases(events):
 
 
 def test_compaction_announces_itself_while_it_blocks(monkeypatch):
-    """The Notice arrives when compaction is OVER. Between the user's message and
-    that Notice sits one synchronous model call over the whole history — minutes,
-    with nothing on screen changing. That gap is what made a working app and a
-    deadlocked one look identical, so the slow half brackets itself."""
+    """The summarizing model call is bracketed by Phase events, so the status line can
+    show a clock while it blocks.
+    """
     monkeypatch.setattr(config, "load", lambda: _cfg(context_window=1, keep_recent_messages=1))
     events: list = []
 
@@ -319,10 +318,7 @@ def test_the_budget_follows_the_window():
 
 
 def test_every_turn_reaches_the_summarizer():
-    """The real defect: filling from the oldest end and stopping at the cap meant
-    a 663-message stretch was summarized from its first three turns and nothing
-    else. Coverage of the whole stretch is the thing being bought here — detail
-    per message is what pays for it."""
+    """The transcript budget is shared across the whole stretch, not spent from the oldest end."""
     msgs = _long_session()
     split = context.find_split(msgs, keep_recent=6)
     older = msgs[1:split]

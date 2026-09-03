@@ -1,19 +1,12 @@
 """A modal to open another session, start a new one, rename or delete one.
 
-Lists sessions/*.jsonl as a tree (storage.build_tree over their headers) and
-dismisses with the chosen session id, "new", or None (cancel).
-
-Every row carries its own ✎ / 🗑 buttons (a click on the row itself opens the
-session, so an action needs a target that is not "the row"): ✎ swaps the title
-for an input — Enter saves, Esc restores; 🗑 must be pressed TWICE — the first
-turns it into "확인?" and puts the question in the title, naming what would go
-(the row and every session under it), the second answers. Any other action,
-or Esc, withdraws the question. The keyboard mirrors the buttons on the
-highlighted row: r rename, d delete.
-
-Deleting the session that is open dismisses with "new" so the app moves off the
-file before it is gone; the one whose turn is still running cannot be deleted.
+Sessions are listed as a tree. Every row has its own ✎ / 🗑 buttons, since a
+click on the row itself opens it; 🗑 must be pressed twice. Deleting the open
+session dismisses with "new" so the app moves off the file first; a session whose
+turn is running cannot be deleted.
 """
+
+from __future__ import annotations
 
 from textual import on
 from textual.app import ComposeResult
@@ -24,10 +17,8 @@ from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 from ahacode import storage, workspace
 
 _ICON = {"main": "🧠", "impl": "🛠", "subagent": "🤖"}
-# The edge to the parent: → control handed down a chain, ⑂ a task fanned out.
-_EDGE = {"handoff": "→", "delegate": "⑂"}
-# Two authored lines (own full-width Static, below the header row) so the guide
-# never wraps mid-phrase against the close button.
+_EDGE = {"handoff": "→", "delegate": "⑂"}  # the edge to the parent
+# Two authored lines, so the guide never wraps mid-phrase against the close button.
 _HINT = (
     "↑↓ 이동 · Enter/클릭 열기 · Esc 닫기\n"
     "✎ 또는 r 이름 변경 · 🗑 또는 d 삭제 · 🤖 서브에이전트는 보기 전용"
@@ -62,7 +53,7 @@ class SessionRow(ListItem):
         title = self.node.get("title") or self.node["id"]
         model = self.node.get("model") or "?"
         icon = _ICON.get(self.node.get("kind", "main"), "•")
-        edge = _EDGE.get(self.node.get("relation"), "")  # roots have none
+        edge = _EDGE.get(self.node.get("relation"), "")
         edge = f"{edge} " if edge else ""
         return f"{indent}{edge}{icon} {title}   · {model}"
 
@@ -76,7 +67,7 @@ class SessionRow(ListItem):
 
 
 class SessionPicker(ModalScreen[str | None]):
-    """dismiss("new") = start new · dismiss(id) = open that session · dismiss(None) = cancel."""
+    """dismiss("new") starts a new session, dismiss(id) opens one, dismiss(None) cancels."""
 
     BINDINGS = [
         ("escape", "cancel", "Close"),
@@ -86,8 +77,8 @@ class SessionPicker(ModalScreen[str | None]):
 
     def __init__(self, current: str | None = None, locked: str | None = None) -> None:
         super().__init__()
-        self.current = current   # the session open behind the picker
-        self.locked = locked     # a session whose turn is running: not deletable
+        self.current = current  # the session open behind the picker
+        self.locked = locked  # a session whose turn is running: not deletable
         self._sessions: list[dict] = []
         self._renaming: SessionRow | None = None
 
@@ -115,15 +106,13 @@ class SessionPicker(ModalScreen[str | None]):
     @on(ListView.Selected)
     def _picked(self, event: ListView.Selected) -> None:
         if self._renaming is not None:
-            return  # Enter inside the rename input is handled by the input
+            return  # Enter inside the rename input is the input's
         self.dismiss(getattr(event.item, "session_id", None))
 
     @on(ListView.Highlighted)
     def _moved(self, event: ListView.Highlighted) -> None:
-        # Moving the highlight to a DIFFERENT session row answers "no". Only a real
-        # move disarms: a mount-time or duplicate Highlighted (e.g. the list settling
-        # on its first row) that is not a SessionRow, or is the armed row itself, is
-        # ignored — otherwise it would cancel the question the user just opened.
+        # Moving the highlight to a different session row answers "no". A mount-time
+        # Highlighted on a non-row, or on the armed row itself, is not a move.
         item = event.item
         if not isinstance(item, SessionRow):
             return
@@ -157,7 +146,7 @@ class SessionPicker(ModalScreen[str | None]):
     @on(Button.Pressed, "#picker-close")
     def _close_button(self, event: Button.Pressed) -> None:
         event.stop()
-        self.action_cancel()  # same as Esc: withdraw a pending rename/arm, else close
+        self.action_cancel()
 
     def action_delete(self) -> None:
         self._delete(self._highlighted_row())
@@ -182,7 +171,6 @@ class SessionPicker(ModalScreen[str | None]):
             name = row.node.get("title") or row.session_id
             title.update(f"🗑 삭제할까요? {name}{tail} — 🗑/d 다시 · Esc 취소")
             return
-        # second press: do it
         gone = set(storage.delete_session(row.session_id))
         self._sessions = [s for s in self._sessions if s["id"] not in gone]
         lv = self.query_one("#picker-list", ListView)

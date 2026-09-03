@@ -1,46 +1,42 @@
+"""One chat bubble, styled by role."""
+
+from __future__ import annotations
+
 from rich.markdown import Markdown
 from rich.text import Text
 from textual.widgets import Static
 
 from ahacode.text import keep_line_breaks
 
-# Syntax theme for fenced code blocks — "nord" is soft/low-contrast (easier on the
-# eyes than Rich's default "monokai"). Heading/inline-code colours are themed
-# separately on the app console (see app.MARKDOWN_THEME).
-_CODE_THEME = "nord"
+_CODE_THEME = "nord"  # low-contrast fences; headings are themed in app.MARKDOWN_THEME
 
 
 class Chatbox(Static):
-    """A single chat bubble, styled by role (user / assistant / thinking / …).
-
-    Rendering is driven by render(): assistant answers render as Rich Markdown so
-    ```code``` fences become highlighted code blocks; everything else renders as
-    plain Rich Text. Returning a Rich renderable (never a raw str)
-    also sidesteps Textual's console-markup parsing — '[' in tool output or code
-    can never be mistaken for a markup tag (the old MarkupError crash).
-    """
+    """A chat bubble. Assistant answers render as Rich Markdown, everything else
+    as plain Text. Returning a renderable rather than a str sidesteps console
+    markup, so a '[' in tool output is never mistaken for a tag."""
 
     def __init__(self, content: str = "", role: str = "user", markdown: bool = False) -> None:
         super().__init__(markup=False)
         self._content = content
-        self._rich = None          # a Rich renderable set by set_rich() (e.g. a diff)
-        self._markdown = markdown  # render _content as Markdown (assistant answers)
+        self._rich = None  # a renderable set by set_rich(), e.g. a diff
+        self._markdown = markdown
         self.add_class(f"chatbox--{role}")
 
     def render(self):
-        # A set_rich() renderable wins; then Markdown for answers; else plain text.
         if self._rich is not None:
             return self._rich
         if self._markdown and self._content:
-            # The author's single newlines are preserved (see text.keep_line_breaks):
-            # markdown would otherwise fold them into spaces and re-wrap the paragraph,
-            # which is what made answers read denser than the plain-Text bubbles.
+            # keep_line_breaks: markdown would fold the author's single newlines.
             return Markdown(keep_line_breaks(self._content), code_theme=_CODE_THEME)
         return Text(self._content)
 
     def append_chunk(self, chunk: str) -> None:
-        """Append a streamed delta and re-render. Called from the worker via
-        call_from_thread; Markdown bubbles re-parse live."""
+        """Append a streamed delta and re-render.
+
+        Args:
+            chunk: The next piece of text.
+        """
         if not self.display:  # a bubble born hidden reveals itself on the first delta
             self.display = True
         self._content += chunk
@@ -48,8 +44,12 @@ class Chatbox(Static):
         self.refresh(layout=True)
 
     def set_rich(self, renderable, plain: str) -> None:
-        """Display a Rich renderable (e.g. a coloured diff) while keeping a
-        plain-text mirror in _content so logic/tests stay text-based."""
+        """Display a Rich renderable, keeping a plain-text mirror for tests and logic.
+
+        Args:
+            renderable: What to draw.
+            plain: The same content as text.
+        """
         self._content = plain
         self._rich = renderable
         self.refresh(layout=True)

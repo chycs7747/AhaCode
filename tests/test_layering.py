@@ -1,12 +1,5 @@
-"""The layer boundary, enforced instead of documented.
-
-The README says the harness is widget-free and that all provider traffic goes
-through client.py. Both were true by discipline alone — nothing failed if a
-later edit imported a widget into the agent loop, and the cost of that mistake
-is not cosmetic: it is what makes `agent.run` testable without a terminal, and
-what lets a sub-agent run on a worker thread at all.
-
-A folder per layer would not have caught it either. This does.
+"""The layer boundary, enforced: the harness and the tools never import the UI, only
+client.py talks to a provider, and widgets never import the app.
 """
 
 import ast

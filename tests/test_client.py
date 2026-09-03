@@ -157,10 +157,7 @@ from ahacode import config
 
 
 def _ungated(timeout, limit):
-    """Stand in for the concurrency gate in tests that are about the request, not
-    about concurrency. A generator, like the real _wait_for_permit — callers reach
-    it with `yield from` — returning the semaphore the permit came from and whether
-    the gate had to be rebuilt."""
+    """A stand-in for the concurrency gate; a generator, like the real _wait_for_permit."""
     yield from ()
     return threading.Semaphore(1), False
 
@@ -328,9 +325,7 @@ def test_complete_also_pins_its_sampling(monkeypatch):
 
 
 def test_a_non_qwen_utility_call_still_turns_thinking_off(monkeypatch):
-    """The sampling profiles are Qwen-specific and return nothing for other
-    families — so a DeepSeek or GLM endpoint used to get no thinking switch at all
-    from this path, which is where the cost actually lands."""
+    """The thinking switch does not depend on a sampling profile existing for the model."""
     seen = {}
     reply = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="t"))])
     fc = _fake_client(lambda **kw: (seen.update(kw), reply)[1])
