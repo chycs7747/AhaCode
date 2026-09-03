@@ -2,7 +2,7 @@
 
 from rich.console import Console
 
-from ahacode.render import diff_rows, edit_diff, lexer_for, tool_preview
+from ahacode.render import diff_rows, lexer_for, tool_preview
 
 
 def _text(renderable) -> str:

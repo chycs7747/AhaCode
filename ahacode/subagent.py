@@ -19,7 +19,6 @@ from pathlib import Path
 
 from ahacode import agent, client, prompts
 from ahacode.events import Event
-from ahacode.prompts import SUBAGENT_SYSTEM  # re-exported for callers/tests
 
 
 @dataclass
@@ -60,7 +59,7 @@ def run(
     registry: dict | None = None,
     ctx: object | None = None,
     is_cancelled: Callable[[], bool] | None = None,
-    max_turns: int = 10,
+    max_turns: int = agent.DEFAULT_MAX_TURNS,
     system: str | None = None,
     summarize=None,
 ) -> SubagentResult:
@@ -71,10 +70,8 @@ def run(
     forwarded for the depth>1 case where a child may itself spawn; at the default
     depth limit the child simply has no task tool and never touches it.
     """
-    # Resolved at CALL time, not bound as a default: a default argument freezes the
-    # bare SUBAGENT_SYSTEM constant at import, which silently bypassed the assembly in
-    # prompts.subagent_system() — so every child ran without the shared CODING_RULES
-    # (and the ROLE_ADDENDA seam was dead on arrival). The function is the seam.
+    # Resolved at call time: a default argument would freeze the bare framing
+    # constant and skip the assembly that adds the shared CODING_RULES.
     seed = [
         {"role": "system", "content": system or prompts.subagent_system()},
         {"role": "user", "content": task_prompt},

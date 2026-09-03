@@ -202,16 +202,6 @@ def _exec_tool(call: ToolCall, tool, ctx: object | None = None) -> ToolResult:
         return ToolResult(call.id, call.name, f"{type(exc).__name__}: {exc}", is_error=True)
 
 
-def _run_tool(
-    call: ToolCall, registry: dict, approve: ApproveFn | None, ctx: object | None = None
-) -> ToolResult:
-    """Gate then execute one tool call — the sequential path (and direct callers)."""
-    gated = _gate_tool(call, registry, approve)
-    if isinstance(gated, ToolResult):
-        return gated
-    return _exec_tool(call, gated, ctx)
-
-
 def run(
     messages: list[dict],
     *,
@@ -330,7 +320,7 @@ def run(
         # MUST answer, primed to summarize done/remaining/next. Beats a bare stop — the
         # user gets a usable close, and a runaway loop still can't keep calling tools.
         if not is_cancelled():
-            add({"role": "user", "content": prompts.max_turns_prompt()})
+            add({"role": "user", "content": prompts.MAX_TURNS_PROMPT})
             text = ""
             with _streaming(stream(messages, None)) as events:  # tools off this turn
                 for event in events:

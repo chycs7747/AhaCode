@@ -71,16 +71,10 @@ def mark(status: str | None) -> str:
     return STATUS_MARKS.get(status or PENDING, STATUS_MARKS[PENDING])
 
 # --- executability check ---------------------------------------------------
-# Why a plan step must be a DOING step: /run hands each one to a fresh sub-agent
-# whose only way to finish is a tool call. A step that states a fact or an idea has
-# no legal completion, so the child reaches for `write` — the one tool that takes
-# free text — and files its derivation as source comments (measured: 366 comment
-# lines out of 467 for the step "Algorithm: find root, compute subtree sums; …").
-#
-# The rule is Claude Code's TodoWrite convention: content in imperative form. English
-# puts the verb first, Korean puts it last, so each is checked at its own end. This is
-# a HEURISTIC and only ever warns — an unlisted verb costs one line of text, never a
-# blocked run.
+# A plan step is carried out by a session whose only way to finish it is a tool
+# call, so a step must read as a DOING step: imperative verb first in English, last
+# in Korean. A heuristic that only ever warns — an unlisted verb costs one line of
+# text, never a blocked run.
 _EN_VERBS = frozenset("""
 add benchmark build check clean commit compare compute confirm convert create delete
 deploy design document draft drop ensure extend extract find fix generate handle

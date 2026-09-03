@@ -71,7 +71,7 @@ def test_a_rule_cannot_authorise_a_denylisted_command():
 
     call = ToolCall(id="1", name="bash", arguments={"command": "rm -rf /"})
     # approve() says yes to everything, standing in for a maximally broad rule
-    result = agent._run_tool(call, {"bash": BASH}, lambda c: True)
+    result = agent._gate_tool(call, {"bash": BASH}, lambda c: True)
     assert result.is_error
     assert "blocked (dangerous)" in result.output
 

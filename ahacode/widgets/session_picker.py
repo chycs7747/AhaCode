@@ -23,7 +23,7 @@ from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
 from ahacode import storage, workspace
 
-_ICON = {"main": "🧠", "impl": "🛠", "subagent": "🤖", "fork": "🌿"}
+_ICON = {"main": "🧠", "impl": "🛠", "subagent": "🤖"}
 # The edge to the parent: → control handed down a chain, ⑂ a task fanned out.
 _EDGE = {"handoff": "→", "delegate": "⑂"}
 # Two authored lines (own full-width Static, below the header row) so the guide

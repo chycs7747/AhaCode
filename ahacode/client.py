@@ -63,14 +63,8 @@ SAMPLING: dict[str, dict[str, dict]] = {
 
 
 def _sampling_family(model: str) -> str | None:
-    """The sampling profile that fits this model, or None.
-
-    Deliberately NOT prompts.family(), which falls back to "qwen" for anything it
-    does not recognise — a prompt has to pick something, so a default is right
-    there. Sampling has no such obligation, and the values are model-specific: the
-    Qwen3 profile below (temperature 1.0, top_k 20, min_p 0) is a worse guess for
-    Llama or DeepSeek than sending nothing and letting the server apply its own.
-    """
+    """The sampling profile that fits this model, or None: the values are
+    model-specific, and a wrong guess is worse than the server's own default."""
     name = (model or "").lower()
     return "qwen" if "qwen" in name else None
 
@@ -469,17 +463,3 @@ def list_models(base_url: str | None = None, api_key: str | None = None) -> list
                         api_key=api_key or config.load().api_key,
                         timeout=PROBE_TIMEOUT)
     return [m.id for m in client.models.list()]
-
-
-FAKE_THINKING = "The user greeted me. Keep the reply short."
-FAKE_RESPONSE = "Hello! How can I help you today?"
-
-
-def stream_chat_fake(messages: list[dict], tools: list[dict] | None = None) -> Iterator[Event]:
-    """Offline fake stream emitting the same canonical events — for tests."""
-    for word in FAKE_THINKING.split(" "):
-        time.sleep(0.01)
-        yield ThinkingDelta(word + " ")
-    for word in FAKE_RESPONSE.split(" "):
-        time.sleep(0.01)
-        yield TextDelta(word + " ")

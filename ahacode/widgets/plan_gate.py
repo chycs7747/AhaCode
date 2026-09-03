@@ -4,7 +4,7 @@ The model ends a planning turn by calling plan_submit; the harness writes the pl
 file and mounts this card into the turn. The loop is held (agent.run's
 should_pause) until one of two buttons answers:
 
-- ▶ 실행  — carry the plan out (`/run` is the keyboard path to the same thing).
+- ▶ 실행  — carry the plan out (an empty Enter does the same).
 - ✎ 수정  — keep planning: the card settles and the user types what to change;
            the next turn revises the plan and submits again.
 
@@ -44,7 +44,7 @@ class PlanGate(Vertical):
         body += "\n  승인: ▶ 또는 빈 입력에 Enter · 수정: 바꿀 점을 그냥 입력"
         yield Static(body, classes="plan-gate-steps", markup=False)
         with Horizontal(classes="plan-gate-buttons"):
-            yield Button("▶ 실행 (/run)", variant="success", id="plan-gate-run")
+            yield Button("▶ 실행", variant="success", id="plan-gate-run")
             yield Button("✎ 수정 계속", variant="default", id="plan-gate-continue")
 
     def settle(self, choice: str) -> None:

@@ -19,7 +19,7 @@ from ahacode.runner import TurnRunner
 from ahacode.tools import spill
 from ahacode.session import ChatSession
 from ahacode.session_ctl import SessionControl
-from ahacode.turn_view import _PHASE_ID, TurnView  # noqa: F401  (_PHASE_ID: tests)
+from ahacode.turn_view import TurnView
 from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.header_bar import HeaderBar
 from ahacode.widgets.settings import Settings

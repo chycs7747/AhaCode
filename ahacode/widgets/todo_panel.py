@@ -63,10 +63,9 @@ class TodoPanel(Static):
     def set_collapsed(self, collapsed: bool) -> None:
         """Fold the plan to a single summary line, or unfold it.
 
-        Folding is presentation only — `items` is untouched, so /run can still resume
-        from a folded plan. A long plan pinned at full height eats the chat area, and
-        it is most in the way exactly when the run has stopped and there is output to
-        read; app.action_stop folds it for that reason.
+        Folding is presentation only — `items` is untouched. A long plan pinned at
+        full height eats the chat area, and it is most in the way exactly when the
+        run has stopped and there is output to read; app.action_stop folds it.
         """
         if self.items and self.collapsed != collapsed:
             self.collapsed = collapsed

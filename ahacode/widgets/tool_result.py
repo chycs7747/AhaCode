@@ -9,9 +9,9 @@ _ICONS = {
     "bash": "🖥",
     "grep": "🔍",
     "glob": "🗂",
-    "list": "📂",
     "write": "📝",
     "edit": "✏",
+    "webfetch": "🌐",
     "todo_write": "🗒",
 }
 

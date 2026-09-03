@@ -229,7 +229,7 @@ def test_only_pure_reads_are_parallelizable():
 
 
 def test_specs_are_openai_function_schema():
-    specs = tools.specs()
+    specs = tools.specs(tools.REGISTRY)
     assert {s["function"]["name"] for s in specs} == {
         "read", "glob", "grep", "write", "edit", "bash", "webfetch", "todo_write"
     }

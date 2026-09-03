@@ -72,10 +72,6 @@ CODING_RULES = """# Editing code
 - Never print, log, or commit secrets; `config.toml` and `sessions/` stay private.
 - Never do anything irreversible — `git push`, force-push, deleting data — without an explicit go-ahead."""
 
-# The full act-mode base, unchanged in content — kept as one constant so existing
-# callers and tests that read ACT_SYSTEM keep working.
-ACT_SYSTEM = f"{ACT_INTRO}\n\n{CODING_RULES}"
-
 # Plan mode: read-only, produce a plan rather than act.
 #
 # The "every step is executable" rule is load-bearing, not style. The plan is later
@@ -148,8 +144,8 @@ MAX_TURNS_PROMPT = (
     "accomplished, what remains unfinished, and the recommended next step."
 )
 
-# The reduce step for /run: combine the phases' concise results into one answer.
-# Given only the results (not each phase's reasoning), the context stays small.
+# The user turn that carries an impl session on by itself. Says nothing about WHAT
+# to do: the plan and the checklist are already in the session.
 CONTINUE_PROMPT = (
     "Continue with the plan. Work on the next unfinished step in the checklist, and "
     "mark steps done with todo_write as you complete them. If a step turns out to be "
@@ -175,109 +171,28 @@ TITLE_SYSTEM = (
     "Reply with ONLY the title — no quotes, no trailing punctuation."
 )
 
-# --- extension points (empty today; filled when a 2nd model family / role lands) ---
-# Different model families want different deltas (e.g. examples-on for Claude,
-# delegation emphasis where the model is trained to calibrate it). One model today
-# (qwen), so these stay empty; a future entry, e.g.
-# BY_MODEL["claude"] = {"examples": …, "delegation": …}, layers in through
-# act_system() with no call-site change.
-BY_MODEL: dict[str, dict[str, str]] = {}
-ROLE_ADDENDA: dict[str, str] = {}  # e.g. "debug": "Reflect on 5-7 sources before fixing…"
-
-
 # --- assembly -------------------------------------------------------------
 
-def _family(model: str | None = None) -> str:
-    """Map a concrete model id to a prompt family. Returns 'qwen' today; the other
-    branches are the seam for BYOK Claude/GPT prompts later."""
-    name = (model or config.load().name).lower()
-    if "claude" in name:
-        return "claude"
-    if "gpt" in name or "codex" in name:
-        return "gpt"
-    return "qwen"
-
-
-def family(model: str | None = None) -> str:
-    """Public name for the family mapping — client.py picks its sampling profile by
-    the same key this module picks prompt deltas by, so the two can never disagree
-    about what kind of model is on the other end."""
-    return _family(model)
-
-
-def environment_block(model: str | None = None) -> str:
-    """The live facts the model needs to emit valid commands: real OS/shell/cwd and
-    the active model. Rebuilt each call so a /model switch or a different cwd is
-    always reflected."""
-    cfg = config.load()
+def environment_block() -> str:
+    """The live facts the model needs to emit valid commands: OS, shell, cwd, model."""
     return (
         "# Environment\n"
-        # The real shell, not an assumed one: on a Windows box without Git bash the
-        # bash tool runs cmd, and a model told "bash" would keep writing syntax that
-        # cannot run there.
         f"- OS: {platform.system()} · shell: {shell.NAME} · cwd: {workspace.PROJECT_ROOT}\n"
-        f"- model: {model or cfg.name}"
+        f"- model: {config.load().name}"
     )
 
 
-def act_system(model: str | None = None) -> str:
-    """Full act-mode system prompt: base + any per-model deltas + live environment.
-    BY_MODEL is empty today so this is ACT_SYSTEM + environment; a family entry
-    (examples-on for Claude, delegation emphasis, …) layers in here transparently."""
-    parts = [ACT_SYSTEM]
-    profile = BY_MODEL.get(_family(model), {})
-    if profile.get("examples"):
-        parts.append(profile["examples"])
-    if profile.get("delegation"):
-        parts.append(profile["delegation"])
-    parts.append(environment_block(model))
-    return "\n\n".join(parts)
+def act_system() -> str:
+    """The act-mode system prompt: identity and rules, then the live environment."""
+    return "\n\n".join([ACT_INTRO, CODING_RULES, environment_block()])
 
 
-def plan_system(model: str | None = None) -> str:
-    """Plan mode prompt: identity first, then the mode. (model param mirrors
-    act_system so per-model tuning slots in.)"""
+def plan_system() -> str:
+    """The plan-mode system prompt: identity first, then the mode."""
     return f"{IDENTITY}\n\n{PLAN_SYSTEM}"
 
 
-def subagent_system(role: str | None = None) -> str:
-    """A worker sub-agent's framing + the shared CODING_RULES, plus an optional role
-    addendum (debug/explore…). ROLE_ADDENDA is empty today; a role slots in with no
-    change to subagent.run, which already accepts a `system=` argument.
-
-    CODING_RULES is layered in because a child holds the same write/edit/bash tools as
-    the parent but used to run without a single rule about how to use them. Prefix
-    caching is unaffected: this whole string is still a CONSTANT prefix shared by every
-    sub-agent (only the task turn after it differs), so the measured ~67% prefill reuse
-    still applies — it is a longer constant, not a per-child one."""
-    parts = [IDENTITY, SUBAGENT_SYSTEM, CODING_RULES]
-    addendum = ROLE_ADDENDA.get(role or "")
-    if addendum:
-        parts.append(addendum)
-    return "\n\n".join(parts)
-
-
-def title_system() -> str:
-    return TITLE_SYSTEM
-
-
-def max_turns_prompt() -> str:
-    """The user turn injected to force a tool-free wrap-up when the loop hits its cap."""
-    return MAX_TURNS_PROMPT
-
-
-def continue_prompt() -> str:
-    """The user turn injected to carry an impl session on by itself.
-
-    Deliberately says nothing about WHAT to do: the plan is already in the session
-    and the checklist is already on screen, so restating the task here would only
-    compete with them. It re-establishes that the run is still going and that the
-    next unfinished step is the subject.
-    """
-    return CONTINUE_PROMPT
-
-
-def compact_system() -> str:
-    """System prompt for condensing an over-long conversation (see context.py)."""
-    return COMPACT_SYSTEM
+def subagent_system() -> str:
+    """A sub-agent's system prompt: identity, its framing, and the shared coding rules."""
+    return "\n\n".join([IDENTITY, SUBAGENT_SYSTEM, CODING_RULES])
 

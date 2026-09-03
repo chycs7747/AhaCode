@@ -1,7 +1,6 @@
-"""Tool registry — assembles the individual tool modules into one lookup table
-and the OpenAI `tools=[...]` payload. This is the only place that knows the full
-tool set; adding a tool means writing its module and registering it here.
-"""
+"""The tool registry: every tool by name, and the depth gate that hands out `task`."""
+
+from __future__ import annotations
 
 from ahacode.tools.base import Tool
 from ahacode.tools.bash import BASH
@@ -15,32 +14,40 @@ from ahacode.tools.task import TASK
 from ahacode.tools.webfetch import WEBFETCH
 from ahacode.tools.write import WRITE
 
-# Name -> Tool. The agent looks tools up here when the model calls one by name.
-# `task` is deliberately NOT here: it needs a spawning context and a depth check,
-# so it is added per-session by registry_for() rather than offered globally.
-# `plan_submit` is not here either: it belongs to plan mode alone (the app builds
-# that registry), and a sub-agent must never be able to ask for approval.
+# `task` is absent: it needs a spawning context and a depth check, so registry_for
+# adds it per session. `plan_submit` is absent too: it belongs to plan mode alone,
+# and a sub-agent must never be able to ask for approval.
 REGISTRY: dict[str, Tool] = {
     t.name: t for t in (READ, GLOB, GREP, WRITE, EDIT, BASH, WEBFETCH, TODO_WRITE)
 }
 
 
-def registry_for(depth: int, subagent_depth: int, base: dict | None = None) -> dict:
-    """The tool set for a session at `depth`: the base tools plus `task`, but only
-    while depth < subagent_depth — so a sub-agent at the limit has no task tool and
-    therefore cannot recurse (the vertical guard against runaway spawning)."""
-    reg = dict(REGISTRY if base is None else base)
+def registry_for(depth: int, subagent_depth: int) -> dict[str, Tool]:
+    """The tool set for a session at `depth`: the base tools, plus `task` while
+    depth < subagent_depth — so a sub-agent at the limit cannot recurse.
+
+    Args:
+        depth: The session's depth in the tree (0 = main).
+        subagent_depth: How many generations of sub-agents may nest.
+
+    Returns:
+        A fresh name → Tool dict.
+    """
+    reg = dict(REGISTRY)
     if depth < subagent_depth:
         reg[TASK.name] = TASK
     return reg
 
 
-def specs(registry: dict[str, Tool] | None = None) -> list[dict]:
-    """The `tools=[...]` payload sent to chat.completions (OpenAI function schema).
+def specs(registry: dict[str, Tool]) -> list[dict]:
+    """The `tools=[...]` payload sent to chat.completions.
 
-    Defaults to the global REGISTRY; a subset can be passed (e.g. plan mode
-    exposes only read-only tools)."""
-    reg = REGISTRY if registry is None else registry
+    Args:
+        registry: The tools to offer this turn.
+
+    Returns:
+        One OpenAI function schema per tool.
+    """
     return [
         {
             "type": "function",
@@ -50,12 +57,5 @@ def specs(registry: dict[str, Tool] | None = None) -> list[dict]:
                 "parameters": t.parameters,
             },
         }
-        for t in reg.values()
+        for t in registry.values()
     ]
-
-
-__all__ = [
-    "Tool", "READ", "GLOB", "GREP", "WRITE", "EDIT", "BASH", "WEBFETCH", "TODO_WRITE",
-    "TASK", "PLAN_SUBMIT",
-    "REGISTRY", "specs", "registry_for",
-]

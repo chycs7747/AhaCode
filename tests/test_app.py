@@ -33,12 +33,6 @@ def isolated_environment(monkeypatch, tmp_path):
     client.reset()
 
 
-@pytest.fixture
-def fake_llm(monkeypatch):
-    """Swap the real stream_chat for the offline fake for the duration of a test."""
-    monkeypatch.setattr(client, "stream_chat", client.stream_chat_fake)
-
-
 @pytest.mark.asyncio
 async def test_enter_creates_three_bubbles(fake_llm):
     """One Enter → user bubble + lazily-mounted thinking and assistant bubbles."""
@@ -62,8 +56,8 @@ async def test_deltas_routed_to_right_boxes(fake_llm):
         await pilot.pause()
         user, thinking, response = list(app.query(Chatbox))
         assert thinking.display is True
-        assert thinking._content.strip() == client.FAKE_THINKING
-        assert response._content.strip() == client.FAKE_RESPONSE
+        assert thinking._content.strip() == fake_llm.thinking
+        assert response._content.strip() == fake_llm.response
 
 
 @pytest.mark.asyncio
@@ -80,7 +74,7 @@ async def test_thinking_block_autocollapses_after_answer(fake_llm):
         await pilot.pause()
         block = app.query_one(ThinkingBlock)
         assert block.collapsed is True  # folded after the answer started
-        assert block._box._content.strip() == client.FAKE_THINKING
+        assert block._box._content.strip() == fake_llm.thinking
 
 
 @pytest.mark.asyncio
@@ -1899,8 +1893,7 @@ def test_the_folded_plan_line_stays_one_row_on_a_narrow_terminal():
 
 
 # --- sub-agents and the pinned plan / stop (task-tool paths) -----------------
-# These used to be exercised through /run; the behaviours are the loop's, not the
-# runner's, so they are re-stated through an ordinary act turn that delegates.
+# Behaviours of the loop itself, exercised through an ordinary act turn that delegates.
 
 @pytest.mark.asyncio
 async def test_a_subagents_plan_does_not_overwrite_the_parents(monkeypatch):

@@ -111,9 +111,8 @@ def test_complete_degrades_too():
     ("gpt-oss-120b", False),
 ])
 def test_sampling_is_only_sent_to_a_model_it_was_tuned_for(model, expects_profile):
-    """prompts.family() falls back to qwen because a prompt must pick something.
-    Sampling must not: temperature 1.0 / top_k 20 / min_p 0 is a Qwen3 profile, and
-    guessing it onto Llama or DeepSeek is worse than letting the server default."""
+    """temperature 1.0 / top_k 20 / min_p 0 is a Qwen3 profile; guessing it onto
+    Llama or DeepSeek is worse than letting the server apply its own default."""
     kwargs, extra = client.sampling_for(model, no_think=False)
     assert bool(kwargs or extra) is expects_profile, model
 

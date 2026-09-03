@@ -63,7 +63,7 @@ def load_messages(path: Path) -> list[dict]:
 
 
 # Session kinds the user drives (and so may be resumed into on startup). A
-# sub-agent or fork transcript is machine-authored and view-only.
+# sub-agent transcript is machine-authored and view-only.
 RESUMABLE_KINDS = frozenset({"main", "impl"})
 
 
@@ -88,12 +88,9 @@ def latest_session() -> Path | None:
 
 
 # --- session headers & hierarchy ------------------------------------------
-# Each session file's FIRST line is a header carrying its place in the tree:
-# {"type":"header","version":1,"id","parent_id","kind","depth","model","cwd","title"}
-# A child points to its parent by id; the tree is
-# derived by scanning headers — a parent never stores a child list.
-
-HEADER_VERSION = 1
+# Each session file's first line is a header carrying its place in the tree:
+# {"type":"header","id","parent_id","kind","relation","depth","model","cwd","title"}
+# A child points to its parent by id; a parent never stores a child list.
 
 
 def make_header(
@@ -109,7 +106,7 @@ def make_header(
 ) -> dict:
     """Build a session header.
 
-    kind is the node's role: "main" | "plan" | "impl" | "subagent" | "fork".
+    kind is the node's role: "main" | "impl" | "subagent".
     relation is the edge to the parent: "handoff" (control passed down a chain —
     plan → impl; the parent stops working) or "delegate" (a task fanned out while
     the parent waits). None for a root. depth counts delegate edges only — a
@@ -117,7 +114,6 @@ def make_header(
     """
     return {
         "type": "header",
-        "version": HEADER_VERSION,
         "id": session_id,
         "parent_id": parent_id,
         "kind": kind,

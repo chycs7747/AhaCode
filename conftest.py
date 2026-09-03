@@ -10,10 +10,13 @@ A comment would not have prevented it. This does.
 
 import re
 import subprocess
+import time
+from dataclasses import dataclass
 
 import pytest
 
 from ahacode import client, workspace
+from ahacode.events import TextDelta, ThinkingDelta
 
 # Anything that would start another test run of this project. Matched as COMMANDS,
 # not as substrings: pytest's own tmp_path is C:\...\pytest-of-<user>\pytest-91\...,
@@ -40,6 +43,30 @@ def isolated_workspace(monkeypatch, tmp_path):
     client.reset()
     yield
     client.reset()
+
+
+@dataclass
+class FakeLLM:
+    """An offline model: streams a fixed reasoning line, then a fixed answer."""
+
+    thinking: str = "The user greeted me. Keep the reply short."
+    response: str = "Hello! How can I help you today?"
+
+    def stream(self, messages, tools=None):
+        for word in self.thinking.split(" "):
+            time.sleep(0.01)
+            yield ThinkingDelta(word + " ")
+        for word in self.response.split(" "):
+            time.sleep(0.01)
+            yield TextDelta(word + " ")
+
+
+@pytest.fixture
+def fake_llm(monkeypatch) -> FakeLLM:
+    """Replace client.stream_chat with a FakeLLM for the duration of a test."""
+    fake = FakeLLM()
+    monkeypatch.setattr(client, "stream_chat", fake.stream)
+    return fake
 
 
 @pytest.fixture(autouse=True)

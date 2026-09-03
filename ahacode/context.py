@@ -165,7 +165,7 @@ def render_transcript(messages: list[dict], budget: int | None = None) -> str:
 def llm_summarize(messages: list[dict]) -> str:
     """Default summarizer — one non-streaming call, like the session auto-titler."""
     return client.complete([
-        {"role": "system", "content": prompts.compact_system()},
+        {"role": "system", "content": prompts.COMPACT_SYSTEM},
         {"role": "user", "content": render_transcript(messages)},
     ])
 
