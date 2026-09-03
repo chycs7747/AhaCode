@@ -1,8 +1,7 @@
-import json
 import os
 import threading
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -18,7 +17,6 @@ from ahacode.commands import Commands
 from ahacode.plan_run import PlanRun
 from ahacode.runner import TurnRunner
 from ahacode.tools import spill
-from ahacode.render import tool_summary
 from ahacode.session import ChatSession
 from ahacode.session_ctl import SessionControl
 from ahacode.turn_view import _PHASE_ID, TurnView  # noqa: F401  (_PHASE_ID: tests)
@@ -96,9 +94,6 @@ class AhaCodeApp(App):
         # This loop's own running tools: call id -> (name, started at). Sub-agent
         # tools are deliberately absent — they report in their own card.
         self._running_tools: dict[str, tuple[str, float]] = {}
-        # The message that started the turn in flight. Cleared after the first
-        # transcript write: several rounds are still one question.
-        self._turn_question = ""
         latest = storage.latest_session()
         if latest:  # resume the most recent session
             self.session_path = latest
@@ -132,9 +127,6 @@ class AhaCodeApp(App):
         messages: list[dict]
         stats: str = ""
         prompt_tokens: int | None = None  # the server's count for this turn's request
-        # The same numbers the status line renders, unformatted, so the turn can be
-        # recorded as well as displayed (see storage.append_stats).
-        metrics: dict = field(default_factory=dict)
 
     @dataclass
     class ResponseFailed(Message):
@@ -316,7 +308,6 @@ class AhaCodeApp(App):
 
         self.session.add_user(text)
         storage.append_message(self.session_path, {"role": "user", "content": text})
-        self._turn_question = text
         # A typed instruction is a fresh start: whatever the run was stuck on, the
         # user has now said something about it, so the previous turns of no progress
         # should not count against the turns that follow.
@@ -473,11 +464,6 @@ class AhaCodeApp(App):
         for msg in event.messages:
             self.session.messages.append(msg)
             storage.append_message(self.session_path, msg)
-        if event.metrics:
-            # Recorded, not just shown: the status line is gone the moment the next
-            # turn starts, and "how fast has this been?" had no answer afterwards.
-            storage.append_stats(self.session_path, event.metrics)
-        self._write_transcript_turn(event)
         self._set_status(event.stats)
         if event.prompt_tokens:
             self._last_prompt_tokens = event.prompt_tokens
@@ -502,38 +488,6 @@ class AhaCodeApp(App):
         )
         container.scroll_end(animate=False)
         self._set_status("")
-
-    def _write_transcript_turn(self, event: "AhaCodeApp.ResponseComplete") -> None:
-        """Append this turn to the session's readable transcript.
-
-        The JSONL beside it holds the same thing as the MODEL sees it — one line per
-        message, arguments as escaped JSON. This is the conversation as it appeared
-        on screen, each turn stamped with what it cost, readable without the app.
-        """
-        answer = "\n\n".join(
-            m["content"] for m in event.messages
-            if m.get("role") == "assistant" and m.get("content")
-        )
-        tools = [
-            f"🔧 {c['function']['name']} · "
-            f"{tool_summary(c['function']['name'], self._safe_args(c)) or ''}".strip(" ·")
-            for m in event.messages for c in (m.get("tool_calls") or [])
-        ]
-        if not (self._turn_question or answer or tools):
-            return
-        storage.append_turn(
-            storage.transcript_path(self.session_path),
-            user=self._turn_question, answer=answer, tools=tools,
-            metrics=event.metrics,
-        )
-        self._turn_question = ""  # written once; a resumed loop is not a new question
-
-    @staticmethod
-    def _safe_args(call: dict) -> dict:
-        try:
-            return json.loads(call["function"]["arguments"])
-        except (json.JSONDecodeError, TypeError, KeyError):
-            return {}
 
     @work(thread=True, exit_on_error=False)
     def generate_title(self, messages: list[dict], path) -> None:

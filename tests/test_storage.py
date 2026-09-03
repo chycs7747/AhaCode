@@ -1,6 +1,14 @@
 from ahacode import storage
 
 
+def test_the_suite_never_writes_into_the_working_copy():
+    """Every directory the app generates into is redirected away from ./.ahacode."""
+    real = storage.PROJECT_ROOT / ".ahacode"
+    for name in ("SESSIONS_DIR", "PLANS_DIR"):
+        path = getattr(storage, name)
+        assert not path.is_relative_to(real), f"{name} still points at {path}"
+
+
 def test_append_and_load_roundtrip(tmp_path):
     """What we save must come back identical (roundtrip check)."""
     path = storage.new_session_path(base_dir=tmp_path)

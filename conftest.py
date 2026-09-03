@@ -54,7 +54,7 @@ def isolated_output_dirs(monkeypatch, tmp_path):
     "Hello! How can I help you today?" among the real ones. A test that patches its
     own directory still wins: a module-level autouse fixture runs after this one.
     """
-    for name in ("SESSIONS_DIR", "PLANS_DIR", "TRANSCRIPTS_DIR", "SCRATCH_DIR"):
+    for name in ("SESSIONS_DIR", "PLANS_DIR"):
         monkeypatch.setattr(storage, name, tmp_path / name.lower())
 
 

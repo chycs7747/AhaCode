@@ -23,13 +23,7 @@ from ahacode.widgets.subagent_card import SubagentCard
 
 @dataclass
 class TurnStats:
-    """What one turn cost, accumulated as it streams.
-
-    Was a five-key dict passed to two module-level formatters. The numbers and
-    the two ways they are read now sit together: line() for the status bar,
-    metrics() for the session file — the same quantities, kept as numbers so
-    they can be summed later rather than re-parsed out of the string.
-    """
+    """What one turn cost, accumulated as it streams."""
 
     prompt: int = 0
     completion: int = 0
@@ -64,18 +58,6 @@ class TurnStats:
             return ""
         return (f"prompt {self.prompt} · gen {self.completion} · "
                 f"{self.completion / self.gen_seconds:.0f} tok/s · ttft {self.ttft:.1f}s")
-
-    def metrics(self) -> dict:
-        """The same numbers, ready to record (see storage.append_stats)."""
-        if not self.completion:
-            return {}
-        return {
-            "prompt": self.prompt,
-            "gen": self.completion,
-            "gen_seconds": round(self.gen_seconds, 3),
-            "ttft": round(self.ttft, 3),
-            "model": config.load().name,
-        }
 
 
 class TurnRunner:
@@ -237,9 +219,7 @@ class TurnRunner:
             # the model resumes from knows what it already did. Continue, never restart.
             app.post_message(app.ResponseComplete(new_messages, "■ stopped", stats.last_prompt))
             return
-        app.post_message(app.ResponseComplete(
-            new_messages, stats.line(), stats.last_prompt, stats.metrics(),
-        ))
+        app.post_message(app.ResponseComplete(new_messages, stats.line(), stats.last_prompt))
 
     # --- the session title ---------------------------------------------------
 

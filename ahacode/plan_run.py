@@ -166,13 +166,9 @@ class PlanRun:
             f"↳ 계획 실행 세션 — {storage.display_path(plan)} 을 읽고 진행합니다 "
             f"(계획 세션 {parent_id} 의 자식)"
         )
-        await self._seed_turn(
-            prompts.handoff_prompt(storage.display_path(plan)),
-            question=f"(계획 실행 시작) {storage.display_path(plan)}",
-            show=True,
-        )
+        await self._seed_turn(prompts.handoff_prompt(storage.display_path(plan)), show=True)
 
-    async def _seed_turn(self, text: str, *, question: str, show: bool) -> None:
+    async def _seed_turn(self, text: str, *, show: bool) -> None:
         """Put one user message into the session and run a turn on it.
 
         Shared by the handoff (which shows the message, since the user asked for
@@ -182,7 +178,6 @@ class PlanRun:
         app = self.app
         app.session.add_user(text)
         storage.append_message(app.session_path, {"role": "user", "content": text})
-        app._turn_question = question
         app._follow_output = True
         if show:
             container = app.query_one("#chat-container", VerticalScroll)
@@ -256,7 +251,6 @@ class PlanRun:
         storage.write_result(
             out, plan=plan, session_id=app.session_path.stem, items=items,
             summary=summary, complete=not left,
-            throughput=storage.summarize_stats(storage.read_stats(app.session_path)),
         )
         if left:
             await app._say_system(
@@ -306,6 +300,4 @@ class PlanRun:
         await app._say_system(
             f"▶ 자동 진행 {done}/{len(panel.items)} 완료{why} · 다음: {nxt} (Esc 로 중지)"
         )
-        await self._seed_turn(
-            prompts.continue_prompt(), question=f"(자동 진행) 다음: {nxt}", show=False,
-        )
+        await self._seed_turn(prompts.continue_prompt(), show=False)
