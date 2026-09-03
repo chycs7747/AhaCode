@@ -206,33 +206,44 @@ and are not recorded in your session.
 
 Settings live in two layers. Which server to talk to is a fact about your machine,
 not about any one project, so it lives once in `~/.ahacode/config.toml` — written
-with commented defaults on first run, and the file `/url` and `/model` update. A
-project that wants something different can drop its own `.ahacode/config.toml`
-beside its sessions; it is merged **key by key** over the global one, so overriding
-the model does not mean restating the endpoint. There is no project file unless you
-write one.
+with the defaults on first run, and rewritten (values only) by `/url`, `/model`,
+`/think`, `/allow` and the ⚙ Settings screen. A project that wants something
+different can drop its own `.ahacode/config.toml` beside its sessions; it is merged
+**key by key** over the global one, so overriding the model does not mean restating
+the endpoint. There is no project file unless you write one.
+
+Every key, with its default:
 
 ```toml
 [model]
-base_url = "http://localhost:8888/v1"    # Ollama is :11434 · vLLM is :8000
+base_url = "http://localhost:8888/v1"  # Ollama is :11434 · vLLM is :8000
 name = "qwen3.8-flash-next"
-api_key = "EMPTY"            # many local servers ignore this, but the SDK requires one
-timeout = 60.0               # seconds; caps how long a read may block between chunks
-thinking_token_budget = 4096 # per-turn reasoning cap; 0 = unbounded
-reasoning_effort = "medium"  # low|medium|high|xhigh — a hint; effect is server-dependent
-no_think_after_tools = true  # skip reasoning on turns that only act on a tool result
-
-context_window = 32768       # your model's window, in tokens; 0 disables compaction
+api_key = "EMPTY"             # many local servers ignore this, but the SDK requires one
+timeout = 900.0               # seconds; caps how long a read may block between chunks
+thinking_token_budget = 4096  # per-turn reasoning cap; 0 = unbounded
+reasoning_effort = "medium"   # low|medium|high|xhigh — a hint; effect is server-dependent
+no_think_after_tools = true   # skip reasoning on turns that only act on a tool result
+context_window = 32768        # your model's window, in tokens; 0 disables compaction
 
 [agent]
-subagent_depth = 1        # generations of sub-agents that may nest (0 = none)
-max_parallel_agents = 8   # cap on concurrent requests (1 = serialise sub-agents)
-# Every field on this page is editable live from the ⚙ Settings button — set
-# max_parallel_agents to 1 to keep a single GPU from being double-loaded, and give
-# plan a bigger thinking budget than impl/subagent.
-compact_threshold = 0.8   # condense once a request reaches this fraction of the window
-keep_recent_messages = 6  # newest messages always kept verbatim
+subagent_depth = 1            # generations of sub-agents that may nest (0 = none)
+max_parallel_agents = 8       # cap on concurrent requests (1 = serialise sub-agents)
+impl_max_turns = 30           # turn cap for a session carrying out a plan; 0 = uncapped
+auto_continue_stall = 3       # turns in a row finishing no step before an impl run stops; 0 = off
+stall_rounds = 40             # rounds inside one turn finishing no step before it ends; 0 = off
+compact_threshold = 0.8       # condense once a request reaches this fraction of the window
+keep_recent_messages = 6      # newest messages always kept verbatim
+bash_timeout = 120            # seconds a bash command may run; a call may ask for more
+# plan_thinking_budget / impl_thinking_budget / subagent_thinking_budget — optional
+# per-mode reasoning caps; absent = thinking_token_budget
+
+[permissions]
+allow_rules = []              # "tool:pattern" rules that run without asking, e.g. "bash:uv run pytest*"
 ```
+
+Every field is also editable live from the ⚙ Settings button — set
+`max_parallel_agents` to 1 to keep a single GPU from being double-loaded, and give
+plan a bigger thinking budget than impl/subagent.
 
 Both reasoning knobs are vendor extensions, so they are *hints*: a server without
 a reasoning config simply refuses the budget, and AhaCode retries once without it

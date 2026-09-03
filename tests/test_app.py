@@ -278,7 +278,7 @@ async def test_endpoint_shows_in_header_not_the_composer(fake_llm):
         shown = app.query_one(HeaderBar)._endpoint_text
         # Compact host:port. Derived from the default rather than spelled out, so
         # changing the shipped endpoint cannot leave a stale literal here.
-        assert config.DEFAULT_BASE_URL.split("://")[1].removesuffix("/v1") in shown
+        assert config.DEFAULTS.base_url.split("://")[1].removesuffix("/v1") in shown
         assert "http://" not in shown and not shown.endswith("/v1")  # scheme/suffix stripped
         assert not app.query_one(ModelBar).query("#endpoint")        # gone from the footer
 
@@ -468,7 +468,7 @@ async def test_model_bar_shows_current_model():
     async with app.run_test() as pilot:
         await app.workers.wait_for_complete()  # model list fetched
         await pilot.pause()
-        assert app.query_one("#model-select", Select).value == config.DEFAULT_MODEL
+        assert app.query_one("#model-select", Select).value == config.DEFAULTS.name
 
 
 @pytest.mark.asyncio
