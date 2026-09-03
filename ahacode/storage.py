@@ -1,9 +1,6 @@
-"""JSONL session storage — one file per session, one message per line, append-only.
+"""JSONL session files, and the plan files that sit beside them."""
 
-All generated data lives under one hidden folder, ./.ahacode/ (sessions, plans,
-scratch, and config.toml), kept out of git as a single entry. A dot-prefixed name
-also means walk.py skips it for free — private transcripts never turn up in a search.
-"""
+from __future__ import annotations
 
 import datetime
 import json
@@ -36,17 +33,26 @@ def new_session_path() -> Path:
 
 
 def append_message(path: Path, message: dict) -> None:
-    """Append one message as a single JSON line."""
-    # Explicit utf-8: the platform default may differ (e.g. cp949 on Korean Windows).
-    with path.open("a", encoding="utf-8") as f:
+    """Append one message as a single JSON line.
+
+    Args:
+        path: The session file.
+        message: An OpenAI-shaped chat message.
+    """
+    with path.open("a", encoding="utf-8") as f:  # explicit utf-8: cp949 on Korean Windows
         f.write(json.dumps(message, ensure_ascii=False) + "\n")
 
 
 def load_messages(path: Path) -> list[dict]:
     """Read a session file back into a messages list.
 
-    Metadata lines (the header, later title updates) carry a "type" field and are
-    skipped — only chat messages (which have "role", not "type") are returned.
+    Metadata lines (the header, title updates) carry a "type" field and are skipped.
+
+    Args:
+        path: The session file; a missing file reads as empty.
+
+    Returns:
+        The chat messages, in order.
     """
     if not path.exists():
         return []
@@ -56,31 +62,29 @@ def load_messages(path: Path) -> list[dict]:
             if not line.strip():
                 continue
             obj = json.loads(line)
-            if obj.get("type"):  # header / title / other metadata, not a message
+            if obj.get("type"):
                 continue
             out.append(obj)
     return out
 
 
-# Session kinds the user drives (and so may be resumed into on startup). A
-# sub-agent transcript is machine-authored and view-only.
+# Session kinds the user drives, and so may be resumed into on startup.
 RESUMABLE_KINDS = frozenset({"main", "impl"})
 
 
 def latest_session() -> Path | None:
-    """Most recent session the user was driving, to resume on startup, or None.
+    """The newest session the user was driving, to resume on startup.
 
-    An impl session counts: after a Ctrl+D mid-plan the newest file IS the impl
-    session, and reopening its planning parent instead would invite "이어서 해"
-    in plan mode — which cannot act and would spawn a fresh sibling instead.
-    Skips sub-agent sessions: those are spawned by an agent as children,
-    not conversations the user opened, and are depth-gated out of the `task` tool.
-    Legacy headerless files count as main and stay resumable.
+    An impl session counts: after a quit mid-plan it is the one to reopen. A
+    sub-agent session is a machine-authored child and is skipped. A headerless
+    (legacy) file counts as main.
+
+    Returns:
+        The session file, or None when there is none.
     """
     if not workspace.SESSIONS_DIR.exists():
         return None
-    # File names are timestamps, so reverse order == newest first.
-    for path in sorted(workspace.SESSIONS_DIR.glob("*.jsonl"), reverse=True):
+    for path in sorted(workspace.SESSIONS_DIR.glob("*.jsonl"), reverse=True):  # newest first
         header = read_header(path)
         if header is None or header.get("kind") in RESUMABLE_KINDS:
             return path
@@ -88,9 +92,8 @@ def latest_session() -> Path | None:
 
 
 # --- session headers & hierarchy ------------------------------------------
-# Each session file's first line is a header carrying its place in the tree:
-# {"type":"header","id","parent_id","kind","relation","depth","model","cwd","title"}
-# A child points to its parent by id; a parent never stores a child list.
+# A session file's first line is a header carrying its place in the tree: a child
+# points to its parent by id, and a parent never stores a child list.
 
 
 def make_header(
@@ -106,11 +109,21 @@ def make_header(
 ) -> dict:
     """Build a session header.
 
-    kind is the node's role: "main" | "impl" | "subagent".
-    relation is the edge to the parent: "handoff" (control passed down a chain —
-    plan → impl; the parent stops working) or "delegate" (a task fanned out while
-    the parent waits). None for a root. depth counts delegate edges only — a
-    handoff inherits the parent's depth, so the sub-agent cap keys off it.
+    Args:
+        session_id: The file stem.
+        parent_id: The session this one hangs off, or None for a root.
+        kind: "main" | "impl" | "subagent".
+        relation: The edge to the parent: "handoff" (plan → impl; the parent stops
+            working) or "delegate" (a task fanned out while the parent waits).
+            None for a root.
+        depth: Delegate edges above this session. A handoff keeps its parent's
+            depth, so the sub-agent cap keys off it.
+        model: The model name at creation.
+        title: The display title, if known.
+        cwd: The project root; workspace.PROJECT_ROOT when omitted.
+
+    Returns:
+        The header dict, ready for write_header.
     """
     return {
         "type": "header",
@@ -126,13 +139,25 @@ def make_header(
 
 
 def write_header(path: Path, header: dict) -> None:
-    """Write the header as the file's first line. Call once, on a fresh session."""
-    with path.open("a", encoding="utf-8") as f:  # append == first line on a new file
+    """Write the header as a fresh session file's first line.
+
+    Args:
+        path: The empty session file.
+        header: From make_header.
+    """
+    with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(header, ensure_ascii=False) + "\n")
 
 
 def read_header(path: Path) -> dict | None:
-    """Return a session's header (first line), or None for a headerless/legacy file."""
+    """A session's header line.
+
+    Args:
+        path: The session file.
+
+    Returns:
+        The header dict, or None for a missing or headerless file.
+    """
     if not path.exists():
         return None
     with path.open(encoding="utf-8") as f:
@@ -147,15 +172,24 @@ def read_header(path: Path) -> dict | None:
 
 
 def set_title(path: Path, title: str) -> None:
-    """Record/replace a session's title as an append-only metadata line (last wins)."""
+    """Record a session's title as an append-only metadata line; the last one wins.
+
+    Args:
+        path: The session file.
+        title: The new title.
+    """
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps({"type": "title", "title": title}, ensure_ascii=False) + "\n")
 
 
 def read_session_meta(path: Path) -> dict | None:
-    """The header with its title overridden by the latest {type:"title"} line.
+    """The header with its title overridden by the latest title line.
 
-    None for a headerless/legacy file (caller falls back to a synthesized header).
+    Args:
+        path: The session file.
+
+    Returns:
+        The header dict, or None for a headerless file.
     """
     header = read_header(path)
     if header is None:
@@ -175,14 +209,18 @@ def read_session_meta(path: Path) -> dict | None:
 
 
 def _legacy_header(path: Path) -> dict:
-    """Synthesize a header for a pre-header file so old sessions still list/tree."""
+    """Synthesize a header for a pre-header file so old sessions still list."""
     msgs = load_messages(path)
     title = next((m.get("content", "") for m in msgs if m.get("role") == "user"), "")
     return make_header(path.stem, kind="main", title=(title[:40] or path.stem))
 
 
 def list_sessions() -> list[dict]:
-    """Every session's header (newest last), synthesizing one for legacy files."""
+    """Every session's header, oldest first, synthesizing one for legacy files.
+
+    Returns:
+        The header dicts.
+    """
     if not workspace.SESSIONS_DIR.exists():
         return []
     return [
@@ -192,8 +230,15 @@ def list_sessions() -> list[dict]:
 
 
 def descendants(session_id: str, sessions: list[dict]) -> list[str]:
-    """`session_id` and every session below it (children, grandchildren…), BFS.
-    A parent never stores a child list, so this walks parent_id pointers."""
+    """`session_id` and every session below it, breadth first.
+
+    Args:
+        session_id: The root of the subtree.
+        sessions: The headers to walk (see list_sessions).
+
+    Returns:
+        The ids, the root first.
+    """
     by_parent: dict[str | None, list[str]] = {}
     for s in sessions:
         by_parent.setdefault(s.get("parent_id"), []).append(s["id"])
@@ -206,9 +251,14 @@ def descendants(session_id: str, sessions: list[dict]) -> list[str]:
 
 
 def delete_session(session_id: str) -> list[str]:
-    """Delete a session and everything that hangs off it: its descendants (a child
-    transcript without its parent is noise), each one's spilled tool output, and
-    the plan / result files named after it. Returns the ids removed."""
+    """Delete a session with its descendants, spilled output, and plan files.
+
+    Args:
+        session_id: The session to delete.
+
+    Returns:
+        The ids removed.
+    """
     ids = descendants(session_id, list_sessions())
     for sid in ids:
         (workspace.SESSIONS_DIR / f"{sid}.jsonl").unlink(missing_ok=True)
@@ -219,11 +269,17 @@ def delete_session(session_id: str) -> list[str]:
 
 
 def dangling_tool_calls(messages: list[dict]) -> list[dict]:
-    """The last assistant turn's tool calls that never got a result — the mark of a
-    turn cut off mid-tool (a Stop or Ctrl+D while a tool ran). Each is returned with
-    its id, name and parsed arguments, so a resume can fill a result AND name which
-    call it was (a bare id says nothing when three bash calls ran at once). The API
-    requires a result for every tool_call, so these must be filled before continuing."""
+    """The last assistant turn's tool calls that never got a result.
+
+    The mark of a turn cut off mid-tool. The API requires a result for every call,
+    so these must be filled in before the conversation continues.
+
+    Args:
+        messages: The session's messages.
+
+    Returns:
+        One {"id", "name", "arguments"} per unanswered call.
+    """
     answered = {m.get("tool_call_id") for m in messages if m.get("role") == "tool"}
     last = next((m for m in reversed(messages) if m.get("role") == "assistant"), None)
     out: list[dict] = []
@@ -238,11 +294,16 @@ def dangling_tool_calls(messages: list[dict]) -> list[dict]:
         out.append({"id": c["id"], "name": fn.get("name", "tool"), "arguments": args})
     return out
 
+
 def build_tree(sessions: list[dict]) -> list[dict]:
     """Nest a flat header list into a tree by parent_id.
 
-    Returns the root nodes; each node is its header plus a sorted "children" list.
-    A header whose parent_id is missing/unknown is treated as a root (orphan-safe).
+    Args:
+        sessions: The headers (see list_sessions).
+
+    Returns:
+        The root nodes; each node is its header plus a sorted "children" list. A
+        header whose parent is unknown becomes a root.
     """
     by_id = {s["id"]: {**s, "children": []} for s in sessions}
     roots: list[dict] = []
@@ -256,13 +317,30 @@ def build_tree(sessions: list[dict]) -> list[dict]:
     return roots
 
 
+# --- plan files -------------------------------------------------------------
+
+
 def plan_path(session_path: Path) -> Path:
-    """Where the plan written in `session_path` lives: plans/{session}.md."""
+    """Where the plan written in a session lives: plans/{session}.md.
+
+    Args:
+        session_path: The planning session's file.
+
+    Returns:
+        The plan file path.
+    """
     return workspace.PLANS_DIR / f"{session_path.stem}.md"
 
 
 def result_path(plan: Path) -> Path:
-    """The progress/result file that sits beside a plan: plans/{session}.result.md."""
+    """The progress file beside a plan: plans/{session}.result.md.
+
+    Args:
+        plan: The plan file.
+
+    Returns:
+        The result file path.
+    """
     return plan.with_name(f"{plan.stem}.result.md")
 
 
@@ -300,7 +378,14 @@ def write_result(
 
 
 def plan_title(path: Path) -> str:
-    """The plan's summary line ("# …"), for naming the session that carries it out."""
+    """The plan's summary line, for naming the session that carries it out.
+
+    Args:
+        path: The plan file.
+
+    Returns:
+        The first line without its "#", or "" when the file cannot be read.
+    """
     try:
         first = path.read_text(encoding="utf-8").splitlines()[0]
     except (OSError, IndexError):
@@ -311,11 +396,19 @@ def plan_title(path: Path) -> str:
 def write_plan(
     path: Path, *, summary: str, steps: list[str], validation: list[str], body: str
 ) -> None:
-    """Render a plan as Markdown and write it (whole file, last write wins — a
-    revised plan from the same session replaces the previous one)."""
+    """Render a plan as Markdown and write it; a resubmitted plan replaces the file.
+
+    Steps are numbered, not checkboxes: the plan is the spec a review compares
+    against and is never ticked. Progress goes to the sibling result file.
+
+    Args:
+        path: The plan file (see plan_path).
+        summary: The one-line goal; "Plan" when empty.
+        steps: The executable steps, in order.
+        validation: How to confirm the result, if any.
+        body: Free-form notes for the executor, if any.
+    """
     lines = [f"# {summary or 'Plan'}", "", "## Steps", ""]
-    # Plain numbers, no checkboxes: the plan is the spec a review compares against
-    # and is never ticked. Progress goes to the sibling result file (write_result).
     lines += [f"{i}. {s}" for i, s in enumerate(steps, 1)]
     if validation:
         lines += ["", "## Validation", ""]

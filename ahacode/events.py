@@ -1,17 +1,17 @@
-"""Canonical streaming events — the one vocabulary the UI consumes.
+"""Canonical streaming events: the one vocabulary every layer speaks.
 
-Two producers emit these: client.py (what the model streams) and agent.py
-(what the tool loop does). This is a tagged-union event model — a set of small
-typed records distinguished by their class and dispatched via isinstance, which
-is Python's stand-in for matching on a `type` discriminant.
+client.py emits what the model streams, agent.py what the tool loop does, and the
+UI dispatches on the class.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 
 
 @dataclass
 class ThinkingDelta:
-    """A fragment of the model's reasoning stream (shown in the dimmed bubble)."""
+    """A fragment of the model's reasoning stream."""
 
     text: str
 
@@ -25,8 +25,8 @@ class TextDelta:
 
 @dataclass
 class ToolCallDelta:
-    """A streamed fragment of a tool call, for live display (append model,
-    like TextDelta). The final parsed ToolCall still follows for execution."""
+    """A streamed fragment of a tool call, for live display; the parsed ToolCall
+    still follows once the stream ends."""
 
     index: int
     name: str
@@ -35,16 +35,10 @@ class ToolCallDelta:
 
 @dataclass
 class ToolCall:
-    """A completed tool call the model wants run.
+    """A completed tool call the model wants run; `arguments` is already parsed.
 
-    Reassembled inside client.py from streamed fragments (the arguments arrive
-    as JSON pieces spread across many chunks). `arguments` is already parsed
-    into a dict by the time the UI/agent sees it.
-
-    `parse_error` is set when the model's argument JSON could not be parsed: the
-    call is emitted anyway (with empty arguments) so the loop can feed an error
-    result back and let the model resend it, instead of silently dropping the call
-    — a dropped call can leave a turn with no tool call, which reads as "done".
+    `parse_error` is set when the argument JSON could not be parsed: the call is
+    emitted anyway so the loop can feed an error back and the model can resend it.
     """
 
     id: str
@@ -55,7 +49,7 @@ class ToolCall:
 
 @dataclass
 class ToolResult:
-    """The outcome of running a ToolCall — produced by agent.py, not the model."""
+    """The outcome of running a ToolCall, produced by agent.py."""
 
     id: str
     name: str
@@ -65,27 +59,16 @@ class ToolResult:
 
 @dataclass
 class Notice:
-    """Something the HARNESS needs to tell the user — not the model's answer.
-
-    Context compaction is the first: silently dropping history would leave the user
-    wondering why the agent forgot something, so the loop says so.
-    """
+    """Something the harness tells the user, apart from the model's answer."""
 
     text: str
 
 
 @dataclass
 class Phase:
-    """A stretch of HARNESS work that streams nothing while it runs.
-
-    Every other slow thing here reports as it goes: a tool is timed in the status
-    line, a model turn arrives token by token. Compaction does neither — it is one
-    synchronous model call over the whole history, routinely a minute or more, and
-    the last screen the user saw stays frozen for all of it. That is the picture a
-    real deadlock makes, so the two became indistinguishable in practice.
-
-    Sent in pairs: `done=False` opens the stretch, `done=True` closes it.
-    """
+    """A stretch of harness work that streams nothing while it runs (compaction),
+    so the status line can keep a clock on it. Sent in pairs: done=False opens
+    the stretch, done=True closes it."""
 
     name: str
     done: bool = False
@@ -93,16 +76,14 @@ class Phase:
 
 @dataclass
 class Usage:
-    """Token accounting for one model call, from the stream's usage trailer
-    (choices=[] chunk sent when stream_options.include_usage is on)."""
+    """Token accounting for one model call, from the stream's usage trailer."""
 
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
 
 
-# The union every consumer switches on. isinstance(event, TextDelta) is the
-# Python equivalent of matching on a discriminated-union `type` tag.
+# The union every consumer switches on.
 Event = (
     ThinkingDelta | TextDelta | ToolCallDelta | ToolCall | ToolResult | Notice
     | Phase | Usage

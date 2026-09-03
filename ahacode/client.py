@@ -1,3 +1,8 @@
+"""The one module that talks to the model provider: streaming turns, one-shot
+completions, the model list, and the process-wide concurrency gate."""
+
+from __future__ import annotations
+
 import json
 import threading
 import time
@@ -11,20 +16,24 @@ from ahacode.events import (
     Event, Notice, TextDelta, ThinkingDelta, ToolCall, ToolCallDelta, Usage,
 )
 
-# The mode of the turn being sent, per THREAD, so plan/impl/sub-agent each pick
-# their own thinking budget (config.thinking_budget_for). Thread-local because
-# parallel sub-agents run on separate pool threads; the context manager saves and
-# restores, so a child on its parent's own thread leaves the parent's mode intact.
+# The mode of the turn being sent, per thread, so plan / impl / sub-agent each pick
+# their own thinking budget. Parallel sub-agents run on separate threads.
 _mode = threading.local()
 
 
 def current_mode() -> str | None:
+    """The mode set by `mode()` on this thread, or None."""
     return getattr(_mode, "value", None)
 
 
 @contextmanager
 def mode(name: str | None):
-    """Set the active mode for stream_chat/complete calls on this thread."""
+    """Set the mode for stream_chat / complete calls on this thread, restoring the
+    previous one on exit.
+
+    Args:
+        name: "plan", "impl", "subagent", or None for a plain act turn.
+    """
     prev = getattr(_mode, "value", None)
     _mode.value = name
     try:
@@ -32,26 +41,13 @@ def mode(name: str | None):
     finally:
         _mode.value = prev
 
-# The UI never sees provider-specific shapes: this module converts them into the
-# canonical events in events.py. A plain turn emits TextDelta / ThinkingDelta;
-# when tools are offered, completed ToolCalls are emitted once reassembled.
 
 # --- sampling profiles ------------------------------------------------------
-# How a model is SAMPLED is a property of the model, not of the task, so it lives
-# here beside the other provider knobs rather than in config.toml.
-#
-# Sending nothing is worse than sending a wrong value: it hands the request to the
-# server's default, which moves with the vLLM container's flags and which the app
-# cannot see. Measured on the gateway — nothing sent: five identical requests, five
-# different answers; temperature=0: byte-identical. So a per-request value does
-# override the load-time default. A/B over 48 runs found no effect on solve rate,
-# turns or tokens, which is the point: this buys reproducibility, not quality.
-#
-# The values are Qwen's published recommendation and differ BY MODE, because this
-# app switches modes within one conversation (see no_think) and a single
-# server-side default cannot satisfy both. top_k / min_p / repetition_penalty are
-# vLLM extensions that must ride in extra_body — which is why the profile is keyed
-# by family: Anthropic or OpenAI would reject them.
+# How a model is sampled is a property of the model, so it lives here rather than in
+# config.toml. A value is always sent: the server's default moves with its launch
+# flags and the app cannot see it. The profiles are Qwen's published recommendation
+# and differ by mode, because this app switches modes within one conversation.
+# top_k / min_p / repetition_penalty are vLLM extensions and ride in extra_body.
 SAMPLING: dict[str, dict[str, dict]] = {
     "qwen": {
         "think":   {"kwargs": {"temperature": 1.0, "top_p": 0.95, "presence_penalty": 0.0},
@@ -70,10 +66,15 @@ def _sampling_family(model: str) -> str | None:
 
 
 def sampling_for(model: str, *, no_think: bool) -> tuple[dict, dict]:
-    """(request kwargs, extra_body) for this model in this mode.
+    """The sampling parameters for this model in this mode.
 
-    An unknown family gets nothing — better to let that provider apply its own
-    default than to send it parameters it may not understand.
+    Args:
+        model: The model name.
+        no_think: Whether the turn runs with thinking off.
+
+    Returns:
+        (request kwargs, extra_body); both empty for a model with no profile, so the
+        server applies its own default.
     """
     profile = SAMPLING.get(_sampling_family(model))
     if not profile:
@@ -82,48 +83,37 @@ def sampling_for(model: str, *, no_think: bool) -> tuple[dict, dict]:
     return dict(slot["kwargs"]), dict(slot["extra"])
 
 
-# How long a "does this address answer?" probe may take (see list_models). Short on
-# purpose: it runs while someone waits on a settings screen.
+# How long a "does this address answer?" probe may take (see list_models).
 PROBE_TIMEOUT = 10.0
 
-# Endpoints that refused our vendor extensions, by base_url. Everything outside the
-# plain OpenAI shape — enable_thinking, thinking_token_budget, top_k, min_p — is an
-# extension some servers reject outright, so the failed round trip that discovers it
-# is paid once. reset() clears this, which is how you re-probe a reconfigured server.
+# Endpoints that refused our vendor extensions (enable_thinking,
+# thinking_token_budget, top_k, min_p), so the failed round trip is paid once.
 _NO_EXTRAS: set[str] = set()
 
 _client: OpenAI | None = None
 _cfg: config.ModelConfig | None = None
-# Process-wide concurrency gate — see _ensure_gate. Sized from config on first use.
-_gate: threading.BoundedSemaphore | None = None
-# Guards the lazy construction of the three globals above. Without it a fan-out that
-# starts several requests at once can have two threads both find _gate None and both
-# build a semaphore: the loser's permits are already held, so the cap is briefly
-# exceeded by exactly the thing it exists to bound.
-_init_lock = threading.Lock()
-# When a permit last entered or left the gate. A queue — however deep — keeps
-# changing hands; a gate whose permits were taken by requests that are now gone
-# never does. That difference is what tells a busy backend apart from a deadlock
-# without guessing at a deadline (see _acquire_permit).
+_gate: threading.BoundedSemaphore | None = None  # see _ensure_gate
+_init_lock = threading.Lock()  # guards the lazy construction of the three above
+# When a permit last entered or left the gate. A queue keeps changing hands; a gate
+# whose permits leaked never does (see _wait_for_permit).
 _gate_clock = threading.Lock()
 _last_gate_change = time.monotonic()
 # Grace on top of the request timeout before an unmoving gate counts as stuck.
 GATE_STUCK_MARGIN = 60.0
 _GATE_POLL = 1.0
-# How long a queue may be silent before it is worth a line on screen. Waiting is
-# normal — max_parallel_agents = 1 is the recommended setting for a single GPU, so
-# every fan-out queues — but on screen a normal wait and a hang look identical, and
-# that is the whole reason a stuck app was hard to recognise as stuck.
+# Seconds a queued request waits silently before saying so on screen.
 WAIT_NOTICE_AFTER = 3.0
 
 
 def _touch_gate() -> None:
+    """Record that a permit just changed hands."""
     global _last_gate_change
     with _gate_clock:
         _last_gate_change = time.monotonic()
 
 
 def _gate_idle_seconds() -> float:
+    """Seconds since a permit last changed hands."""
     with _gate_clock:
         return time.monotonic() - _last_gate_change
 
@@ -137,21 +127,21 @@ def _reset_gate() -> None:
 
 
 def _wait_for_permit(timeout: float, limit: int):
-    """Take a concurrency permit — saying so when the wait is long enough to look
-    like a hang, and rebuilding a gate whose permits have leaked.
+    """Take a concurrency permit, reporting a long wait and healing a leaked gate.
 
-    A permit is held for one request, and no request outlives the configured client
-    timeout — so if nothing has entered or left the gate for longer than that, the
-    permits are held by requests that no longer exist and waiting on them is waiting
-    forever. Rebuild in that case. A real queue keeps the clock moving and is left
-    alone however long it takes, which is the point: the app must not cut off a cold
-    model load, and it must not sit frozen on permits nobody holds.
+    No request outlives the client timeout, so a gate that has not moved for longer
+    than that holds permits nobody will return, and is rebuilt. A real queue keeps
+    the clock moving and is waited on however long it takes.
 
-    A generator, so it can report through the same event channel as everything else:
-    client.py has no way to reach a widget and should not grow one. Callers take the
-    result with `yield from`. Returns the semaphore the permit came from (release
-    THAT one, not whatever _ensure_gate hands out later) and whether a rebuild was
-    needed.
+    A generator, so it can report through the event channel; take the result with
+    `yield from`.
+
+    Args:
+        timeout: The configured request timeout, in seconds.
+        limit: The gate's size, for the notice.
+
+    Returns:
+        (the semaphore the permit came from, whether the gate had to be rebuilt).
     """
     stuck_after = timeout + GATE_STUCK_MARGIN
     started = time.monotonic()
@@ -160,7 +150,7 @@ def _wait_for_permit(timeout: float, limit: int):
         gate = _ensure_gate()
         if gate.acquire(timeout=_GATE_POLL):
             _touch_gate()
-            if told:  # close the loop on a wait the user was told about
+            if told:
                 yield Notice("▶ 자리가 나서 요청을 시작합니다.")
             return gate, healed
         if not told and time.monotonic() - started > WAIT_NOTICE_AFTER:
@@ -175,37 +165,38 @@ def _wait_for_permit(timeout: float, limit: int):
 
 
 def reset() -> None:
-    """Forget the cached client, config, and concurrency gate; the next request
-    reloads from disk (so an edited max_parallel_agents resizes the gate)."""
+    """Forget the cached client, config, gate and refused-extras memory, so the next
+    request reloads everything from disk."""
     global _client, _cfg, _gate
     _client = None
     _cfg = None
     _gate = None
-    _NO_EXTRAS.clear()  # re-probe: the endpoint or its config may have just changed
-    _touch_gate()  # a fresh gate has not been sitting still — don't inherit an old idle
+    _NO_EXTRAS.clear()
+    _touch_gate()
 
 
 def _ensure_gate() -> threading.BoundedSemaphore:
-    """The one gate every request funnels through, so total concurrency against the
-    single-GPU gateway is bounded no matter how the sub-agent tree fans out. Sized
-    from max_parallel_agents; a permit is held only for a request's lifetime (never
-    across a sub-agent delegation), so nested spawning cannot deadlock."""
+    """The one gate every request funnels through, sized from max_parallel_agents.
+
+    A permit is held only for a request's lifetime, never across a sub-agent
+    delegation, so nested spawning cannot deadlock.
+    """
     global _gate
     if _gate is None:
         with _init_lock:
-            if _gate is None:  # re-checked: another thread may have built it meanwhile
+            if _gate is None:
                 _gate = threading.BoundedSemaphore(config.load().max_parallel_agents)
     return _gate
 
 
 def _ensure_client() -> tuple[OpenAI, config.ModelConfig]:
+    """The cached OpenAI client and the config it was built from."""
     global _client, _cfg
     if _client is None:
         with _init_lock:
             if _client is None:
                 cfg = config.load()
-                # Published together, and _cfg first: a reader that sees a non-None
-                # _client must never find the config that belongs to it still unset.
+                # _cfg first: a reader that sees a client must never find its config unset.
                 _cfg = cfg
                 _client = OpenAI(
                     base_url=cfg.base_url, api_key=cfg.api_key, timeout=cfg.timeout
@@ -216,12 +207,15 @@ def _ensure_client() -> tuple[OpenAI, config.ModelConfig]:
 def _iter_events(chunks: Iterable) -> Iterator[Event]:
     """Convert raw OpenAI stream chunks into canonical events.
 
-    Pure (no network) so the reassembly logic is unit-testable with synthetic
-    chunks. Tool-call arguments arrive as JSON fragments spread across many
-    chunks (`{"path": "` -> `Se` -> `oul` -> `"}`), keyed by an index; we buffer
-    per index and only parse once the stream ends — the classic "message framing"
-    problem: a byte stream carries no record boundaries, so the receiver must
-    reassemble whole messages itself.
+    Tool-call arguments arrive as JSON fragments spread across chunks, keyed by an
+    index; they are buffered per index and parsed once the stream ends.
+
+    Args:
+        chunks: The SDK's stream chunks.
+
+    Returns:
+        Usage, ThinkingDelta, TextDelta and ToolCallDelta events as they arrive,
+        then one ToolCall per completed call.
     """
     pending: dict[int, dict] = {}  # index -> {"id", "name", "args"}
     finish_reason: str | None = None
@@ -234,18 +228,16 @@ def _iter_events(chunks: Iterable) -> Iterator[Event]:
                 completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
                 total_tokens=getattr(usage, "total_tokens", 0) or 0,
             )
-        if not chunk.choices:  # usage-only trailer chunk (choices is empty here)
+        if not chunk.choices:  # the usage-only trailer chunk
             continue
         choice = chunk.choices[0]
         if choice.finish_reason:
             finish_reason = choice.finish_reason
         delta = choice.delta
 
-        # Thinking arrives under a different key per server: reasoning_content on
-        # vLLM's parser and DeepSeek-shaped APIs, plain reasoning elsewhere. Neither
-        # is in the SDK's typed model, hence the getattr. Read BOTH — looking for
-        # the wrong one is indistinguishable from a model that never thinks: no
-        # block, no error, just a long silence before the answer.
+        # Thinking arrives under a different key per server (reasoning_content on
+        # vLLM and DeepSeek-shaped APIs, reasoning elsewhere), outside the SDK's
+        # typed model. Reading only one looks like a model that never thinks.
         for key in ("reasoning_content", "reasoning"):
             piece = getattr(delta, key, None)
             if isinstance(piece, str) and piece:
@@ -264,13 +256,9 @@ def _iter_events(chunks: Iterable) -> Iterator[Event]:
             piece = fn.arguments if (fn and fn.arguments) else ""
             if piece:
                 slot["args"] += piece
-            # Live fragment for the UI (a streaming delta); the final parsed
-            # ToolCall is still emitted after the stream for the loop to execute.
             yield ToolCallDelta(index=frag.index, name=slot["name"], fragment=piece)
 
-    # A "length" finish means the model was cut off at the token limit, so any
-    # tool call it was mid-way through emitting is half-built and unsafe to run.
-    # Skip them rather than execute garbage.
+    # Cut off at the token limit: a half-built tool call is unsafe to run.
     if finish_reason == "length" and pending:
         yield TextDelta("\n[response truncated at token limit — tool call(s) skipped]")
         return
@@ -279,10 +267,8 @@ def _iter_events(chunks: Iterable) -> Iterator[Event]:
         try:
             arguments = json.loads(slot["args"] or "{}")
         except json.JSONDecodeError:
-            # Don't drop it: a turn left with no tool call reads as "final answer"
-            # to the agent loop, which then stops mid-task (measured — a malformed
-            # call ended the run both times). Emit the call carrying its parse
-            # failure so the loop feeds an error back and the model resends.
+            # Emit the call with its parse failure so the loop feeds an error back
+            # and the model resends; dropping it would read as a final answer.
             yield ToolCall(id=slot["id"], name=slot["name"], arguments={},
                            parse_error="arguments were not valid JSON")
             continue
@@ -290,28 +276,29 @@ def _iter_events(chunks: Iterable) -> Iterator[Event]:
 
 
 def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterator[Event]:
-    """Send the conversation (optionally with tool specs) and yield canonical events."""
+    """Send the conversation and yield canonical events as they stream.
+
+    Args:
+        messages: The history to send.
+        tools: The function schemas to offer, or None for a tool-free turn.
+
+    Returns:
+        The events. The concurrency permit is held until the iterator is exhausted
+        or closed.
+    """
     client, cfg = _ensure_client()
     kwargs: dict = {
         "model": cfg.name,
         "messages": messages,
         "stream": True,
-        "stream_options": {"include_usage": True},  # ask for the token-usage trailer
+        "stream_options": {"include_usage": True},
     }
     if tools:
         kwargs["tools"] = tools
-        # Explicit even though "auto" is the API default: it states plainly that
-        # the *model* decides whether to call a tool (vs "required"/"none"/a named
-        # tool, which would force its hand). Only sent alongside tools — some
-        # servers reject tool_choice without a tools list.
+        # Only alongside tools: some servers reject tool_choice without a tools list.
         kwargs["tool_choice"] = "auto"
-    # Reasoning controls (vendor extensions, via extra_body). Two exclusive modes:
-    #  - no-think: the last message is a tool result, so this turn acts on it rather
-    #    than re-deliberating. enable_thinking=False, and no budget/effort — both are
-    #    meaningless with thinking off. The budget caps ONE turn; this is what stops
-    #    re-deliberation stacking into a multi-turn spiral.
-    #  - normal: thinking on, capped by thinking_token_budget, reasoning_effort as a
-    #    hint. A server without a reasoning-config refuses the budget (see fallback).
+    # After a tool result the turn acts on it rather than re-deliberating: thinking
+    # off, and no budget or effort, which are meaningless with thinking off.
     extra = {}
     no_think = (
         cfg.no_think_after_tools
@@ -326,25 +313,13 @@ def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterat
         budget = cfg.thinking_budget_for(current_mode())
         if budget:
             extra["thinking_token_budget"] = budget
-    # Sampling rides the SAME branch: the mode was just decided above, and the two
-    # profiles differ, so deciding it twice is how they would drift apart.
     sample_kwargs, sample_extra = sampling_for(cfg.name, no_think=no_think)
     kwargs.update(sample_kwargs)
     extra.update(sample_extra)
-    # Skip the extras entirely once this endpoint has told us it refuses them: the
-    # discovery costs one rejected request, and repeating it every turn would make a
-    # working server feel broken.
     if extra and cfg.base_url not in _NO_EXTRAS:
         kwargs["extra_body"] = extra
-    # Hold a global concurrency permit for the request's lifetime: taken here,
-    # released when this generator is exhausted or closed. Every agent funnels
-    # through here, so this is what bounds real gateway concurrency. The inner
-    # `with` closes the connection on every exit path, GeneratorExit included.
     gate, healed = yield from _wait_for_permit(cfg.timeout, cfg.max_parallel_agents)
     if healed:
-        # Say it out loud rather than recovering in silence: a gate that had to be
-        # rebuilt means requests ended without giving their permit back, and that is
-        # a defect worth seeing rather than one worth smoothing over.
         yield Notice("동시 요청 게이트가 멈춰 있어 초기화했습니다 — "
                      "이전 요청이 자리를 반납하지 않았습니다.")
     try:
@@ -357,15 +332,18 @@ def stream_chat(messages: list[dict], tools: list[dict] | None = None) -> Iterat
 def _stream_with_budget_fallback(client, kwargs: dict, base_url: str = "") -> Iterator[Event]:
     """Stream the request, degrading once if the server refuses our extensions.
 
-    Two steps, narrowest first. A server whose reasoning-config is not set up refuses
-    thinking_token_budget in particular, and dropping only that keeps the sampling
-    profile. Any other request rejection means this endpoint does not take vendor
-    extensions at all — vLLM, Ollama, llama.cpp and the rest disagree about which of
-    them exist — so drop them wholesale and remember the endpoint, or the failed
-    round trip is paid again on every single turn.
+    Narrowest first: a server without a reasoning config refuses
+    thinking_token_budget alone; any other 4xx means it takes no vendor extensions
+    at all, which is remembered per endpoint. Retried only while nothing has been
+    yielded, since past the first event a retry would replay what the user saw.
 
-    Retried only while nothing has been yielded: past the first event the server has
-    accepted the request, and retrying would replay what the user already saw.
+    Args:
+        client: The OpenAI client.
+        kwargs: The request.
+        base_url: The endpoint, for remembering a refusal.
+
+    Returns:
+        The events.
     """
     started = False
     retry_extra: dict | None = None
@@ -404,21 +382,20 @@ def _stream_with_budget_fallback(client, kwargs: dict, base_url: str = "") -> It
 
 
 def complete(messages: list[dict]) -> str:
-    """One-shot, non-streaming completion — for short utility calls (e.g. titling).
+    """A one-shot, non-streaming completion for short utility calls (titles, summaries).
 
-    Separate from stream_chat: no tools, no streaming, just the text back.
+    Thinking is switched off and the non-thinking sampling profile applied: nothing
+    here needs deliberation, and a reasoning pass before a summary is a minutes-long
+    silence on screen.
+
+    Args:
+        messages: The prompt.
+
+    Returns:
+        The answer text, stripped.
     """
     client, cfg = _ensure_client()
-    # Same reason as stream_chat: never leave the sampling to whatever the server
-    # happens to default to. A title or a summary is not a thinking task, so it takes
-    # the non-thinking profile.
     sample_kwargs, sample_extra = sampling_for(cfg.name, no_think=True)
-    # ...and thinking is switched off to match, not just the sampling — otherwise
-    # the sampling says "be decisive" while the budget says "deliberate for 4096
-    # tokens". Compaction runs here, so a thinking model paid a reasoning pass before
-    # the summary's first word: one measured six-minute compaction, no stream behind
-    # it, indistinguishable from a frozen app. Nothing here needs deliberation — a
-    # title and a condensed transcript both restate text already in the prompt.
     sample_extra["chat_template_kwargs"] = {"enable_thinking": False}
     if cfg.base_url in _NO_EXTRAS:
         sample_extra = {}
@@ -428,10 +405,8 @@ def complete(messages: list[dict]) -> str:
             extra_body=sample_extra or None, **sample_kwargs,
         )
     except Exception as exc:
-        # Same degrade as the streaming path, and it matters as much: titling and
-        # context compaction run through here, so an endpoint that rejects the extras
-        # would fail every compaction — and compaction failing is how a long session
-        # stops working entirely.
+        # The same degrade as the streaming path: compaction runs through here, and
+        # compaction failing is how a long session stops working entirely.
         status = getattr(exc, "status_code", None)
         if not sample_extra or not (isinstance(status, int) and 400 <= status < 500):
             raise
@@ -443,18 +418,18 @@ def complete(messages: list[dict]) -> str:
 
 
 def list_models(base_url: str | None = None, api_key: str | None = None) -> list[str]:
-    """Model ids offered by an endpoint (GET /v1/models).
+    """The model ids an endpoint offers (GET /v1/models).
 
-    With no arguments: the configured endpoint, through the cached client. Passing
-    base_url probes a *different* endpoint with a throwaway client — what the
-    settings modal needs, since the address being typed there is not saved yet and
-    must not disturb the client the running session is using.
+    Listing is a plain GET and loads no model. With no arguments the configured
+    endpoint is asked through the cached client; with a base_url a throwaway client
+    probes that address on a short timeout, which is what the settings screen needs.
 
-    Listing is a plain GET and does not load a model, so it is safe to call against
-    a gateway that starts an engine on demand; only an inference request does that.
-    The probe gets its own short timeout: an address typed with a typo should come
-    back as an error in seconds, not hold the settings modal for the configured
-    request timeout (minutes).
+    Args:
+        base_url: An endpoint to probe instead of the configured one.
+        api_key: The key for that endpoint; the configured one when omitted.
+
+    Returns:
+        The model ids.
     """
     if base_url is None:
         client, _ = _ensure_client()

@@ -1,10 +1,4 @@
-"""Text helpers shared by everything that has to keep something small.
-
-`elide` in particular: several places cap a long string, and every one of them
-wants the SAME shape — keep both ends, say how much went missing. Both ends,
-because which one matters depends on the text: a test run's verdict is on the
-last line, a directory listing's header is on the first.
-"""
+"""Text helpers shared by everything that has to keep a string small or readable."""
 
 from __future__ import annotations
 
@@ -12,9 +6,17 @@ ELISION = "\n... [{n:,} chars elided] ...\n"
 
 
 def elide(text: str, limit: int) -> str:
-    """Shorten `text` to about `limit` chars by removing the middle.
+    """Shorten `text` to about `limit` characters by removing the middle.
 
-    A no-op when it already fits, so callers can apply it unconditionally.
+    Both ends are kept because which one matters depends on the text: a test run's
+    verdict is on the last line, a listing's header on the first.
+
+    Args:
+        text: The text.
+        limit: The target length; 0 or less disables eliding.
+
+    Returns:
+        The text, unchanged when it already fits.
     """
     if limit <= 0 or len(text) <= limit:
         return text
@@ -28,19 +30,13 @@ def line_count(text: str) -> int:
 
 
 # --- markdown line breaks --------------------------------------------------
-# CommonMark treats a single newline inside a paragraph as a SPACE, so three lines
-# the model wrote separately are re-wrapped into one solid block. Beside the grey
-# bubbles — plain Text, every newline kept — the answer reads noticeably denser, and
-# the difference is not spacing but lines being merged. Rich honours the two-space
-# hard break (measured), so restoring the author's breaks costs no extra rows.
-#
-# Deliberately conservative: only ordinary prose lines are touched. Anything that is
-# a block construct in its own right (fence, table, heading, list, quote, indented
-# code) is left exactly as written, because there a trailing hard break either does
-# nothing or changes how the block parses.
+# CommonMark folds a single newline inside a paragraph into a space, so lines the
+# model wrote separately are re-wrapped into one block. A two-space hard break
+# keeps them apart at no extra rows. Only ordinary prose lines are touched: a
+# block construct (fence, table, heading, list, quote, indented code) is left as
+# written, where a hard break either does nothing or changes how it parses.
 
 _FENCE = ("```", "~~~")
-# Lines that open a block: a hard break before or after them is meaningless or unsafe.
 _BLOCK_STARTS = ("|", "#", ">", "-", "*", "+", "=")
 
 
@@ -62,9 +58,13 @@ def _is_prose(line: str) -> bool:
 def keep_line_breaks(text: str) -> str:
     """Make the author's single newlines survive markdown rendering.
 
-    Appends a two-space hard break to a prose line that is followed by another prose
-    line. Content inside fenced code blocks is passed through untouched, and a line
-    that already ends in a hard break (two spaces or a backslash) is left alone.
+    Args:
+        text: Markdown text.
+
+    Returns:
+        The text with a two-space hard break appended to every prose line that is
+        followed by another prose line. Fenced code and lines that already end in
+        a hard break are left alone.
     """
     lines = text.split("\n")
     out: list[str] = []

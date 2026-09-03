@@ -1,31 +1,25 @@
-"""Rich previews for tool calls — shared by the chat (edit diffs) and the approval
-modal (write content / edit diff / bash command). Widget-free so both can import
-it with no cycle.
+"""Widget-free Rich previews of tool calls, shared by the chat and the approval modal."""
 
-One per-tool formatted preview is reused everywhere: the same rendered content
-feeds both the tool card and the permission prompt, rather than dumping raw
-arguments into either.
-"""
+from __future__ import annotations
 
 import difflib
 from pathlib import Path
 
-from ahacode import permissions
 from rich.console import Group, RenderableType
 from rich.syntax import Syntax
 from rich.text import Text
 
-# Diff line colours (GitHub-ish green/red) + a subtle line background, so added
-# and removed lines read as highlighted rows (like Claude Code's / the artifact's
-# edit diff), not just coloured text.
+from ahacode import permissions
+
+# Diff line colours with a subtle line background, so added and removed lines read
+# as highlighted rows rather than coloured text.
 _DIFF_STYLE = {
     "+": "#3fb950 on #0d2818",
     "-": "#f0665a on #2d1418",
     " ": "dim",
 }
 
-# Syntax theme for previews — same low-contrast "nord" the chat uses for fences.
-_CODE_THEME = "nord"
+_CODE_THEME = "nord"  # the same low-contrast theme the chat uses for fences
 
 _LEXERS = {
     ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "tsx",
@@ -37,12 +31,20 @@ _LEXERS = {
 
 
 def lexer_for(path: str) -> str:
-    """Pygments lexer guessed from a path's extension (default: plain text)."""
+    """The Pygments lexer for a path's extension, or plain text."""
     return _LEXERS.get(Path(path).suffix.lower(), "text")
 
 
 def diff_rows(old: str, new: str) -> list[tuple[str, str]]:
-    """LCS line diff -> list of (" " | "-" | "+", line)."""
+    """A line diff of `old` against `new`.
+
+    Args:
+        old: The text before.
+        new: The text after.
+
+    Returns:
+        (" " | "-" | "+", line) rows, in order.
+    """
     o, n = old.splitlines(), new.splitlines()
     rows: list[tuple[str, str]] = []
     for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=o, b=n).get_opcodes():
@@ -59,12 +61,17 @@ def diff_rows(old: str, new: str) -> list[tuple[str, str]]:
 
 
 def tool_summary(name: str, args: dict) -> str:
-    """One-line summary of a tool call's INPUT for the result card's title —
-    bash → the command, read/write/list → the path, grep/glob → the pattern. This
-    is what turns a card into an IN (title) / OUT (body) block.
+    """A one-line summary of a tool call's input, for a result card's title.
 
-    The subject comes from permissions.subject, the same string an allow rule is
-    matched against — so a rule the user writes reads like the line they saw here.
+    The subject is permissions.subject, the same string an allow rule is matched
+    against, so a rule the user writes reads like the line they saw on screen.
+
+    Args:
+        name: The tool name.
+        args: The call's arguments.
+
+    Returns:
+        The subject's first line, cut to 60 characters; "" when there is none.
     """
     raw = permissions.subject(name, args)
     first = raw.splitlines()[0] if raw else ""
@@ -72,14 +79,21 @@ def tool_summary(name: str, args: dict) -> str:
 
 
 def diff_stats(old: str, new: str) -> tuple[int, int]:
-    """(added, removed) line counts for an edit — shown as the card's chip."""
+    """(added, removed) line counts for an edit, shown as the card's chip."""
     rows = diff_rows(old, new)
     return sum(s == "+" for s, _ in rows), sum(s == "-" for s, _ in rows)
 
 
 def edit_diff_lines(old: str, new: str) -> tuple[Text, str]:
-    """Return (rich_text, plain_text) for just the coloured -/+ diff lines
-    (no path header — the chat card carries that in its border title)."""
+    """The coloured -/+ diff lines of an edit, without a path header.
+
+    Args:
+        old: The snippet replaced.
+        new: Its replacement.
+
+    Returns:
+        (Rich text, the same lines as plain text).
+    """
     text = Text()
     plain: list[str] = []
     for sign, line in diff_rows(old, new):
@@ -90,8 +104,16 @@ def edit_diff_lines(old: str, new: str) -> tuple[Text, str]:
 
 
 def edit_diff(path: str, old: str, new: str) -> tuple[Text, str]:
-    """Return (rich_text, plain_text) for an edit's diff with a path header — used
-    by the approval modal (the chat renders the header in the card border instead)."""
+    """An edit's diff with a path header, for the approval modal.
+
+    Args:
+        path: The file being edited.
+        old: The snippet replaced.
+        new: Its replacement.
+
+    Returns:
+        (Rich text, the same as plain text).
+    """
     header = f"🔧 edit · {path}"
     lines_text, lines_plain = edit_diff_lines(old, new)
     text = Text(header + "\n", style="bold")
@@ -100,11 +122,15 @@ def edit_diff(path: str, old: str, new: str) -> tuple[Text, str]:
 
 
 def tool_preview(name: str, args: dict) -> RenderableType:
-    """A readable preview of what a tool call will do — the approval-modal body.
+    """A readable preview of what a tool call will do: the approval modal's body.
 
-    write -> path header + content as syntax-highlighted code (real newlines, not a
-    repr with literal \\n); edit -> the -/+ diff; bash -> the command; anything
-    else -> readable "key: value" lines. This is what makes the prompt legible.
+    Args:
+        name: The tool name.
+        args: The call's arguments.
+
+    Returns:
+        write → a path header and the content as highlighted code; edit → the diff;
+        bash → the command; anything else → "key: value" lines.
     """
     if name == "write":
         path = args.get("path", "?")

@@ -1,17 +1,4 @@
-"""System prompts, assembled from layers.
-
-One base per mode plus optional addenda, composed in a fixed order and flattened
-to a single module for our scale. Callers use the FUNCTIONS (act_system,
-plan_system, …) — never the raw constants — so the internal composition can grow
-(per-model deltas, env injection, sub-agent roles) without touching call sites.
-
-Style is qwen-informed and *measured* (2026-08-24, gateway qwen38):
-- No few-shot examples — they anchor a reasoning model's output; length is scaled
-  by a declarative rule instead (A/B: 0 preamble, ~10x short↔conceptual scaling).
-- Delegation is kept OUT of the always-on prompt — qwen never self-delegates
-  (0/120), and pushing it only biases atomic tasks; the `task` tool's own
-  description holds the (conservative) when-to guidance instead.
-"""
+"""System prompts: the constant layers, and their assembly per mode."""
 
 from __future__ import annotations
 
@@ -19,13 +6,10 @@ import platform
 
 from ahacode import config, shell, workspace
 
-# --- raw layers -----------------------------------------------------------
+# --- layers ---------------------------------------------------------------
 
-# Who the model is. The FIRST line of every system prompt — act, plan, and
-# sub-agent alike. A mode prompt that skips it leaves the slot empty, and a local
-# model then answers from its training data (qwen introduced itself as Claude in
-# plan mode, which said only "You are in PLAN MODE"). One constant, layered in by
-# each assembler, so no mode can drift.
+# The first line of every system prompt. A prompt that skips it leaves a local
+# model to answer from its training data about who it is.
 IDENTITY = (
     "You are AhaCode, a TUI coding agent made by cyh — built on state-of-the-art "
     "harness engineering and designed to weigh the best strategy for every task and "
@@ -34,8 +18,6 @@ IDENTITY = (
     "never mention the underlying model or who trained it."
 )
 
-# The base act-mode prompt: staged sections + terse bullets. "coding agent … also
-# answer questions" keeps general Q&A un-muzzled (validated on qwen).
 ACT_INTRO = f"""{IDENTITY} Most tasks are software work with the available tools; you also answer questions directly.
 
 # Output
@@ -43,12 +25,8 @@ ACT_INTRO = f"""{IDENTITY} Most tasks are software work with the available tools
 - Length follows the task — one line for a lookup; a full explanation when the question is conceptual or the user asks for depth.
 - No preamble or postamble."""
 
-# The discipline layer. Split out of ACT_INTRO because a SUB-AGENT needs it just as
-# much: sub-agents hold the same write/edit/bash tools, and a child running with only
-# the 3-line SUBAGENT_SYSTEM had no rule against turning a source file into a
-# scratchpad (measured: one delegated phase produced 467 lines of which 366 were
-# comments carrying the derivation — "Wait, no…", "Let me reconsider…"). Shared by
-# act_system() and subagent_system() so the rules can never drift apart.
+# Shared by the act and sub-agent prompts: a sub-agent holds the same write/edit/bash
+# tools and needs the same rules.
 CODING_RULES = """# Editing code
 - Read before you touch it; match the file's language, libraries, and conventions. Never assume a dependency is present.
   When you need several independent files or searches, request them in one message so they run at once.
@@ -72,16 +50,8 @@ CODING_RULES = """# Editing code
 - Never print, log, or commit secrets; `config.toml` and `sessions/` stay private.
 - Never do anything irreversible — `git push`, force-push, deleting data — without an explicit go-ahead."""
 
-# Plan mode: read-only, produce a plan rather than act.
-#
-# The "every step is executable" rule is load-bearing, not style. The plan is later
-# worked step by step by an impl session that can only finish a step by using a
-# tool. Hand it a step with no artifact ("Algorithm: find root, compute subtree
-# sums …") and it reaches for the only tool that accepts free text — `write` — and
-# files its derivation as source comments (measured, back when each step went to a
-# fresh sub-agent; the pull is the same in one context). Design belongs
-# in THIS turn's reasoning, where a thinking channel exists; the plan carries only
-# what a tool can carry out.
+# Plan mode. "Every step is executable" is load-bearing: the impl session can only
+# finish a step by using a tool, so a step with no artifact has no way to complete.
 PLAN_SYSTEM = (
     "You are in PLAN MODE. Do not change anything or run commands. Investigate with "
     "the read/glob/grep tools as needed and settle open questions with the user, then "
@@ -102,13 +72,9 @@ PLAN_SYSTEM = (
     "to an approval."
 )
 
-# The first user turn of an impl session — the child a plan is handed to. Kept in
-# the USER message, not the system prompt, because it is specific to this one
-# session (the plan path) while the system prompt is the constant every session
-# shares (and the gateway's prefix cache reuses). Shape after hmm-code's
-# plan-handoff prompt: read the file, mirror it into todo_write, work it
-# one-by-one, and never grow beyond it. The escape hatch is text — the model has
-# no way to switch modes, so a real gap is reported, not improvised around.
+# The first user turn of an impl session. A user message rather than the system
+# prompt: it names this session's plan file, while the system prompt is the constant
+# prefix every session shares.
 HANDOFF_PROMPT = """You are in an implementation session, handed off from an approved plan. Edit, write and bash tools are available.
 
 A plan was saved at {path}. Read it first, then call todo_write with one item per plan step. Work through them one-by-one, marking in_progress before starting each and done immediately after finishing.
@@ -121,23 +87,27 @@ When every step is done and the plan's validation passes, finish with a concise 
 
 
 def handoff_prompt(plan_path: str) -> str:
-    """The seed message of an impl session: the plan's path, and how to work it."""
+    """The seed message of an impl session.
+
+    Args:
+        plan_path: The plan file, as the model should refer to it.
+
+    Returns:
+        The message text.
+    """
     return HANDOFF_PROMPT.format(path=plan_path)
 
 
-# A worker sub-agent's framing. Deliberately short: it inherits the same tools, so
-# it only needs to know its job is one delegated task and to end with a
-# self-contained result. Kept lean on purpose — when many sub-agents share this
-# prefix the gateway's prefix cache reuses the prefill (~67% saving, measured).
+# A sub-agent's framing. Short on purpose: a shared prefix the gateway's prefix
+# cache reuses across every sub-agent.
 SUBAGENT_SYSTEM = (
     "You are a focused sub-agent spawned to complete ONE delegated task. "
     "Work autonomously with the tools available, then finish with a concise, "
     "self-contained result the caller can use directly — no filler, no questions."
 )
 
-# Injected as a user turn when the agent loop hits its turn cap. The wrap-up turn is
-# sent with NO tools (so the model physically cannot call one and must answer), and
-# this primes a useful close instead of a bare truncation.
+# The user turn injected when the loop hits its turn cap. Sent with no tools, so
+# the model must answer.
 MAX_TURNS_PROMPT = (
     "You've reached the step limit for this task and tools are no longer available. "
     "Give your best final answer now, as text only: briefly summarize what you "
@@ -153,10 +123,8 @@ CONTINUE_PROMPT = (
     "repeating work you have already done."
 )
 
-# Context compaction: the oldest stretch of a long conversation is replaced by one
-# summary produced with this prompt. What matters is carrying DECISIONS and
-# CONSTRAINTS forward — an agent that forgets a constraint re-violates it, which is
-# exactly the failure mode plain truncation causes.
+# Context compaction. What matters is carrying decisions and constraints forward:
+# an agent that forgets a constraint re-violates it.
 COMPACT_SYSTEM = (
     "You are compressing the earlier part of a coding session so the work can "
     "continue with a smaller context. Write a dense summary that preserves: the "
@@ -172,6 +140,7 @@ TITLE_SYSTEM = (
 )
 
 # --- assembly -------------------------------------------------------------
+
 
 def environment_block() -> str:
     """The live facts the model needs to emit valid commands: OS, shell, cwd, model."""
@@ -195,4 +164,3 @@ def plan_system() -> str:
 def subagent_system() -> str:
     """A sub-agent's system prompt: identity, its framing, and the shared coding rules."""
     return "\n\n".join([IDENTITY, SUBAGENT_SYSTEM, CODING_RULES])
-

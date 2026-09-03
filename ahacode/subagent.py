@@ -1,14 +1,7 @@
-"""Run a delegated task as a fresh sub-agent and hand its result back to the caller.
+"""Run a delegated task as a fresh sub-agent loop and hand its result back.
 
-A sub-agent is "just another agent loop": the same agent.run drives it, only the
-framing differs — a focused system prompt plus the delegated task as the opening
-user turn (the sub-agent-as-a-tool model). Because agent.run is synchronous, the
-parent naturally *pauses* here until the child finishes (a sequential delegate →
-resume), and the Python call depth mirrors the session depth in the tree.
-
-Kept pure and UI-free so it is unit-testable with a fake stream: the seams
-(emit / approve / stream / registry) are injected, and the app supplies the real
-session file + nested rendering through AgentContext.run_subagent.
+The same agent.run drives it; only the framing differs. agent.run is synchronous,
+so the parent pauses here until the child finishes.
 """
 
 from __future__ import annotations
@@ -25,25 +18,21 @@ from ahacode.events import Event
 class AgentContext:
     """The running context handed to wants_ctx tools (`task`, `plan_submit`).
 
-    The pure loop forwards it opaquely; only the app fills it in. run_subagent is
-    the closure that creates the child session file, renders the child's events into
-    a nested card, and persists the transcript. Signature: (prompt, description) ->
-    the child's final result string. session_path is the file of the session the
-    loop is running in — plan_submit names the plan file after it.
+    Only the app fills it in; the loop forwards it opaquely.
     """
 
-    run_subagent: Callable[[str, str], str] | None = None
-    session_path: Path | None = None
+    run_subagent: Callable[[str, str], str] | None = None  # (prompt, description) -> the child's result
+    session_path: Path | None = None  # the session the loop runs in; plan_submit names the plan after it
 
 
 @dataclass
 class SubagentResult:
     messages: list[dict]  # the child's full transcript (system + task + loop)
-    result: str           # the final answer text handed back to the parent
+    result: str  # the final answer handed back to the parent
 
 
 def _final_text(messages: list[dict]) -> str:
-    """The child's last assistant answer — the terminating turn with no tool calls."""
+    """The child's last assistant answer, or a placeholder when there is none."""
     for msg in reversed(messages):
         if msg.get("role") == "assistant" and msg.get("content"):
             return msg["content"]
@@ -63,12 +52,22 @@ def run(
     system: str | None = None,
     summarize=None,
 ) -> SubagentResult:
-    """Drive a child agent loop for one delegated task and return its result.
+    """Drive a child agent loop for one delegated task.
 
-    `registry` is passed in already built (the caller applies the depth gate via
-    tools.registry_for), so this stays agnostic about how deep it may go. `ctx` is
-    forwarded for the depth>1 case where a child may itself spawn; at the default
-    depth limit the child simply has no task tool and never touches it.
+    Args:
+        task_prompt: The delegated task, sent as the opening user turn.
+        emit: Receives the child's events.
+        approve: Asked before a tool that requires approval runs.
+        stream: The model call; client.stream_chat when omitted.
+        registry: The child's tools, already depth-gated by the caller.
+        ctx: Forwarded for a child that may itself delegate.
+        is_cancelled: Polled between events.
+        max_turns: Tool-call rounds before the wrap-up turn.
+        system: A system prompt to use instead of prompts.subagent_system().
+        summarize: The compaction summarizer.
+
+    Returns:
+        The child's transcript and its final answer.
     """
     # Resolved at call time: a default argument would freeze the bare framing
     # constant and skip the assembly that adds the shared CODING_RULES.
@@ -76,15 +75,10 @@ def run(
         {"role": "system", "content": system or prompts.subagent_system()},
         {"role": "user", "content": task_prompt},
     ]
-    # agent.run mutates its list — and may CONDENSE it if the child's own context
-    # grows — so the transcript we hand back is the seed plus what the run actually
-    # produced, never the live list. The caller writes this to the child's session
-    # file, which must stay complete even when the request in flight was compacted.
+    # agent.run mutates (and may condense) its list; the transcript handed back is
+    # the seed plus what the run produced, so the child's session file stays complete.
     live = list(seed)
-    # A sub-agent's turns take the "subagent" thinking budget. Thread-local + the
-    # context manager: on the sequential path this runs on the parent's worker
-    # thread, and restores the parent's mode ("impl") when it returns.
-    with client.mode("subagent"):
+    with client.mode("subagent"):  # restores the parent's mode on return
         produced = agent.run(
             live,
             emit=emit,
