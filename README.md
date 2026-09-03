@@ -306,11 +306,11 @@ ahacode/
 │   └── __init__.py   #   the registry, and the depth gate that hands out `task`
 │
 ├── client.py         # LLM I/O — the only module that talks to a provider
-├── workspace.py      # PROJECT_ROOT = the directory AhaCode was launched in
+├── workspace.py      # PROJECT_ROOT (the launch directory) and the .ahacode/ layout
 ├── shell.py          # which shell a bash call gets, and how to kill its tree
-├── config.py         # ~/.ahacode/config.toml + the project's optional override
+├── config.py         # values-only config.toml: ~/.ahacode + the project's override
 ├── session.py        # conversation state (plain Python, widget-free)
-├── storage.py        # JSONL persistence + the session tree (./sessions/)
+├── storage.py        # JSONL session files, the session tree, and the plan files
 ├── ahacode.tcss      # styles (no inline CSS)
 └── widgets/          # one file per widget: chatbox, thinking, tool_result,
                       # subagent_card, todo_panel, plan_gate, approval_modal,
