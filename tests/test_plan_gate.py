@@ -15,14 +15,7 @@ from ahacode.widgets.todo_panel import TodoPanel
 from ahacode.widgets.tool_result import ToolResultBlock
 
 
-@pytest.fixture(autouse=True)
-def isolated_environment(monkeypatch, tmp_path):
-    monkeypatch.setattr(client, "list_models", lambda: ["qwen38"])
-    monkeypatch.setattr(client, "complete", lambda messages: "")
-    monkeypatch.setattr(AhaCodeApp, "generate_title", lambda self, *a, **k: None)
-    client.reset()
-    yield
-    client.reset()
+pytestmark = pytest.mark.usefixtures("offline_app")
 
 
 STEPS = ["Write solver.py with solve()", "Add tests/test_solver.py", "Run pytest and confirm 3 passed"]

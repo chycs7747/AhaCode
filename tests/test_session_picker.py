@@ -10,15 +10,12 @@ from ahacode.widgets.prompt_input import PromptInput
 from ahacode.widgets.session_picker import SessionPicker, SessionRow
 
 
+pytestmark = pytest.mark.usefixtures("offline_app")
+
+
 @pytest.fixture(autouse=True)
-def isolated_environment(monkeypatch, tmp_path):
-    monkeypatch.setattr(client, "list_models", lambda: ["qwen38"])
-    monkeypatch.setattr(client, "complete", lambda messages: "")
+def one_word_answer(monkeypatch):
     monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("hi")]))
-    monkeypatch.setattr(AhaCodeApp, "generate_title", lambda self, *a, **k: None)
-    client.reset()
-    yield
-    client.reset()
 
 
 def _session(tmp_path, sid, **header):

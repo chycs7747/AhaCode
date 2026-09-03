@@ -62,6 +62,19 @@ class FakeLLM:
 
 
 @pytest.fixture
+def offline_app(monkeypatch):
+    """Keep an AhaCodeApp off the network: a fixed model list and no auto-title.
+
+    Not autouse: tests of client.complete itself must see the real function.
+    """
+    from ahacode.app import AhaCodeApp
+
+    monkeypatch.setattr(client, "list_models", lambda *a, **k: ["qwen38", "qwen3-4b"])
+    monkeypatch.setattr(client, "complete", lambda messages: "")
+    monkeypatch.setattr(AhaCodeApp, "generate_title", lambda self, *a, **k: None)
+
+
+@pytest.fixture
 def fake_llm(monkeypatch) -> FakeLLM:
     """Replace client.stream_chat with a FakeLLM for the duration of a test."""
     fake = FakeLLM()

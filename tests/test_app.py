@@ -14,23 +14,7 @@ from ahacode.widgets.prompt_input import PromptInput
 from ahacode.widgets.todo_panel import TodoPanel
 
 
-@pytest.fixture(autouse=True)
-def isolated_environment(monkeypatch, tmp_path):
-    """Isolate all global state (~/.ahacode) from every test.
-
-    Sessions and config both live under the home directory, and the client
-    caches its config — every app test must run against private temporaries
-    with a fresh client cache.
-    """
-    # The model bar fetches /v1/models on mount — keep tests offline.
-    monkeypatch.setattr(client, "list_models", lambda: ["qwen38", "qwen3-4b"])
-    # Auto-title runs after a turn as a background worker that would hit the network;
-    # keep it offline + fast. Tests that check the trigger override generate_title.
-    monkeypatch.setattr(client, "complete", lambda messages: "")
-    monkeypatch.setattr(AhaCodeApp, "generate_title", lambda self, *a, **k: None)
-    client.reset()
-    yield
-    client.reset()
+pytestmark = pytest.mark.usefixtures("offline_app")
 
 
 @pytest.mark.asyncio

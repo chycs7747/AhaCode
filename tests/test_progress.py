@@ -17,12 +17,12 @@ from ahacode.events import Phase, TextDelta, ToolCall, ToolResult
 from ahacode.widgets.subagent_card import SubagentCard
 
 
+pytestmark = pytest.mark.usefixtures("offline_app")
+
+
 @pytest.fixture(autouse=True)
-def isolated_environment(monkeypatch, tmp_path):
-    monkeypatch.setattr(client, "list_models", lambda *a, **k: ["m"])
-    monkeypatch.setattr(client, "complete", lambda m: "")
+def one_word_answer(monkeypatch):
     monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("hi")]))
-    monkeypatch.setattr(AhaCodeApp, "generate_title", lambda self, *a, **k: None)
 
 
 def _boxes(gate=True):

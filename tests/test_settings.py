@@ -11,16 +11,13 @@ from ahacode.events import TextDelta
 from ahacode.widgets.settings import Settings
 
 
+pytestmark = pytest.mark.usefixtures("offline_app")
+
+
 @pytest.fixture(autouse=True)
-def isolated_environment(monkeypatch, tmp_path):
-    monkeypatch.setattr(client, "list_models", lambda *a, **k: ["qwen38"])
-    monkeypatch.setattr(client, "complete", lambda m: "")
+def one_word_answer(monkeypatch):
     monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("hi")]))
-    monkeypatch.setattr(AhaCodeApp, "generate_title", lambda self, *a, **k: None)
     config.save(config.DEFAULTS)
-    client.reset()
-    yield
-    client.reset()
 
 
 async def _open(pilot):

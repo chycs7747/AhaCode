@@ -22,12 +22,12 @@ from ahacode.widgets.todo_panel import TodoPanel
 METRICS = {"prompt": 100, "gen": 10, "gen_seconds": 1.0, "ttft": 0.5, "model": "m"}
 
 
+pytestmark = pytest.mark.usefixtures("offline_app")
+
+
 @pytest.fixture(autouse=True)
-def offline(monkeypatch, tmp_path):
-    monkeypatch.setattr(client, "list_models", lambda *a, **k: ["m"])
-    monkeypatch.setattr(client, "complete", lambda m: "")
+def one_word_answer(monkeypatch):
     monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("ok")]))
-    monkeypatch.setattr(AhaCodeApp, "generate_title", lambda self, *a, **k: None)
 
 
 def _cfg(**kw):
