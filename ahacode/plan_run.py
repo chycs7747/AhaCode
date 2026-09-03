@@ -249,8 +249,9 @@ class PlanRun:
         )
         out = storage.result_path(plan)
         storage.write_result(
-            out, plan=plan, session_id=app.session_path.stem, items=items,
-            summary=summary, complete=not left,
+            out, plan=plan, session_id=app.session_path.stem,
+            steps=[f"{plan_tool.mark(it.get('status'))} {it.get('content', '')}" for it in items],
+            done=self.finished_steps(panel), summary=summary,
         )
         if left:
             await app._say_system(

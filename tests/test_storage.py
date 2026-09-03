@@ -174,16 +174,14 @@ def test_result_file_sits_beside_the_plan_and_snapshots_the_checklist(tmp_path):
     plan = tmp_path / "plans" / "s1.md"
     out = storage.result_path(plan)
     assert out == tmp_path / "plans" / "s1.result.md"
-    storage.write_result(out, plan=plan, session_id="s2", complete=False, summary="halfway",
-                         items=[{"content": "a", "status": "done"}, {"content": "b", "status": "in_progress"},
-                                {"content": "c", "status": "cancelled"}, {"content": "d"}])
+    storage.write_result(out, plan=plan, session_id="s2", summary="halfway",
+                         steps=["☑ a", "▶ b", "✗ c", "☐ d"], done=2)
     text = out.read_text(encoding="utf-8")
     assert text.startswith("# 진행 중 2/4 — s1.md\n")
     assert "- session: s2" in text
     assert "☑ a\n▶ b\n✗ c\n☐ d" in text
     assert "## Latest summary\n\nhalfway" in text
-    storage.write_result(out, plan=plan, session_id="s2", complete=True, summary="",
-                         items=[{"content": "a", "status": "done"}])
+    storage.write_result(out, plan=plan, session_id="s2", summary="", steps=["☑ a"], done=1)
     assert out.read_text(encoding="utf-8").startswith("# 완료 — s1.md\n")
 
 

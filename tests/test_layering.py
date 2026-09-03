@@ -108,23 +108,12 @@ def test_widgets_never_import_the_app():
     assert not bad, "a widget reached back into the app:\n  " + "\n  ".join(bad)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="storage.py:384 imports ahacode.tools.plan from inside a function to "
-           "dodge the cycle. The fix is to move the plan DATA MODEL out of the "
-           "tool layer (plan_model.py); then drop this marker.",
-)
 def test_storage_does_not_import_the_tool_layer():
-    """Persistence sits UNDER the tools, not beside them.
-
-    A local import inside a function still IS the dependency — it only hides
-    when the cycle would be noticed. Counting it is the point.
-    """
-    top_level = [
+    """Persistence sits UNDER the tools, not beside them — a local import inside a
+    function counts too."""
+    bad = [
         f"storage.py:{line} imports {mod}"
         for mod, line in _imports(SRC / "storage.py")
         if mod.startswith("ahacode.tools")
     ]
-    assert not top_level, (
-        "storage imports the tool layer at load:\n  " + "\n  ".join(top_level)
-    )
+    assert not bad, "storage imports the tool layer:\n  " + "\n  ".join(bad)

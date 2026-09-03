@@ -267,17 +267,22 @@ def result_path(plan: Path) -> Path:
 
 
 def write_result(
-    path: Path, *, plan: Path, session_id: str, items: list[dict], summary: str,
-    complete: bool,
+    path: Path, *, plan: Path, session_id: str, steps: list[str], done: int, summary: str,
 ) -> None:
-    """Snapshot an impl session's progress beside its plan — rewritten after every
-    turn, so the file always says where the plan stands (the checklist exactly as
-    the model declared it, plus its latest summary). Kept apart from the plan so
-    the plan stays the baseline a review compares the work against."""
-    from ahacode.tools.plan import mark  # local: storage must not import the tool layer at load
+    """Snapshot an impl session's progress beside its plan.
 
-    done = sum(1 for it in items if it.get("status") in ("done", "cancelled"))
-    head = "완료" if complete else f"진행 중 {done}/{len(items)}"
+    Rewritten after every turn, so the file always says where the plan stands. Kept
+    apart from the plan so the plan stays the baseline a review compares against.
+
+    Args:
+        path: The result file (see result_path).
+        plan: The plan file the session is carrying out.
+        session_id: The impl session's id.
+        steps: The checklist, one rendered line per step (glyph + text).
+        done: How many of `steps` are finished.
+        summary: The model's latest answer, or "".
+    """
+    head = "완료" if done == len(steps) else f"진행 중 {done}/{len(steps)}"
     lines = [
         f"# {head} — {plan.name}",
         "",
@@ -286,7 +291,7 @@ def write_result(
         "",
         "## Steps",
         "",
-        *[f"{mark(it.get('status'))} {it.get('content', '')}" for it in items],
+        *steps,
     ]
     if summary:
         lines += ["", "## Latest summary", "", summary]
