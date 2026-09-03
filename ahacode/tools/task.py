@@ -1,18 +1,8 @@
-"""task: delegate a subtask to a fresh sub-agent and return its result.
+"""task: delegate a subtask to a fresh sub-agent.
 
-Sub-agent-as-a-tool: spawning a child agent is exposed to the model as one ordinary
-tool call, so it rides the existing native tool-calling path with no special
-machinery in the loop. This tool is a thin shim —
-it hands the delegated prompt to ctx.run_subagent (filled in by the app, which owns
-the child session file + nested rendering) and returns whatever the child concluded;
-the loop injects that back as this call's result.
-
-Three guards, per the design discussion:
-- wants_ctx=True — unlike read/bash, it needs the running context to spawn a child.
-- requires_approval=True — each spawn is gated by the human (defense against runaway
-  delegation); auto-approve bypasses it like any other tool.
-- offered only where depth < subagent_depth (the app builds the registry via
-  tools.registry_for), so a child at the limit cannot recurse.
+A thin shim over ctx.run_subagent, which the app fills in. Approval-gated, and
+offered only while depth < subagent_depth (see tools.registry_for), so a child at
+the limit cannot recurse.
 """
 
 from __future__ import annotations
@@ -21,9 +11,7 @@ from ahacode.tools.base import Tool
 
 
 def _task(args: dict, ctx) -> str:
-    # ctx is the AgentContext the loop forwards; without a run_subagent (e.g. a bare
-    # unit test, or a context that doesn't support spawning) fail soft so the model
-    # sees an error rather than the agent crashing.
+    """Hand the prompt to the running context; fail soft without one."""
     if ctx is None or getattr(ctx, "run_subagent", None) is None:
         return "error: sub-agents are not available in this context"
     return ctx.run_subagent(args["prompt"], args.get("description", ""))
@@ -32,10 +20,6 @@ def _task(args: dict, ctx) -> str:
 TASK = Tool(
     name="task",
     description=(
-        # The model decides, judging independence by two axes — different files, and
-        # results that do not depend on each other. The harness supplies the
-        # parallelism (several task calls in one turn run concurrently) and this
-        # rule tells the model when to use it.
         "Delegate a self-contained subtask to a fresh sub-agent. Use it for work that "
         "is INDEPENDENT of your other work: a different file, and a result that does "
         "not depend on another task's output. Launch several at once by putting "
@@ -59,7 +43,7 @@ TASK = Tool(
         "required": ["prompt"],
     },
     execute=_task,
-    requires_approval=True,  # each spawn is gated by the human
-    wants_ctx=True,          # needs the running context to spawn a child
-    parallelizable=True,     # a fan-out of task calls runs concurrently
+    requires_approval=True,
+    wants_ctx=True,
+    parallelizable=True,  # a fan-out of task calls runs concurrently
 )

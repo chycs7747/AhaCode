@@ -1,9 +1,4 @@
-"""glob: find files by path pattern, newest first (read-only, no approval needed).
-
-The "where is it?" half of navigating a codebase: `**/*.py`, `ahacode/**/test_*.py`.
-Results are ordered by modification time descending, so the files a task is actually
-about surface first.
-"""
+"""glob: find files by path pattern, newest first."""
 
 from __future__ import annotations
 
@@ -11,21 +6,17 @@ from ahacode import workspace
 from ahacode.tools.base import Tool
 from ahacode.tools.walk import iter_files
 
-_MAX_RESULTS = 200  # guard rail so one search can't flood the model's context
+_MAX_RESULTS = 200  # so one search cannot flood the model's context
 
 
 def _glob(args: dict) -> str:
+    """List the matches as project-relative posix paths, newest first."""
     root = workspace.resolve_path(args["path"]) if args.get("path") else workspace.PROJECT_ROOT
     matches = [p for p in iter_files(root, args["pattern"]) if p.is_file()]
-    # Newest first: recency is the best cheap proxy for "relevant to this task".
-    matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)  # recency ≈ relevance
 
     shown = matches[:_MAX_RESULTS]
-    # Report paths relative to the project root — that's how the model refers to
-    # them everywhere else (and what `read` accepts straight back).
-    # as_posix, not str: on Windows str() yields ahacode\agent.py, and the model then
-    # echoes backslashes back into bash — where they are escape characters, not
-    # separators. Forward slashes are accepted as paths on every platform.
+    # as_posix: the model feeds these paths back into bash, where a backslash escapes.
     lines = [p.relative_to(workspace.PROJECT_ROOT).as_posix() if p.is_relative_to(workspace.PROJECT_ROOT) else str(p)
              for p in shown]
     if len(matches) > len(shown):
@@ -55,5 +46,5 @@ GLOB = Tool(
         "required": ["pattern"],
     },
     execute=_glob,
-    parallelizable=True,  # pure read, no side effects — safe to batch in one turn
+    parallelizable=True,
 )

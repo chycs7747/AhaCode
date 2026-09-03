@@ -1,26 +1,26 @@
-"""read: return the contents of a text file (read-only, no approval needed)."""
+"""read: the contents of a text file, paged with offset/limit."""
 
 from __future__ import annotations
 
 from ahacode import workspace
 from ahacode.tools.base import Tool
 
-_MAX_LINES = 2000  # guard rail so one read can't flood the model's context
+_MAX_LINES = 2000  # so one read cannot flood the model's context
 
 
 def _read(args: dict) -> str:
+    """Read a window of lines, telling the model when the file continues."""
     target = workspace.resolve_path(args["path"])
-    # utf-8 explicit: the platform default may differ (cp949 on Korean Windows).
     lines = target.read_text(encoding="utf-8").splitlines()
 
-    offset = int(args.get("offset", 1))  # 1-indexed, like an editor's line numbers
+    offset = int(args.get("offset", 1))  # 1-indexed, like an editor
     start = max(offset - 1, 0)
     limit = int(args.get("limit", _MAX_LINES))
     window = lines[start : start + min(limit, _MAX_LINES)]
 
     body = "\n".join(window)
     shown_end = start + len(window)
-    if shown_end < len(lines):  # tell the model the file continues
+    if shown_end < len(lines):
         body += f"\n... ({len(lines) - shown_end} more lines; use offset={shown_end + 1})"
     return body or "(empty file)"
 
@@ -41,5 +41,5 @@ READ = Tool(
         "required": ["path"],
     },
     execute=_read,
-    parallelizable=True,  # pure read, no side effects — safe to batch in one turn
+    parallelizable=True,
 )

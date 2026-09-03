@@ -1,11 +1,8 @@
-"""bash: run a shell command in the project root. requires_approval=True — an
-approved command runs with the user's own privileges.
+"""bash: run a shell command in the project root.
 
-Danger filtering: a command is split
-on chain operators (&&, ||, ;, |, &, newlines) and each sub-command is matched
-against a denylist of catastrophic patterns. A match hard-blocks the call before
-it can even be offered for approval. This is defense in depth, NOT a guarantee —
-a denylist can be worded around; the real safeguard is the human approval modal.
+Approval-gated, with a denylist of catastrophic commands checked first. The
+denylist is defense in depth, not a guarantee: the approval modal is the real
+safeguard.
 """
 
 from __future__ import annotations
@@ -20,12 +17,10 @@ from ahacode.tools.base import Tool, clamp_timeout
 # The default timeout lives in config; a call may ask for more, up to this ceiling.
 MAX_TIMEOUT = 600
 
-# A command is split into sub-commands before each one is checked, so that
-# `ls && rm -rf /` cannot slip a dangerous half past the check.
+# Chain operators; each sub-command is checked on its own.
 _CHAIN = re.compile(r"&&|\|\||[;|&\n]")
 
-# Only clearly catastrophic, system-wrecking patterns. Deliberately small:
-# everything else still goes through the approval modal.
+# Only clearly catastrophic patterns; everything else goes through approval.
 _DENYLIST: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\brm\b.*\s-\w*[rf]\w*.*\s(/|~|/\*|\$HOME)(\s|/|$)"),
      "recursive/force delete targeting / or ~"),
@@ -40,18 +35,23 @@ _DENYLIST: list[tuple[re.Pattern, str]] = [
 def split_chain(command: str) -> list[str]:
     """Break a command line into its chained sub-commands.
 
-    Public because the allow-rules use it too: an allowlist that matched the whole
-    line would let a dangerous half ride in behind an allowed first command."""
+    Public because the allow rules use it too: matching the whole line would let a
+    dangerous half ride in behind an allowed first command.
+
+    Args:
+        command: The shell command.
+
+    Returns:
+        The non-empty sub-commands, stripped.
+    """
     return [part.strip() for part in _CHAIN.split(command) if part.strip()]
 
 
 def _check_dangerous(args: dict) -> str | None:
-    """Return a block reason if the denylist matches, else None.
+    """The denylist reason for a command, or None when it is allowed through.
 
-    Checked against the whole command *and* each chained sub-command: the whole
-    line catches patterns that span operators (a fork bomb uses ; | &), while the
-    per-sub-command pass means a dangerous half of `ls && rm -rf /` cannot hide
-    behind a harmless first command.
+    Checked against the whole line (a fork bomb spans operators) and against each
+    sub-command (so `ls && rm -rf /` cannot hide behind a harmless first half).
     """
     command = args.get("command", "")
     for segment in (command, *split_chain(command)):
@@ -62,21 +62,15 @@ def _check_dangerous(args: dict) -> str | None:
 
 
 def _bash(args: dict) -> str:
+    """Run the command, killing its whole process tree on timeout."""
     seconds = clamp_timeout(args.get("timeout"), config.load().bash_timeout, MAX_TIMEOUT)
-    # The model writes ordinary shell (pipes, globs), stderr folds into stdout so it
-    # sees errors too, and the command gets its own process group so a timeout can
-    # kill the whole tree. Which shell that is — and how to kill it — is per-platform;
-    # shell.py owns that.
     proc = shell.popen(args["command"], cwd=workspace.PROJECT_ROOT)
     try:
         out, _ = proc.communicate(timeout=seconds)
         return _finish(out, proc.returncode)
     except subprocess.TimeoutExpired:
         shell.kill_tree(proc)
-        # Keep what it managed to produce. Discarding it tells the model nothing about
-        # how far the command got — which is the one thing that makes a timeout
-        # actionable (a suite that printed 200 passing lines before being killed is
-        # very different from one that printed nothing).
+        # Keep the partial output: it tells the model how far the command got.
         out, _ = proc.communicate()
         out += (
             f"\n[timed out after {seconds}s and was killed — the output above is "
@@ -88,9 +82,7 @@ def _bash(args: dict) -> str:
 
 def _finish(out: str | None, returncode: int | None) -> str:
     """Spill if oversized, note a failing exit code, and hand back the text."""
-    # communicate() hands back None for a pipe whose reader thread died. shell.py
-    # fixes the cause (a locale-decoding crash on non-ASCII output); this makes the
-    # symptom a turn that says "(no output)" rather than one that raises.
+    # communicate() hands back None for a pipe whose reader thread died.
     out = spill.preview(out or "", prefix="bash", noun="output")
     if returncode:
         out += f"\n(exit code {returncode})"
@@ -115,6 +107,6 @@ BASH = Tool(
         "required": ["command"],
     },
     execute=_bash,
-    requires_approval=True,   # arbitrary command -> confirm before running
-    validate=_check_dangerous,  # catastrophic patterns are hard-blocked before that
+    requires_approval=True,
+    validate=_check_dangerous,
 )

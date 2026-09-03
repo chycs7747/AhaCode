@@ -1,47 +1,41 @@
-"""Shared file traversal for the search tools (grep, glob).
-
-Both tools need the same thing: walk the project, but never wander into the
-directories that would drown a search — a virtualenv, a vendored clone, a build
-cache. Kept in one module so the skip rules can't drift between them.
-"""
+"""Shared file traversal for grep and glob, with one skip list so the two cannot drift."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
 
-# Directories that are never worth searching: caches, build output, and vendored
-# third-party source (a search hit inside a dependency is noise, and one clone can
-# outweigh the whole project). Every dot-directory is skipped too — that covers
-# .git/.venv/.pytest_cache without naming each one.
+# Directories never worth searching: caches, build output, vendored source. Every
+# dot-directory is skipped too, which covers .git, .venv and .ahacode.
 SKIP_DIRS = {
     "__pycache__", "node_modules", "venv", "dist", "build", "target",
-    "reference",  # vendored reference clones, like node_modules for this project
-    "sessions",   # private conversation transcripts; never search them
+    "reference",  # vendored reference clones
+    "sessions",  # private transcripts
 }
 
-# A file bigger than this is data, not source — reading it would stall the search.
+# A file bigger than this is data, not source.
 MAX_FILE_BYTES = 2_000_000
 
 
 def is_skipped_dir(name: str) -> bool:
-    """Should traversal refuse to descend into a directory of this name?"""
+    """Whether traversal refuses to descend into a directory of this name."""
     return name in SKIP_DIRS or name.startswith(".")
 
 
 def iter_files(root: Path, pattern: str = "**/*") -> Iterator[Path]:
-    """Yield files under `root` matching a glob pattern, skipping the noise dirs.
+    """Yield the paths under `root` matching a glob pattern, skipping noise directories.
 
-    A `root` that is itself a file yields that one file, so a tool can be pointed
-    straight at a single path.
+    The skip list applies to directories discovered while walking, never to `root`
+    itself, so an explicit search inside a skipped directory still works. A `root`
+    that is a file yields that one file, so a tool can be pointed at a spilled log.
 
-    The skip list applies to directories *discovered* while walking, never to
-    `root` itself — so an explicit search inside e.g. reference/ still works, while
-    a project-wide search never wanders in.
+    Args:
+        root: The directory (or file) to search.
+        pattern: A glob pattern relative to `root`.
+
+    Returns:
+        The matching files and directories.
     """
-    # A file as the root yields just that file: Path.glob on a non-directory quietly
-    # returns nothing, which would make `grep(path=<a file>)` silently find zero
-    # matches. Spilled tool output is exactly that case.
     if root.is_file():
         yield root
         return
@@ -57,11 +51,14 @@ def iter_files(root: Path, pattern: str = "**/*") -> Iterator[Path]:
 
 
 def read_text_or_none(path: Path) -> str | None:
-    """A file's text, or None when it isn't searchable text.
+    """A file's text, when it is searchable text.
 
-    Binary files raise UnicodeDecodeError on decode — that IS the binary test here,
-    rather than guessing from the extension. Unreadable files (permissions, a
-    dangling symlink) are skipped the same way: a search must not crash on one file.
+    Args:
+        path: The file.
+
+    Returns:
+        The text, or None for a binary (a decode error is the binary test),
+        oversized or unreadable file.
     """
     try:
         if path.stat().st_size > MAX_FILE_BYTES:

@@ -1,8 +1,4 @@
-"""edit: replace a unique snippet in an existing file.
-
-Like Claude Code's Edit: the old_string must match exactly once, so
-the change is unambiguous — 0 matches or >1 matches are errors that push the model
-to supply more context. requires_approval=True (it changes the filesystem)."""
+"""edit: replace a snippet that appears exactly once in a file; approval-gated."""
 
 from __future__ import annotations
 
@@ -11,6 +7,12 @@ from ahacode.tools.base import Tool
 
 
 def _edit(args: dict) -> str:
+    """Replace old_string with new_string.
+
+    Raises:
+        ValueError: When old_string is absent or ambiguous, so the model supplies
+            more context.
+    """
     target = workspace.resolve_path(args["path"])
     text = target.read_text(encoding="utf-8")
     old, new = args["old_string"], args["new_string"]

@@ -1,9 +1,5 @@
-"""todo_write: record a structured plan (task list). Read-only in effect — it
-just formats the steps back as a checklist, so it is safe in plan mode.
-
-Stateless by design: like Claude Code's TodoWrite, the model sends the whole list
-each time and we render it fresh. No shared-state mutation from the worker thread,
-so no ctx is needed (that seam is deferred until subagents require it)."""
+"""todo_write: the model's checklist, and the plan vocabulary every consumer
+derives from (statuses, glyphs, the executability heuristic)."""
 
 from __future__ import annotations
 
@@ -12,30 +8,31 @@ import re
 
 from ahacode.tools.base import Tool
 
-# The plan vocabulary, defined ONCE. Three places used to spell it out separately —
-# this dict, the same dict again in widgets/todo_panel.py, and the schema's enum below
-# — so a fourth status (or a changed glyph) had to be added in three files and would
-# silently disagree if it was not. Everything downstream is derived from here: the
-# marks, the enum the model is allowed to send, the default, and the terminal state.
+# The plan vocabulary, defined once: the tool's schema, the pinned panel and the
+# result file all derive from it.
 STATUS_MARKS = {
     "pending": "☐",
     "in_progress": "▶",
     "done": "☑",
-    "cancelled": "✗",   # no longer needed — distinct from done, so a plan stays honest
+    "cancelled": "✗",  # no longer needed; distinct from done so a plan stays honest
 }
-STATUSES = tuple(STATUS_MARKS)      # the enum the tool advertises, in display order
-PENDING, IN_PROGRESS, DONE, CANCELLED = STATUSES  # named keys, so no caller spells them literally
+STATUSES = tuple(STATUS_MARKS)  # the enum the tool advertises, in display order
+PENDING, IN_PROGRESS, DONE, CANCELLED = STATUSES
 FINISHED = frozenset({DONE, CANCELLED})  # states that need no more work
 
 
 def coerce_items(raw) -> tuple[list[dict], str]:
     """Normalise whatever the model sent as `items` into [{content, status}, …].
 
-    Returns (items, note). Seen in the wild: the list JSON-encoded a second time
-    (so `items` arrives as ONE string — iterating it made a checklist of single
-    characters), and bare strings instead of {content} objects. Both are
-    recovered; the note tells the model the shape it should have sent, and is
-    empty when nothing needed fixing.
+    Repairs the shapes models do send: the list JSON-encoded a second time (one
+    string), a single object, and bare strings instead of objects.
+
+    Args:
+        raw: The tool argument as received.
+
+    Returns:
+        (items, note); the note tells the model the shape it should have sent, and
+        is "" when nothing needed fixing.
     """
     note = ""
     if isinstance(raw, str):
@@ -62,19 +59,19 @@ def coerce_items(raw) -> tuple[list[dict], str]:
 
 
 def unfinished(items: list[dict]) -> list[dict]:
-    """The items still owed: not done, not cancelled."""
+    """The items still owed: neither done nor cancelled."""
     return [it for it in items if it.get("status", PENDING) not in FINISHED]
 
 
 def mark(status: str | None) -> str:
-    """The glyph for a status; an unknown or missing one reads as not-started."""
+    """The glyph for a status; an unknown or missing one reads as pending."""
     return STATUS_MARKS.get(status or PENDING, STATUS_MARKS[PENDING])
+
 
 # --- executability check ---------------------------------------------------
 # A plan step is carried out by a session whose only way to finish it is a tool
 # call, so a step must read as a DOING step: imperative verb first in English, last
-# in Korean. A heuristic that only ever warns — an unlisted verb costs one line of
-# text, never a blocked run.
+# in Korean. A heuristic that only ever warns.
 _EN_VERBS = frozenset("""
 add benchmark build check clean commit compare compute confirm convert create delete
 deploy design document draft drop ensure extend extract find fix generate handle
@@ -84,7 +81,6 @@ run save scan set setup show simplify solve split test time trace update upgrade
 validate verify wire write
 """.split())
 
-# Korean is verb-final: the step ends in the action ("solution() 작성", "예시 4개 검증").
 _KO_TAIL = re.compile(
     r"(작성|구현|실행|검증|확인|측정|수정|추가|삭제|제거|정리|테스트|분석|비교|배포|생성|변경|리팩터|정의"
     r"|출력|print|반환|저장|계산|호출|등록|설치|적용|표시|기록|로드)"
@@ -94,27 +90,25 @@ _HANGUL = re.compile(r"[가-힣]")
 
 
 def non_actionable(step: str) -> bool:
-    """True if `step` does not read as something a sub-agent could carry out.
+    """Whether a step reads as a topic rather than a task.
 
-    Imperative English starts with the verb; Korean ends with it. Anything else — a
-    bare noun phrase ("Algorithm: …", "Performance: …"), a formula, a statement — is
-    a topic, not a task.
+    Args:
+        step: The step text.
+
+    Returns:
+        True when the step neither starts with an English verb nor ends with a
+        Korean one (a trailing parenthetical or a ": detail" tail is ignored).
     """
     text = step.strip()
     if not text:
         return True
     if _HANGUL.search(text):
-        # A trailing parenthetical is detail, not the action: "solution() 작성 (루트
-        # 탐색…)" is verb-final once the aside is dropped. Strip repeatedly so nested
-        # or stacked asides all come off.
         core = text
         while True:
             stripped = re.sub(r"\s*[(（][^()（）]*[)）]\s*$", "", core)
             if stripped == core:
                 break
             core = stripped
-        # "엣지 케이스 검증: k=1, k=n" — the verb ends the head clause and the colon
-        # introduces detail, so accept a verb-final head too.
         head = core.split(":")[0].strip()
         return not (_KO_TAIL.search(core) or _KO_TAIL.search(head))
     first = re.split(r"[^A-Za-z]+", text.lower(), maxsplit=1)[0]
@@ -122,6 +116,7 @@ def non_actionable(step: str) -> bool:
 
 
 def _todo_write(args: dict) -> str:
+    """Render the checklist back as the tool's result."""
     items, note = coerce_items(args.get("items", []))
     if not items:
         return f"(empty plan){' — ' + note if note else ''}"
@@ -132,12 +127,8 @@ def _todo_write(args: dict) -> str:
 TODO_WRITE = Tool(
     name="todo_write",
     description=(
-        # Where the "plan first" nudge lives. Deliberately here and not in the
-        # always-on system prompt: attached to the tool, the model reads it while
-        # deciding to call this, instead of it biasing every atomic question.
-        # The status discipline is the model's contract with the checklist the user
-        # is watching — the panel shows exactly what the model declares, so a step
-        # marked done on intent is a lie on screen.
+        # The "plan first" nudge lives on the tool rather than in the always-on
+        # prompt, so it does not bias every atomic question.
         "Record or update the task list. Send the full list each time. If the work "
         "splits into three or more steps, lay it out here BEFORE making any change.\n"
         "Status rules: pending → in_progress → done, or cancelled if no longer needed. "
@@ -158,8 +149,6 @@ TODO_WRITE = Tool(
                     "properties": {
                         "content": {
                             "type": "string",
-                            # The shape is enforced here as well as in PLAN_SYSTEM: the
-                            # model reads this while filling the argument in.
                             "description": (
                                 "One EXECUTABLE step, imperative: a verb plus a concrete "
                                 "artifact or checkable outcome (\"Write solver.py with "
@@ -169,7 +158,7 @@ TODO_WRITE = Tool(
                         },
                         "status": {
                             "type": "string",
-                            "enum": list(STATUSES),  # derived, never re-typed
+                            "enum": list(STATUSES),
                         },
                     },
                     "required": ["content"],

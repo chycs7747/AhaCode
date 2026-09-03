@@ -1,17 +1,9 @@
-"""plan_submit: the model declares its plan finished and hands it to the user.
+"""plan_submit: the model declares its plan finished.
 
-The plan-mode counterpart of attempt_completion: an explicit "I am done planning"
-signal, so the harness knows the exact moment to open the approval gate instead
-of guessing from the shape of a todo list. The harness — not the model — writes
-the plan file (plans/{session}.md) from the tool's arguments, so there is nothing
-to verify on disk: a successful call IS the file.
-
-Only an EMPTY plan is refused. Steps that do not read as executable are accepted
-and named in the result as a note: the check is a word-list heuristic, and as a
-hard gate it rejected a perfectly good Korean step three times in a row (it ended
-in "print"). The human reading the gate card is the real validator.
-Offered in plan mode only; a sub-agent never sees it — approval is the root
-session's to ask for.
+The harness writes plans/{session}.md from the arguments and opens the approval
+gate. Only an empty plan is refused; steps that do not read as executable are
+noted rather than rejected, because the check is a heuristic. Offered in plan
+mode only, never to a sub-agent.
 """
 
 from __future__ import annotations
@@ -26,23 +18,34 @@ class PlanRejected(ValueError):
 
 
 def _clean(items) -> list[str]:
-    """Steps as a plain list of strings, repairing the shapes todo_write also sees:
-    a list JSON-encoded a second time (arrives as ONE string — iterating it made a
-    289-"step" plan of single characters), or bare/typed items. Reuses coerce_items
-    so the two tools normalise identically."""
+    """Steps as plain strings, normalised the same way todo_write normalises items."""
     normalised, _ = coerce_items(items)
     return [it["content"] for it in normalised]
 
 
 def check(steps: list[str]) -> str | None:
-    """Why `steps` cannot be accepted at all, or None if it can."""
+    """Why `steps` cannot be accepted at all.
+
+    Args:
+        steps: The cleaned steps.
+
+    Returns:
+        The reason, or None when the plan is acceptable.
+    """
     if not steps:
         return "steps is empty. Lay out the executable steps of the plan."
     return None
 
 
 def note(steps: list[str]) -> str:
-    """A soft warning naming steps that may not be executable ("" if none)."""
+    """A soft warning naming steps that may not be executable.
+
+    Args:
+        steps: The cleaned steps.
+
+    Returns:
+        The note, or "" when every step reads as a task.
+    """
     vague = [(i, s) for i, s in enumerate(steps, 1) if non_actionable(s)]
     if not vague:
         return ""
@@ -54,10 +57,9 @@ def note(steps: list[str]) -> str:
 
 
 def _plan_submit(args: dict, ctx) -> str:
+    """Write the plan file for the session in `ctx` and report where it went."""
     steps = _clean(args.get("steps"))
     problem = check(steps)
-    # steps is required and the model must send an array; if it sent something we
-    # could not turn into any step, say so rather than saving an empty plan.
     if problem:
         raise PlanRejected(problem)
     session_path = getattr(ctx, "session_path", None)

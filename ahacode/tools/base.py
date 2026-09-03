@@ -1,8 +1,5 @@
-"""The tool contract: a name, a JSON-Schema parameter spec, and an execute()
-callable. Concrete tools live in their own modules (read.py, bash.py, ...) and
-are assembled in __init__.py (one file per tool + an index). A tool is a *value*
-of this dataclass, never a subclass, so adding one never touches this file.
-"""
+"""The tool contract. A tool is a value of this dataclass, never a subclass, so
+adding one never touches this file."""
 
 from __future__ import annotations
 
@@ -16,18 +13,13 @@ class Tool:
 
     name: str
     description: str
-    parameters: dict  # JSON Schema describing the arguments object
+    parameters: dict  # JSON Schema for the arguments object
     execute: Callable[[dict], str]
-    # Tools with side effects (bash, write) must be confirmed before they run.
-    requires_approval: bool = False
-    # Optional safety gate, checked *before* approval: return a reason to hard-block
-    # the call (it never runs, never prompts), or None to allow it through.
+    requires_approval: bool = False  # side effects: confirmed before it runs
+    # A safety gate checked before approval: a reason hard-blocks the call.
     validate: Callable[[dict], str | None] | None = None
-    # A tool that spawns a sub-agent (task) needs the running context, so the loop
-    # calls execute(args, ctx) instead of execute(args). Plain tools leave this False.
-    wants_ctx: bool = False
-    # A turn's tool calls run in parallel only when EVERY runnable tool is
-    # parallelizable — safe for delegation (task), off for side-effecting tools.
+    wants_ctx: bool = False  # the loop calls execute(args, ctx) instead of execute(args)
+    # A turn's calls run in parallel only when every runnable tool allows it.
     parallelizable: bool = False
 
 

@@ -1,9 +1,4 @@
-"""grep: search file contents by regular expression (read-only, no approval needed).
-
-The "which file mentions this?" half of navigating a codebase. Output is
-`path:line:text`, the same reference form the system prompt asks the model to cite,
-so a hit can be handed straight to `read` — or clicked in the terminal.
-"""
+"""grep: search file contents by regular expression, reported as `path:line:text`."""
 
 from __future__ import annotations
 
@@ -13,14 +8,13 @@ from ahacode import workspace
 from ahacode.tools.base import Tool
 from ahacode.tools.walk import iter_files, read_text_or_none
 
-_MAX_MATCHES = 100    # guard rail so one search can't flood the model's context
-_MAX_LINE_CHARS = 300  # a minified/generated line must not blow up a whole result
+_MAX_MATCHES = 100  # so one search cannot flood the model's context
+_MAX_LINE_CHARS = 300  # a minified line must not blow up a whole result
 
 
 def _grep(args: dict) -> str:
-    # re.compile validates the pattern here, so a bad regex surfaces as a tool error
-    # the model can correct, rather than a traceback mid-walk.
-    regex = re.compile(args["pattern"])
+    """Search the files under the given root and list the matching lines."""
+    regex = re.compile(args["pattern"])  # a bad regex surfaces as a tool error here
     root = workspace.resolve_path(args["path"]) if args.get("path") else workspace.PROJECT_ROOT
     pattern = args.get("glob") or "**/*"
 
@@ -30,11 +24,10 @@ def _grep(args: dict) -> str:
     for path in iter_files(root, pattern):
         if not path.is_file():
             continue
-        text = read_text_or_none(path)  # None for binary/oversized/unreadable
+        text = read_text_or_none(path)
         if text is None:
             continue
-        # as_posix so a Windows result reads ahacode/grep.py, not ahacode\grep.py —
-        # the model feeds these paths straight back into read() and into bash.
+        # as_posix: the model feeds these paths back into bash, where a backslash escapes.
         name = path.relative_to(workspace.PROJECT_ROOT).as_posix() if path.is_relative_to(workspace.PROJECT_ROOT) else str(path)
         matched_here = False
         for lineno, line in enumerate(text.splitlines(), start=1):
@@ -84,5 +77,5 @@ GREP = Tool(
         "required": ["pattern"],
     },
     execute=_grep,
-    parallelizable=True,  # pure read, no side effects — safe to batch in one turn
+    parallelizable=True,
 )
