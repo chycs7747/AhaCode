@@ -55,7 +55,7 @@ def test_bash_spills_big_output_instead_of_discarding_it(tmp_path, monkeypatch):
     )
     assert out.startswith("[output was 80,0")     # the header stands in for the bulk
     assert "HEAD" in out and "TAIL" in out         # both ends survive in the preview
-    assert len(out) < bash_mod._PREVIEW_CHARS + 600
+    assert len(out) < spill.PREVIEW_CHARS + 600
 
     spilled = list((tmp_path / "s-out").glob("bash-*.txt"))
     assert len(spilled) == 1
@@ -187,16 +187,15 @@ def test_timeout_kills_the_whole_process_tree():
     assert leaked == set(), f"{len(leaked)} orphaned processes survived the timeout"
 
 
-def test_timeout_comes_from_config_and_a_call_may_raise_it(monkeypatch):
-    from dataclasses import replace
-
+def test_a_call_may_raise_its_timeout_within_the_cap():
     from ahacode.tools import bash as bash_mod
+    from ahacode.tools.base import clamp_timeout
 
-    monkeypatch.setattr(config, "load", lambda *a, **k: replace(config.DEFAULTS, bash_timeout=45))
-    assert bash_mod._resolve_timeout(None) == 45          # the configured default
-    assert bash_mod._resolve_timeout(90) == 90            # a call may ask for more
-    assert bash_mod._resolve_timeout("nonsense") == 45    # junk falls back
-    assert bash_mod._resolve_timeout(10_000) == bash_mod.MAX_TIMEOUT  # but is capped
+    cap = bash_mod.MAX_TIMEOUT
+    assert clamp_timeout(None, 45, cap) == 45        # nothing asked: the default
+    assert clamp_timeout(90, 45, cap) == 90          # a call may ask for more
+    assert clamp_timeout("nonsense", 45, cap) == 45  # junk falls back
+    assert clamp_timeout(10_000, 45, cap) == cap     # but is capped
 
 
 def test_default_timeout_clears_this_project_s_own_test_suite():

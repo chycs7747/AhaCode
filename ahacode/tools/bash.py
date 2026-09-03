@@ -14,25 +14,11 @@ import re
 import subprocess
 
 from ahacode import config, shell, workspace
-from ahacode.text import elide, line_count
 from ahacode.tools import spill
-from ahacode.tools.base import Tool
+from ahacode.tools.base import Tool, clamp_timeout
 
-# A hung command must not freeze the agent, but the cap has to clear the commands
-# an agent actually runs: this project's own test suite takes 55-75s, and it is the
-# first thing the prompt tells the model to do. The default lives in config; a call
-# may ask for more when it knows it is starting something slow.
-MAX_TIMEOUT = 600  # ceiling on what a single call may request
-# bash is the one tool whose output size nobody can predict — read pages with
-# offset/limit and grep caps its matches, but a command returns whatever it returns.
-# Past this, the full output is written to a file and only a preview comes back, so
-# the context stays small WITHOUT losing anything: the model reads or greps the file
-# for the part it actually needs.
-_SPILL_OVER_CHARS = 4_000
-_PREVIEW_CHARS = 2_000
-# If the spill file cannot be written we fall back to plain truncation, keeping both
-# ends — a build log's verdict is at the end, a listing's header at the start.
-_MAX_OUTPUT_CHARS = 30_000
+# The default timeout lives in config; a call may ask for more, up to this ceiling.
+MAX_TIMEOUT = 600
 
 # A command is split into sub-commands before each one is checked, so that
 # `ls && rm -rf /` cannot slip a dangerous half past the check.
@@ -75,18 +61,8 @@ def _check_dangerous(args: dict) -> str | None:
     return None
 
 
-def _resolve_timeout(requested) -> int:
-    """Seconds this call may run: what it asked for, clamped, else the configured default."""
-    if requested is None:
-        return config.load().bash_timeout
-    try:
-        return max(1, min(int(requested), MAX_TIMEOUT))
-    except (TypeError, ValueError):
-        return config.load().bash_timeout
-
-
 def _bash(args: dict) -> str:
-    seconds = _resolve_timeout(args.get("timeout"))
+    seconds = clamp_timeout(args.get("timeout"), config.load().bash_timeout, MAX_TIMEOUT)
     # The model writes ordinary shell (pipes, globs), stderr folds into stdout so it
     # sees errors too, and the command gets its own process group so a timeout can
     # kill the whole tree. Which shell that is — and how to kill it — is per-platform;
@@ -115,26 +91,10 @@ def _finish(out: str | None, returncode: int | None) -> str:
     # communicate() hands back None for a pipe whose reader thread died. shell.py
     # fixes the cause (a locale-decoding crash on non-ASCII output); this makes the
     # symptom a turn that says "(no output)" rather than one that raises.
-    out = out or ""
-    if len(out) > _SPILL_OVER_CHARS:
-        out = _spilled(out)
+    out = spill.preview(out or "", prefix="bash", noun="output")
     if returncode:
         out += f"\n(exit code {returncode})"
     return out.strip() or "(no output)"
-
-
-def _spilled(out: str) -> str:
-    """Save the full output and return the header + preview that stands in for it."""
-    path = spill.write(out, prefix="bash")
-    if path is None:  # no place to write it — degrade to the old truncation
-        return elide(out, _MAX_OUTPUT_CHARS)
-    where = workspace.display_path(path)
-    header = (
-        f"[output was {len(out):,} chars / {line_count(out):,} lines — saved in full to {where}\n"
-        f" read it with read(path=\"{where}\", offset=…, limit=…), "
-        f"or search it with grep(pattern=…, path=\"{where}\")]\n"
-    )
-    return header + elide(out, _PREVIEW_CHARS)
 
 
 BASH = Tool(

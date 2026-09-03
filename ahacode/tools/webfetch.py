@@ -23,10 +23,8 @@ import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 
-from ahacode import workspace
-from ahacode.text import elide, line_count
 from ahacode.tools import spill
-from ahacode.tools.base import Tool
+from ahacode.tools.base import Tool, clamp_timeout
 
 # A real User-Agent: many servers answer the default urllib agent with 403.
 _UA = "AhaCode/1.0 (+https://github.com/chycs7747/AhaCode)"
@@ -39,12 +37,6 @@ _MAX_TIMEOUT = 120
 # Read at most this many bytes off the wire, so a giant download cannot exhaust
 # memory; the body is truncated (with a note) past it.
 _MAX_BYTES = 5 * 1024 * 1024
-
-# Same spill discipline as bash: past _SPILL_OVER_CHARS the full text goes to a
-# file and only a preview returns; if the file cannot be written, truncate instead.
-_SPILL_OVER_CHARS = 4_000
-_PREVIEW_CHARS = 2_000
-_MAX_OUTPUT_CHARS = 30_000
 
 
 class _TextExtractor(HTMLParser):
@@ -114,16 +106,6 @@ def _check_scheme(args: dict) -> str | None:
     return None
 
 
-def _resolve_timeout(requested) -> int:
-    """Seconds this fetch may take: what it asked for, clamped, else the default."""
-    if requested is None:
-        return _DEFAULT_TIMEOUT
-    try:
-        return max(1, min(int(requested), _MAX_TIMEOUT))
-    except (TypeError, ValueError):
-        return _DEFAULT_TIMEOUT
-
-
 def _fetch(url: str, timeout: int) -> tuple[str, str, bool]:
     """GET the URL and return (content-type, decoded body, truncated?). Decoding
     follows the response's charset, falling back to utf-8 with replacement so a
@@ -144,7 +126,7 @@ def _fetch(url: str, timeout: int) -> tuple[str, str, bool]:
 def _webfetch(args: dict) -> str:
     url = str(args.get("url", "")).strip()
     fmt = args.get("format", "text")
-    seconds = _resolve_timeout(args.get("timeout"))
+    seconds = clamp_timeout(args.get("timeout"), _DEFAULT_TIMEOUT, _MAX_TIMEOUT)
     try:
         ctype, body, truncated = _fetch(url, seconds)
     except urllib.error.HTTPError as exc:
@@ -161,7 +143,7 @@ def _webfetch(args: dict) -> str:
         text = body
     if truncated:
         text += f"\n[truncated at {_MAX_BYTES // 1024}KB — fetch a more specific URL for the rest]"
-    return _finish(text)
+    return spill.preview(text.strip() or "(empty response)", prefix="webfetch", noun="page")
 
 
 def _html_to_text(html: str) -> str:
@@ -169,23 +151,6 @@ def _html_to_text(html: str) -> str:
     parser.feed(html)
     parser.close()
     return parser.text()
-
-
-def _finish(text: str) -> str:
-    """Spill if oversized (like bash), else return the text; never empty."""
-    text = text.strip() or "(empty response)"
-    if len(text) <= _SPILL_OVER_CHARS:
-        return text
-    path = spill.write(text, prefix="webfetch")
-    if path is None:  # nowhere to spill — degrade to truncation
-        return elide(text, _MAX_OUTPUT_CHARS)
-    where = workspace.display_path(path)
-    header = (
-        f"[page was {len(text):,} chars / {line_count(text):,} lines — saved in full to {where}\n"
-        f" read it with read(path=\"{where}\", offset=…, limit=…), "
-        f"or search it with grep(pattern=…, path=\"{where}\")]\n"
-    )
-    return header + elide(text, _PREVIEW_CHARS)
 
 
 WEBFETCH = Tool(

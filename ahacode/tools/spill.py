@@ -20,7 +20,13 @@ import tempfile
 from pathlib import Path
 
 from ahacode import workspace
+from ahacode.text import elide, line_count
 
+# Past this many characters a result is written to a file and only a preview of
+# both ends comes back; with nowhere to write, it is elided in the middle instead.
+SPILL_OVER_CHARS = 4_000
+PREVIEW_CHARS = 2_000
+MAX_INLINE_CHARS = 30_000
 # The spilled file itself is capped too: an unbounded command (`yes`, a runaway
 # build log) must not be able to fill the disk.
 MAX_FILE_CHARS = 1_000_000
@@ -61,3 +67,29 @@ def write(text: str, prefix: str = "out") -> Path | None:
         return path
     except OSError:
         return None
+
+
+def preview(text: str, *, prefix: str, noun: str) -> str:
+    """Hand `text` back whole when it is small, else spill it and return a preview.
+
+    Args:
+        text: The full tool output.
+        prefix: The spill file's name prefix (the tool's name).
+        noun: What the header calls the text ("output", "page").
+
+    Returns:
+        The text itself; or a header naming the saved file plus both ends of the
+        text; or, when the file could not be written, the text elided in the middle.
+    """
+    if len(text) <= SPILL_OVER_CHARS:
+        return text
+    path = write(text, prefix=prefix)
+    if path is None:
+        return elide(text, MAX_INLINE_CHARS)
+    where = workspace.display_path(path)
+    header = (
+        f"[{noun} was {len(text):,} chars / {line_count(text):,} lines — saved in full to {where}\n"
+        f" read it with read(path=\"{where}\", offset=…, limit=…), "
+        f"or search it with grep(pattern=…, path=\"{where}\")]\n"
+    )
+    return header + elide(text, PREVIEW_CHARS)

@@ -29,3 +29,20 @@ class Tool:
     # A turn's tool calls run in parallel only when EVERY runnable tool is
     # parallelizable — safe for delegation (task), off for side-effecting tools.
     parallelizable: bool = False
+
+
+def clamp_timeout(requested, default: int, maximum: int) -> int:
+    """Seconds a call may run: what it asked for, clamped to [1, maximum].
+
+    Args:
+        requested: The call's own timeout argument, possibly missing or junk.
+        default: Used when `requested` is missing or not a number.
+        maximum: The ceiling a single call may ask for.
+
+    Returns:
+        The timeout in seconds.
+    """
+    try:
+        return max(1, min(int(requested), maximum))
+    except (TypeError, ValueError):
+        return default

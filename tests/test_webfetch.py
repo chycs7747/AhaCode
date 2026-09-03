@@ -4,7 +4,7 @@ directly."""
 
 import urllib.error
 
-from ahacode import tools
+from ahacode import tools, workspace
 from ahacode.tools import webfetch
 
 
@@ -84,11 +84,11 @@ def test_network_failure_comes_back_as_text(monkeypatch):
 def test_a_big_page_spills_to_a_file(monkeypatch, tmp_path):
     saved = tmp_path / "webfetch-1.txt"
     monkeypatch.setattr(webfetch.spill, "write", lambda text, prefix="out": saved)
-    monkeypatch.setattr(webfetch.workspace, "display_path", lambda p: "sessions/tool-output/webfetch-1.txt")
-    _stub_fetch(monkeypatch, "text/plain", "x" * (webfetch._SPILL_OVER_CHARS + 100))
+    monkeypatch.setattr(workspace, "display_path", lambda p: "sessions/tool-output/webfetch-1.txt")
+    _stub_fetch(monkeypatch, "text/plain", "x" * (webfetch.spill.SPILL_OVER_CHARS + 100))
     out = webfetch._webfetch({"url": "https://x/big"})
     assert "saved in full to sessions/tool-output/webfetch-1.txt" in out
-    assert len(out) < webfetch._SPILL_OVER_CHARS + 100  # only a preview came back
+    assert len(out) < webfetch.spill.SPILL_OVER_CHARS + 100  # only a preview came back
 
 
 # --- the tool contract -----------------------------------------------------------
