@@ -8,10 +8,11 @@ from ahacode.widgets.chatbox import Chatbox
 
 
 class ThinkingBlock(Collapsible):
-    """The 🤔 thinking block; reasoning deltas stream into an inner Chatbox."""
+    """The 🤔 thinking block; reasoning deltas stream into an inner Markdown
+    Chatbox, so code fences in the reasoning render as code blocks."""
 
     def __init__(self) -> None:
-        self._box = Chatbox("", role="thinking")
+        self._box = Chatbox("", role="thinking", markdown=True)
         super().__init__(self._box, title="🤔 thinking", collapsed=False)
 
     def append_chunk(self, chunk: str) -> None:
