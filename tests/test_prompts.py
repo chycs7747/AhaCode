@@ -74,3 +74,33 @@ def test_handoff_names_the_plan_file():
     """The impl session's first turn points at this session's plan, so the model
     reads the plan rather than reconstructing it."""
     assert "plans/x.md" in prompts.injected.handoff("plans/x.md")
+
+
+def test_handoff_carries_one_gap_policy():
+    """The impl session hears one rule for a plan that turns out wrong — hand it back
+    (stop) or rewrite its own checklist (adapt) — never both."""
+    stop = prompts.injected.handoff("plans/x.md")
+    adapt = prompts.injected.handoff("plans/x.md", gap=prompts.injected.GAP_ADAPT)
+    assert "plans/x.md" in stop and "plans/x.md" in adapt
+    assert "do not start any other step" in stop and "cancel" not in stop
+    assert "cancel" in adapt and "todo_write" in adapt
+    assert "do not start any other step" not in adapt
+
+
+def test_auto_continue_matches_the_policy_and_owns_no_status_rules():
+    """The status choreography lives on todo_write alone; the continue turn only says
+    which way to go when a step is stuck."""
+    stop = prompts.injected.auto_continue()
+    adapt = prompts.injected.auto_continue(gap=prompts.injected.GAP_ADAPT)
+    assert "stop" in stop and "cancel" not in stop
+    assert "cancel" in adapt and "stop" not in adapt
+    for text in (stop, adapt):
+        assert "in_progress" not in text
+
+
+def test_turn_cap_and_interruption_use_the_harness_vocabulary():
+    """A "step" is a plan step; the cap is on turns. The interruption notice is a plain
+    user turn like the others, with no tag of its own."""
+    assert "turn limit" in prompts.injected.MAX_TURNS
+    assert "step limit" not in prompts.injected.MAX_TURNS
+    assert not prompts.injected.INTERRUPTED.startswith("[")

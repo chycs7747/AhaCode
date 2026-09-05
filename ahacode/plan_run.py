@@ -277,4 +277,4 @@ class PlanRun:
         await app._say_system(
             f"▶ 자동 진행 {done}/{len(panel.items)} 완료{why} · 다음: {nxt} (Esc 로 중지)"
         )
-        await self._seed_turn(prompts.injected.AUTO_CONTINUE, show=False)
+        await self._seed_turn(prompts.injected.auto_continue(), show=False)

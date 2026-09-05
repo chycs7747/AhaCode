@@ -143,12 +143,12 @@ TODO_WRITE = Tool(
         # prompt, so it does not bias every atomic question.
         "Record or update the task list. Send the full list each time. If the work "
         "splits into three or more steps, lay it out here BEFORE making any change.\n"
-        "Status rules: pending → in_progress → done, or cancelled if no longer needed. "
+        "Status rules: pending → in_progress → done, or cancelled when a step is no "
+        "longer needed or cannot be done as written — append the reason to its content. "
         "Mark a step in_progress before starting it and keep exactly ONE in_progress "
         "while work remains. Mark done only after the work is actually complete, "
-        "including any verification it needs — never on intent. If a step is blocked "
-        "or only partly done, leave it in_progress and add a follow-up step that "
-        "names the blocker. Update in real time; do not batch completions."
+        "including any verification it needs — never on intent; a partly done step "
+        "stays in_progress. Update in real time; do not batch completions."
     ),
     parameters={
         "type": "object",

@@ -77,6 +77,9 @@ def test_cancelled_is_a_fourth_state_and_counts_as_finished():
 def test_todo_write_describes_the_status_discipline():
     desc = plan.TODO_WRITE.description
     assert "never on intent" in desc and "exactly ONE in_progress" in desc
+    # What a blocked step becomes is the session's policy (the handoff says), not the
+    # tool's: the tool only says what `cancelled` means.
+    assert "cannot be done as written" in desc and "follow-up" not in desc
     assert "cancelled" in plan.TODO_WRITE.parameters["properties"]["items"]["items"]["properties"]["status"]["enum"]
 
 
