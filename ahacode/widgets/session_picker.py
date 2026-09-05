@@ -14,7 +14,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
-from ahacode import storage, workspace
+from ahacode import storage
 
 _ICON = {"main": "🧠", "impl": "🛠", "subagent": "🤖"}
 _EDGE = {"handoff": "→", "delegate": "⑂"}  # the edge to the parent
@@ -206,7 +206,7 @@ class SessionPicker(ModalScreen[str | None]):
         row = self._renaming
         new = event.value.strip()
         if row is not None and new and new != (row.node.get("title") or ""):
-            storage.set_title(workspace.SESSIONS_DIR / f"{row.session_id}.jsonl", new)
+            storage.set_title(storage.session_file(row.session_id), new)
             row.node["title"] = new
             for s in self._sessions:
                 if s["id"] == row.session_id:

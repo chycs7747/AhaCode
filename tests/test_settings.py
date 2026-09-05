@@ -7,16 +7,14 @@ from textual.widgets import Button, ContentSwitcher, Input, Label, Select
 
 from ahacode import client, config
 from ahacode.app import AhaCodeApp
-from ahacode.events import TextDelta
 from ahacode.widgets.settings import Settings
 
 
-pytestmark = pytest.mark.usefixtures("offline_app")
+pytestmark = pytest.mark.usefixtures("offline_app", "one_word_answer")
 
 
 @pytest.fixture(autouse=True)
-def one_word_answer(monkeypatch):
-    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("hi")]))
+def default_config():
     config.save(config.DEFAULTS)
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from textual.widgets import Static
 
-from ahacode.tools.plan import FINISHED, coerce_items, mark, unfinished
+from ahacode.tools.plan import FINISHED, checklist_lines, coerce_items, unfinished
 
 
 class TodoPanel(Static):
@@ -68,9 +68,8 @@ class TodoPanel(Static):
         if self.collapsed:
             self._content = "✓ Plan complete" if done else self._summary()
         else:
-            lines = [f"{mark(it.get('status'))} {it['content']}" for it in self.items]
             header = "✓ Plan complete" if done else "▾ Plan"
-            self._content = "\n".join([header, *lines])
+            self._content = "\n".join([header, *checklist_lines(self.items)])
         self.update(self._content)
         self.display = True
         self.set_class(done, "todo-panel--done")

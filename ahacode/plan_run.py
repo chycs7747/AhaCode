@@ -227,7 +227,7 @@ class PlanRun:
             return
         left = panel.unfinished()
         parent = app.session_parent_id or app.session_path.stem
-        plan = storage.plan_path(workspace.SESSIONS_DIR / f"{parent}.jsonl")
+        plan = storage.plan_path(storage.session_file(parent))
         summary = next(
             (m["content"] for m in reversed(app.session.messages)
              if m.get("role") == "assistant" and m.get("content")), "",
@@ -235,7 +235,7 @@ class PlanRun:
         out = storage.result_path(plan)
         storage.write_result(
             out, plan=plan, session_id=app.session_path.stem,
-            steps=[f"{plan_tool.mark(it.get('status'))} {it.get('content', '')}" for it in items],
+            steps=plan_tool.checklist_lines(items),
             done=self.finished_steps(panel), summary=summary,
         )
         if left:

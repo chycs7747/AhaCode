@@ -8,11 +8,12 @@ from ahacode.widgets.chatbox import Chatbox
 
 
 class ThinkingBlock(Collapsible):
-    """The 🤔 thinking block; reasoning deltas stream into an inner Markdown
-    Chatbox, so code fences in the reasoning render as code blocks."""
+    """The 🤔 thinking block. Reasoning streams as plain text and is rendered as
+    Markdown once, when the block folds, so code fences in the reasoning show as
+    code blocks when a click reopens it."""
 
     def __init__(self) -> None:
-        self._box = Chatbox("", role="thinking", markdown=True)
+        self._box = Chatbox("", role="thinking")
         super().__init__(self._box, title="🤔 thinking", collapsed=False)
 
     def append_chunk(self, chunk: str) -> None:
@@ -20,5 +21,7 @@ class ThinkingBlock(Collapsible):
         self._box.append_chunk(chunk)
 
     def done(self) -> None:
-        """Fold the block away; a click on the title reopens it."""
+        """Fold the block away and render its text as Markdown; a click on the
+        title reopens it."""
+        self._box.set_markdown(True)
         self.collapsed = True

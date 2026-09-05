@@ -16,12 +16,7 @@ from ahacode.widgets.todo_panel import TodoPanel
 METRICS = {"prompt": 100, "gen": 10, "gen_seconds": 1.0, "ttft": 0.5, "model": "m"}
 
 
-pytestmark = pytest.mark.usefixtures("offline_app")
-
-
-@pytest.fixture(autouse=True)
-def one_word_answer(monkeypatch):
-    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("ok")]))
+pytestmark = pytest.mark.usefixtures("offline_app", "one_word_answer")
 
 
 def _cfg(**kw):

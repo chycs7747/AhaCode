@@ -70,17 +70,6 @@ _SECTIONS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _toml(value) -> str:
-    """One TOML value literal: bool, int, float, str, or a sequence of str."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return repr(value)
-    if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=False)  # a JSON string is a valid TOML string
-    return "[" + ", ".join(json.dumps(v, ensure_ascii=False) for v in value) + "]"
-
-
 def _dump(cfg: ModelConfig) -> str:
     """Render a config as TOML, values only; None fields are omitted."""
     lines = ["# AhaCode configuration — see README.md#configuration", ""]
@@ -89,7 +78,9 @@ def _dump(cfg: ModelConfig) -> str:
         for name in names:
             value = getattr(cfg, name)
             if value is not None:
-                lines.append(f"{name} = {_toml(value)}")
+                # Every value type here (bool, number, str, list of str) has the same
+                # literal syntax in JSON and TOML.
+                lines.append(f"{name} = {json.dumps(value, ensure_ascii=False)}")
         lines.append("")
     return "\n".join(lines)
 

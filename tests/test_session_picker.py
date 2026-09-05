@@ -10,12 +10,7 @@ from ahacode.widgets.prompt_input import PromptInput
 from ahacode.widgets.session_picker import SessionPicker, SessionRow
 
 
-pytestmark = pytest.mark.usefixtures("offline_app")
-
-
-@pytest.fixture(autouse=True)
-def one_word_answer(monkeypatch):
-    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("hi")]))
+pytestmark = pytest.mark.usefixtures("offline_app", "one_word_answer")
 
 
 def _session(tmp_path, sid, **header):

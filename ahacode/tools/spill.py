@@ -6,7 +6,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from ahacode import workspace
+from ahacode import storage, workspace
 from ahacode.text import elide, line_count
 
 # Past this many characters a result is written to a file and only a preview of
@@ -27,11 +27,7 @@ def set_session(session_path: Path | None) -> None:
         session_path: The open session's file, or None for the shared fallback.
     """
     global _session_dir
-    _session_dir = (
-        session_path.with_suffix("").with_name(session_path.stem + "-out")
-        if session_path
-        else None
-    )
+    _session_dir = storage.spill_dir(session_path) if session_path else None
 
 
 def target_dir() -> Path:

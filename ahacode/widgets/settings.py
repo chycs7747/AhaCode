@@ -94,10 +94,11 @@ class Settings(ModalScreen["config.ModelConfig | None"]):
                 "모델을 올리지 않습니다. 고른 모델도 다음 메시지에서야 서버에 전달됩니다.",
                 classes="settings-hint")
             yield Label("게이트웨이 주소 (base_url)")
-            yield Input(value=cfg.base_url, placeholder="http://localhost:8888/v1",
+            yield Input(value=cfg.base_url, placeholder=config.DEFAULTS.base_url,
                         id="settings-base-url")
             yield Label("API 키")
-            yield Input(value=cfg.api_key, placeholder="EMPTY", id="settings-api-key")
+            yield Input(value=cfg.api_key, placeholder=config.DEFAULTS.api_key,
+                        id="settings-api-key")
             with Horizontal(id="settings-fetch-row"):
                 yield Button("모델 불러오기", id="settings-fetch-models")
                 yield Label("", id="settings-fetch-status")
@@ -163,7 +164,7 @@ class Settings(ModalScreen["config.ModelConfig | None"]):
                          allow_blank=False, id="settings-think-global")
             yield Label("reasoning effort (힌트)")
             yield Select(_EFFORT, value=cfg.reasoning_effort if any(
-                cfg.reasoning_effort == v for _, v in _EFFORT) else "medium",
+                cfg.reasoning_effort == v for _, v in _EFFORT) else config.DEFAULTS.reasoning_effort,
                 allow_blank=False, id="settings-effort")
             yield Label("사고 예산 · plan (깊게)")
             yield Select(_THINK, value=_think_value(cfg.plan_thinking_budget),

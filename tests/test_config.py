@@ -1,8 +1,14 @@
 """config.toml: defaults on first run, values-only writes, two layers merged per key."""
 
-from dataclasses import replace
+from dataclasses import fields, replace
 
 from ahacode import config, workspace
+
+
+def test_every_field_belongs_to_exactly_one_section():
+    """A field left out of the section map would silently never be written or read."""
+    sectioned = [name for names in config._SECTIONS.values() for name in names]
+    assert sorted(sectioned) == sorted(f.name for f in fields(config.ModelConfig))
 
 
 def test_first_load_writes_the_global_file_with_defaults():

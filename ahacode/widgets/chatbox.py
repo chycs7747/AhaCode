@@ -43,6 +43,15 @@ class Chatbox(Static):
         self._rich = None
         self.refresh(layout=True)
 
+    def set_markdown(self, markdown: bool) -> None:
+        """Switch between Markdown and plain rendering of the same content.
+
+        Args:
+            markdown: True to render as Markdown.
+        """
+        self._markdown = markdown
+        self.refresh(layout=True)
+
     def set_rich(self, renderable, plain: str) -> None:
         """Display a Rich renderable, keeping a plain-text mirror for tests and logic.
 

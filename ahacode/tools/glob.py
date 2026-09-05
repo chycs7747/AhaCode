@@ -16,9 +16,7 @@ def _glob(args: dict) -> str:
     matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)  # recency ≈ relevance
 
     shown = matches[:_MAX_RESULTS]
-    # as_posix: the model feeds these paths back into bash, where a backslash escapes.
-    lines = [p.relative_to(workspace.PROJECT_ROOT).as_posix() if p.is_relative_to(workspace.PROJECT_ROOT) else str(p)
-             for p in shown]
+    lines = [workspace.display_path(p) for p in shown]
     if len(matches) > len(shown):
         lines.append(f"... ({len(matches) - len(shown)} more; narrow the pattern)")
     return "\n".join(lines) or "(no files matched)"

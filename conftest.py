@@ -71,6 +71,12 @@ def fake_llm(monkeypatch) -> FakeLLM:
     return fake
 
 
+@pytest.fixture
+def one_word_answer(monkeypatch):
+    """The model answers "hi" with no reasoning, for tests about everything but the reply."""
+    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("hi")]))
+
+
 @pytest.fixture(autouse=True)
 def no_recursive_test_runs(monkeypatch):
     """Fail loudly if a test tries to launch the test suite from inside itself."""

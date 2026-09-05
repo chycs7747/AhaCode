@@ -68,6 +68,19 @@ def mark(status: str | None) -> str:
     return STATUS_MARKS.get(status or PENDING, STATUS_MARKS[PENDING])
 
 
+def checklist_lines(items: list[dict]) -> list[str]:
+    """One "glyph content" line per step, as the tool result, the panel and the
+    result file all show it.
+
+    Args:
+        items: Steps in the shape coerce_items produces.
+
+    Returns:
+        The rendered lines, in order.
+    """
+    return [f"{mark(it.get('status'))} {it['content']}" for it in items]
+
+
 # --- executability check ---------------------------------------------------
 # A plan step is carried out by a session whose only way to finish it is a tool
 # call, so a step must read as a DOING step: imperative verb first in English, last
@@ -120,8 +133,7 @@ def _todo_write(args: dict) -> str:
     items, note = coerce_items(args.get("items", []))
     if not items:
         return f"(empty plan){' — ' + note if note else ''}"
-    lines = [f"{mark(it.get('status'))} {it['content']}" for it in items]
-    return "\n".join(lines) + (f"\n(note: {note})" if note else "")
+    return "\n".join(checklist_lines(items)) + (f"\n(note: {note})" if note else "")
 
 
 TODO_WRITE = Tool(

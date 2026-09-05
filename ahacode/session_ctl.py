@@ -7,7 +7,7 @@ import json
 
 from textual.containers import Vertical, VerticalScroll
 
-from ahacode import config, storage, workspace
+from ahacode import config, storage
 from ahacode.render import tool_summary
 from ahacode.session import ChatSession
 from ahacode.tools import spill
@@ -72,7 +72,7 @@ class SessionControl:
         """
         app = self.app
         app.session = ChatSession()
-        path = workspace.SESSIONS_DIR / f"{session_id}.jsonl"
+        path = storage.session_file(session_id)
         app.session.messages = storage.load_messages(path)
         await self.adopt(path, storage.read_session_meta(path) or {})
         if app.session_kind == "impl":

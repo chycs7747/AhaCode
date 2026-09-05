@@ -5,19 +5,14 @@ import time
 import pytest
 from rich.cells import cell_len
 
-from ahacode import agent, client
+from ahacode import agent
 from ahacode.app import AhaCodeApp
 from ahacode.turn_view import _PHASE_ID, TurnBoxes
-from ahacode.events import Phase, TextDelta, ToolCall, ToolResult
+from ahacode.events import Phase, ToolCall, ToolResult
 from ahacode.widgets.subagent_card import SubagentCard
 
 
-pytestmark = pytest.mark.usefixtures("offline_app")
-
-
-@pytest.fixture(autouse=True)
-def one_word_answer(monkeypatch):
-    monkeypatch.setattr(client, "stream_chat", lambda m, tools=None: iter([TextDelta("hi")]))
+pytestmark = pytest.mark.usefixtures("offline_app", "one_word_answer")
 
 
 def _boxes(gate=True):

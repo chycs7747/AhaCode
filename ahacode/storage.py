@@ -10,6 +10,30 @@ from pathlib import Path
 from ahacode import workspace
 
 
+def session_file(session_id: str) -> Path:
+    """The session file for an id: sessions/{id}.jsonl.
+
+    Args:
+        session_id: The session's id, which is also its file stem.
+
+    Returns:
+        The session file path.
+    """
+    return workspace.SESSIONS_DIR / f"{session_id}.jsonl"
+
+
+def spill_dir(session_path: Path) -> Path:
+    """Where a session's oversized tool output is spilled: sessions/{id}-out/.
+
+    Args:
+        session_path: The session's file.
+
+    Returns:
+        The spill directory path.
+    """
+    return session_path.with_name(f"{session_path.stem}-out")
+
+
 def new_session_path() -> Path:
     """Claim a path for a new session file by creating it empty.
 
@@ -21,14 +45,14 @@ def new_session_path() -> Path:
     """
     workspace.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")  # no colons: Windows
-    path = workspace.SESSIONS_DIR / f"{stamp}.jsonl"
+    path = session_file(stamp)
     n = 2
     while True:
         try:
             path.touch(exist_ok=False)
             return path
         except FileExistsError:
-            path = workspace.SESSIONS_DIR / f"{stamp}_{n}.jsonl"
+            path = session_file(f"{stamp}_{n}")
             n += 1
 
 
@@ -261,9 +285,11 @@ def delete_session(session_id: str) -> list[str]:
     """
     ids = descendants(session_id, list_sessions())
     for sid in ids:
-        (workspace.SESSIONS_DIR / f"{sid}.jsonl").unlink(missing_ok=True)
-        shutil.rmtree(workspace.SESSIONS_DIR / f"{sid}-out", ignore_errors=True)
-        for extra in (workspace.PLANS_DIR / f"{sid}.md", workspace.PLANS_DIR / f"{sid}.result.md"):
+        path = session_file(sid)
+        path.unlink(missing_ok=True)
+        shutil.rmtree(spill_dir(path), ignore_errors=True)
+        plan = plan_path(path)
+        for extra in (plan, result_path(plan)):
             extra.unlink(missing_ok=True)
     return ids
 

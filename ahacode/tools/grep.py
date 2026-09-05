@@ -27,8 +27,7 @@ def _grep(args: dict) -> str:
         text = read_text_or_none(path)
         if text is None:
             continue
-        # as_posix: the model feeds these paths back into bash, where a backslash escapes.
-        name = path.relative_to(workspace.PROJECT_ROOT).as_posix() if path.is_relative_to(workspace.PROJECT_ROOT) else str(path)
+        name = workspace.display_path(path)
         matched_here = False
         for lineno, line in enumerate(text.splitlines(), start=1):
             if not regex.search(line):
