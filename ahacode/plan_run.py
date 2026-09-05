@@ -153,7 +153,7 @@ class PlanRun:
             f"↳ 계획 실행 세션 — {workspace.display_path(plan)} 을 읽고 진행합니다 "
             f"(계획 세션 {parent_id} 의 자식)"
         )
-        await self._seed_turn(prompts.handoff_prompt(workspace.display_path(plan)), show=True)
+        await self._seed_turn(prompts.injected.handoff(workspace.display_path(plan)), show=True)
 
     async def _seed_turn(self, text: str, *, show: bool) -> None:
         """Put one user message into the session and run a turn on it; the handoff
@@ -277,4 +277,4 @@ class PlanRun:
         await app._say_system(
             f"▶ 자동 진행 {done}/{len(panel.items)} 완료{why} · 다음: {nxt} (Esc 로 중지)"
         )
-        await self._seed_turn(prompts.CONTINUE_PROMPT, show=False)
+        await self._seed_turn(prompts.injected.AUTO_CONTINUE, show=False)

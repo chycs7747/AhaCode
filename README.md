@@ -295,7 +295,11 @@ ahacode/
 │                     # results back → until a turn has no tool calls
 ├── context.py        # prune, then condense, before the history outgrows the window
 ├── subagent.py       # one delegated task as a fresh child loop (sub-agent-as-a-tool)
-├── prompts.py        # system prompts, assembled per mode/model
+├── prompts/          # every prompt the harness sends, one module per moment
+│   ├── system.py     #   the system prompt per mode: act · plan · subagent
+│   ├── injected.py   #   user turns the harness writes: handoff, auto-continue,
+│   │                 #     turn cap, interrupted session, condensed-history prefix
+│   └── side.py       #   requests outside the conversation: compaction, title
 ├── render.py         # widget-free previews (diffs, syntax) shared by chat + modal
 ├── tools/
 │   ├── base.py       #   the Tool contract (name · JSON Schema · execute)

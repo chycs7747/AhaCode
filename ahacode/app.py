@@ -367,7 +367,7 @@ class AhaCodeApp(App):
 
         # A copy goes to the worker, so it never shares a mutable list with the
         # main thread.
-        base = prompts.plan_system() if self.mode == "plan" else prompts.act_system()
+        base = prompts.system.plan() if self.mode == "plan" else prompts.system.act()
         history = [{"role": "system", "content": base}, *self.session.messages]
         self._set_status("● waiting…")
         self._stopping = False

@@ -1,4 +1,8 @@
-"""System prompts: the constant layers, and their assembly per mode."""
+"""The system prompt: the first message of every request, assembled per mode.
+
+Upper-case names are layers that never go out alone; the functions are the prompts
+that do, and every one of them opens with IDENTITY.
+"""
 
 from __future__ import annotations
 
@@ -52,7 +56,7 @@ CODING_RULES = """# Editing code
 
 # Plan mode. "Every step is executable" is load-bearing: the impl session can only
 # finish a step by using a tool, so a step with no artifact has no way to complete.
-PLAN_SYSTEM = (
+PLAN_MODE = (
     "You are in PLAN MODE. Do not change anything or run commands. Investigate with "
     "the read/glob/grep tools as needed and settle open questions with the user, then "
     "call plan_submit with the finished plan: a one-line summary, the steps, and how "
@@ -72,77 +76,18 @@ PLAN_SYSTEM = (
     "to an approval."
 )
 
-# The first user turn of an impl session. A user message rather than the system
-# prompt: it names this session's plan file, while the system prompt is the constant
-# prefix every session shares.
-HANDOFF_PROMPT = """You are in an implementation session, handed off from an approved plan. Edit, write and bash tools are available.
-
-A plan was saved at {path}. Read it first, then call todo_write with one item per plan step. Work through them one-by-one, marking in_progress before starting each and done immediately after finishing.
-
-Do not re-plan, expand scope, refactor adjacent code, or add features the plan did not ask for.
-
-If the plan has a real gap — a missing step, a contradiction with the code, a wrong path — stop and report the gap as text instead of improvising. The user will revise the plan.
-
-When every step is done and the plan's validation passes, finish with a concise summary of what was done and how it was verified."""
-
-
-def handoff_prompt(plan_path: str) -> str:
-    """The seed message of an impl session.
-
-    Args:
-        plan_path: The plan file, as the model should refer to it.
-
-    Returns:
-        The message text.
-    """
-    return HANDOFF_PROMPT.format(path=plan_path)
-
-
 # A sub-agent's framing. Short on purpose: a shared prefix the gateway's prefix
 # cache reuses across every sub-agent.
-SUBAGENT_SYSTEM = (
+SUBAGENT_ROLE = (
     "You are a focused sub-agent spawned to complete ONE delegated task. "
     "Work autonomously with the tools available, then finish with a concise, "
     "self-contained result the caller can use directly — no filler, no questions."
 )
 
-# The user turn injected when the loop hits its turn cap. Sent with no tools, so
-# the model must answer.
-MAX_TURNS_PROMPT = (
-    "You've reached the step limit for this task and tools are no longer available. "
-    "Give your best final answer now, as text only: briefly summarize what you "
-    "accomplished, what remains unfinished, and the recommended next step."
-)
-
-# The user turn that carries an impl session on by itself. Says nothing about WHAT
-# to do: the plan and the checklist are already in the session.
-CONTINUE_PROMPT = (
-    "Continue with the plan. Work on the next unfinished step in the checklist, and "
-    "mark steps done with todo_write as you complete them. If a step turns out to be "
-    "blocked or already satisfied, say so and move on to the next one rather than "
-    "repeating work you have already done."
-)
-
-# Context compaction. What matters is carrying decisions and constraints forward:
-# an agent that forgets a constraint re-violates it.
-COMPACT_SYSTEM = (
-    "You are compressing the earlier part of a coding session so the work can "
-    "continue with a smaller context. Write a dense summary that preserves: the "
-    "user's goal and any constraints they stated, decisions already made and why, "
-    "files and symbols touched, what has been verified, and what is still open. "
-    "Drop pleasantries, reasoning you can re-derive, and tool output that no longer "
-    "matters. Facts only, no preamble."
-)
-
-TITLE_SYSTEM = (
-    "You write a very short title (2-5 words) for a conversation. "
-    "Reply with ONLY the title — no quotes, no trailing punctuation."
-)
-
 # --- assembly -------------------------------------------------------------
 
 
-def environment_block() -> str:
+def environment() -> str:
     """The live facts the model needs to emit valid commands: OS, shell, cwd, model."""
     return (
         "# Environment\n"
@@ -151,16 +96,16 @@ def environment_block() -> str:
     )
 
 
-def act_system() -> str:
+def act() -> str:
     """The act-mode system prompt: identity and rules, then the live environment."""
-    return "\n\n".join([ACT_INTRO, CODING_RULES, environment_block()])
+    return "\n\n".join([ACT_INTRO, CODING_RULES, environment()])
 
 
-def plan_system() -> str:
+def plan() -> str:
     """The plan-mode system prompt: identity first, then the mode."""
-    return f"{IDENTITY}\n\n{PLAN_SYSTEM}"
+    return f"{IDENTITY}\n\n{PLAN_MODE}"
 
 
-def subagent_system() -> str:
+def subagent() -> str:
     """A sub-agent's system prompt: identity, its framing, and the shared coding rules."""
-    return "\n\n".join([IDENTITY, SUBAGENT_SYSTEM, CODING_RULES])
+    return "\n\n".join([IDENTITY, SUBAGENT_ROLE, CODING_RULES])

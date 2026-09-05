@@ -7,7 +7,7 @@ import json
 
 from textual.containers import Vertical, VerticalScroll
 
-from ahacode import config, storage
+from ahacode import config, prompts, storage
 from ahacode.render import tool_summary
 from ahacode.session import ChatSession
 from ahacode.tools import spill
@@ -16,13 +16,6 @@ from ahacode.widgets.chatbox import Chatbox
 from ahacode.widgets.session_picker import SessionPicker
 from ahacode.widgets.todo_panel import TodoPanel
 from ahacode.widgets.tool_result import ToolResultBlock
-
-INTERRUPT_NOTE = (
-    "[system] The previous turn was interrupted before it finished. The project "
-    "may have changed on disk — re-check the actual state (files, tests) and bring "
-    "the plan's checklist into line with it before continuing. If the last step did "
-    "not complete, redo it."
-)
 
 
 class SessionControl:
@@ -98,7 +91,7 @@ class SessionControl:
             what = f"`{call['name']}` ({subject})" if subject else f"`{call['name']}`"
             self._append({"role": "tool", "tool_call_id": call["id"],
                           "content": f"Interrupted: the {what} call did not complete."})
-        self._append({"role": "user", "content": INTERRUPT_NOTE})
+        self._append({"role": "user", "content": prompts.injected.INTERRUPTED})
         await app._say_system("↻ 이전 턴이 중단됐어요 — 상태를 다시 확인하고 이어갑니다.")
 
     def _append(self, msg: dict) -> None:

@@ -13,8 +13,9 @@ SRC = pathlib.Path(__file__).resolve().parents[1] / "ahacode"
 # reach the UI only through the injected `emit` callback.
 HARNESS = {
     "agent.py", "subagent.py", "context.py", "client.py", "storage.py",
-    "config.py", "permissions.py", "prompts.py", "render.py", "text.py",
+    "config.py", "permissions.py", "render.py", "text.py",
     "shell.py", "workspace.py", "session.py", "events.py",
+    "prompts/__init__.py", "prompts/system.py", "prompts/injected.py", "prompts/side.py",
 }
 
 # What the harness may not import, by module prefix. NOT rich: render.py exists

@@ -227,7 +227,7 @@ class TurnRunner:
         )[:1500]
         try:
             title = client.complete([
-                {"role": "system", "content": prompts.TITLE_SYSTEM},
+                {"role": "system", "content": prompts.side.TITLE},
                 {"role": "user", "content": convo},
             ])
         except Exception:

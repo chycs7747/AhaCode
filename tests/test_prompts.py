@@ -13,7 +13,7 @@ def known_model():
 
 
 def test_act_system_has_the_key_sections():
-    out = prompts.act_system()
+    out = prompts.system.act()
     assert out.startswith("You are AhaCode")
     for marker in ("# Output", "# Editing code", "# Never", "Reply in the user's language",
                    "`path:line`", "IMPORTANT"):
@@ -21,28 +21,28 @@ def test_act_system_has_the_key_sections():
 
 
 def test_act_system_injects_live_environment():
-    out = prompts.act_system()
+    out = prompts.system.act()
     assert "# Environment" in out
     assert str(workspace.PROJECT_ROOT) in out
     assert "qwen38" in out
 
 
 def test_act_system_has_no_few_shot_examples():
-    assert "<example>" not in prompts.act_system()
+    assert "<example>" not in prompts.system.act()
 
 
 def test_subagent_inherits_the_coding_rules():
     """A child holds the same write/edit/bash tools as the parent, so it carries the
     same rules — one shared constant, so the two cannot drift apart."""
-    assert prompts.subagent_system() == (
-        f"{prompts.IDENTITY}\n\n{prompts.SUBAGENT_SYSTEM}\n\n{prompts.CODING_RULES}"
+    assert prompts.system.subagent() == (
+        f"{prompts.system.IDENTITY}\n\n{prompts.system.SUBAGENT_ROLE}\n\n{prompts.system.CODING_RULES}"
     )
-    assert prompts.CODING_RULES in prompts.act_system()
-    assert "scratchpad" in prompts.subagent_system()
+    assert prompts.system.CODING_RULES in prompts.system.act()
+    assert "scratchpad" in prompts.system.subagent()
 
 
 def test_subagent_run_uses_the_assembled_prompt():
-    """subagent.run must resolve subagent_system() at call time, not freeze the bare
+    """subagent.run must resolve system.subagent() at call time, not freeze the bare
     framing constant as a default argument."""
     seen = {}
 
@@ -51,12 +51,12 @@ def test_subagent_run_uses_the_assembled_prompt():
         return iter(())
 
     subagent.run("do a thing", emit=lambda e: None, stream=fake_stream, registry={})
-    assert seen["system"] == prompts.subagent_system()
+    assert seen["system"] == prompts.system.subagent()
 
 
 def test_plan_system_demands_executable_steps():
-    out = prompts.plan_system()
-    assert out == f"{prompts.IDENTITY}\n\n{prompts.PLAN_SYSTEM}"
+    out = prompts.system.plan()
+    assert out == f"{prompts.system.IDENTITY}\n\n{prompts.system.PLAN_MODE}"
     assert "PLAN MODE" in out and "EXECUTABLE" in out
     for marker in ("imperative verb", "artifact"):
         assert marker in out
@@ -65,6 +65,12 @@ def test_plan_system_demands_executable_steps():
 def test_every_system_prompt_opens_with_the_same_identity():
     """A prompt that skips the identity leaves a local model to answer from its
     training data about who it is."""
-    for out in (prompts.act_system(), prompts.plan_system(), prompts.subagent_system()):
-        assert out.startswith(prompts.IDENTITY)
-    assert "AhaCode" in prompts.IDENTITY and "cyh" in prompts.IDENTITY
+    for out in (prompts.system.act(), prompts.system.plan(), prompts.system.subagent()):
+        assert out.startswith(prompts.system.IDENTITY)
+    assert "AhaCode" in prompts.system.IDENTITY and "cyh" in prompts.system.IDENTITY
+
+
+def test_handoff_names_the_plan_file():
+    """The impl session's first turn points at this session's plan, so the model
+    reads the plan rather than reconstructing it."""
+    assert "plans/x.md" in prompts.injected.handoff("plans/x.md")

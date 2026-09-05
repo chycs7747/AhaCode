@@ -12,8 +12,6 @@ from ahacode.text import elide
 
 SummarizeFn = Callable[[list[dict]], str]  # (older messages) -> a condensed summary
 
-SUMMARY_PREFIX = "# Condensed summary of the earlier conversation\n\n"
-
 # What replaces a pruned tool result. The message stays and only its content goes,
 # so an assistant/tool pairing can never be broken by pruning.
 PRUNED_STUB = "[older tool output dropped to free context — re-run the tool if needed]"
@@ -162,7 +160,7 @@ def llm_summarize(messages: list[dict]) -> str:
         The summary text.
     """
     return client.complete([
-        {"role": "system", "content": prompts.COMPACT_SYSTEM},
+        {"role": "system", "content": prompts.side.COMPACT},
         {"role": "user", "content": render_transcript(messages)},
     ])
 
@@ -244,6 +242,6 @@ def maybe_compact(
     if not summary.strip():
         return done  # a failed summary must not silently delete the history
 
-    messages[head:split] = [{"role": "user", "content": SUMMARY_PREFIX + summary}]
+    messages[head:split] = [{"role": "user", "content": prompts.injected.SUMMARY_PREFIX + summary}]
     done.summarized = len(older) - 1  # the summary itself takes one slot back
     return done

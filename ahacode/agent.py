@@ -280,7 +280,7 @@ def run(
         # The turn cap: one tool-free wrap-up turn, so the model must answer with
         # what is done, what remains, and what comes next.
         if not is_cancelled():
-            add({"role": "user", "content": prompts.MAX_TURNS_PROMPT})
+            add({"role": "user", "content": prompts.injected.MAX_TURNS})
             text = ""
             with _streaming(stream(messages, None)) as events:
                 for event in events:

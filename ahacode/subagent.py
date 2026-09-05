@@ -63,7 +63,7 @@ def run(
         ctx: Forwarded for a child that may itself delegate.
         is_cancelled: Polled between events.
         max_turns: Tool-call rounds before the wrap-up turn.
-        system: A system prompt to use instead of prompts.subagent_system().
+        system: A system prompt to use instead of prompts.system.subagent().
         summarize: The compaction summarizer.
 
     Returns:
@@ -72,7 +72,7 @@ def run(
     # Resolved at call time: a default argument would freeze the bare framing
     # constant and skip the assembly that adds the shared CODING_RULES.
     seed = [
-        {"role": "system", "content": system or prompts.subagent_system()},
+        {"role": "system", "content": system or prompts.system.subagent()},
         {"role": "user", "content": task_prompt},
     ]
     # agent.run mutates (and may condense) its list; the transcript handed back is

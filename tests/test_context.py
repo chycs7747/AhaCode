@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from ahacode import agent, config, context, subagent
+from ahacode import agent, config, context, prompts, subagent
 from ahacode.events import Notice, Phase, TextDelta, ToolCall, Usage
 
 CFG = config.DEFAULTS
@@ -126,7 +126,7 @@ def test_summary_replaces_the_old_stretch_and_keeps_the_system_prompt():
     assert done.summarized > 0
     assert len(messages) == before - done.summarized
     assert messages[0] == {"role": "system", "content": "sys"}  # system survives
-    assert context.SUMMARY_PREFIX in messages[1]["content"]
+    assert prompts.injected.SUMMARY_PREFIX in messages[1]["content"]
     assert "utf-8" in messages[1]["content"]
     assert messages[-1]["content"] == "a5"  # the newest turns are untouched
 
@@ -185,7 +185,7 @@ def test_loop_compacts_and_still_returns_every_real_message(monkeypatch):
     # the second request was sent with a condensed history, and the user was told
     assert sent[1] < sent[0] + 2
     assert any(isinstance(e, Notice) for e in events)
-    assert any(context.SUMMARY_PREFIX in str(m.get("content")) for m in messages)
+    assert any(prompts.injected.SUMMARY_PREFIX in str(m.get("content")) for m in messages)
 
 
 def test_subagent_transcript_is_complete_after_compaction(monkeypatch):

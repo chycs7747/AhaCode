@@ -29,7 +29,7 @@ def test_todo_write_empty():
 # --- executable-step check -------------------------------------------------
 # The regression this guards: a plan step that states an idea instead of an action
 # is handed to a fresh sub-agent that can only finish by calling a tool, so it turns
-# `write` into a scratchpad. See prompts.PLAN_SYSTEM for the full reasoning.
+# `write` into a scratchpad. See prompts.system.PLAN_MODE for the full reasoning.
 
 @pytest.mark.parametrize("step", [
     "Implement solution() using two-pointers over a pre-sorted subtree-sum array",
