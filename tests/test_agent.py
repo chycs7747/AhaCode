@@ -48,6 +48,20 @@ def test_tool_then_final_answer():
     assert new[2]["content"] == "done reading"
 
 
+def test_non_ascii_arguments_are_re_serialised_as_text_not_escapes():
+    """The arguments string reaches the prompt verbatim, so `\\uXXXX` escapes would
+    multiply the tokens every non-ASCII character costs on every later request."""
+    args = {"path": "문서/한글.txt", "note": "— → ✓ 🗜"}
+    turns = [[ToolCall(id="1", name="read", arguments=args)], [TextDelta("ok")]]
+    new = agent.run([{"role": "user", "content": "x"}], emit=lambda e: None,
+                    stream=make_stream(turns), registry=registry())
+
+    raw = new[0]["tool_calls"][0]["function"]["arguments"]
+    assert "\\u" not in raw
+    assert "문서/한글.txt" in raw and "🗜" in raw
+    assert json.loads(raw) == args
+
+
 def test_bash_denied_without_approval():
     emitted = []
     turns = [

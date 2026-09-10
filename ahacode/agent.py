@@ -106,7 +106,10 @@ def _assistant_message(text: str, tool_calls: list[ToolCall]) -> dict:
             {
                 "id": c.id,
                 "type": "function",
-                "function": {"name": c.name, "arguments": json.dumps(c.arguments)},
+                # The chat template pastes this string into the prompt verbatim, so an
+                # escaped \uXXXX would cost several tokens per non-ASCII character.
+                "function": {"name": c.name,
+                             "arguments": json.dumps(c.arguments, ensure_ascii=False)},
             }
             for c in tool_calls
         ]
